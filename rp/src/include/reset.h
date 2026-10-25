@@ -1,0 +1,90 @@
+/**
+ * File: reset.h
+ * Author: Diego Parrilla Santamaría
+ * Date: December 2025, February 2026
+ * Copyright: 2024-2026 - GOODDATA LABS SL
+ * Description: Header file for RESET functions of the booster app
+ */
+
+#ifndef RESET_H
+#define RESET_H
+
+#include "constants.h"
+#include "debug.h"
+#include "gconfig.h"
+#include "hardware/irq.h"
+#include "hardware/regs/m0plus.h"
+#include "hardware/sync.h"
+#include "hardware/watchdog.h"
+#include "pico/multicore.h"
+#include "pico/stdlib.h"
+#include "settings.h"
+
+#define RESET_WATCHDOG_TIMEOUT 20  // 20 ms
+
+/**
+ * @brief Reset the current app and jump to the Booster app in flash
+ *
+ *
+ * Do not use to reboot the device, because it does not jump to the start of the
+ * Flash
+ *
+ * @note This function should not return. If it does, an error message is
+ * printed.
+ */
+static inline void reset_jump_to_booster(void) {
+  // The jump does not quieten our interrupts, and from the instruction that
+  // writes VTOR onwards they vector through Booster's table, into handlers it
+  // has not installed yet: the core locks up and Booster never runs. At the
+  // jump this app has the SDK's alarm IRQ and the Wi-Fi chip's host-wake GPIO
+  // IRQ enabled, and the latter fires whenever a packet arrives. Booster's
+  // start-up resets the peripherals, but not the NVIC in the core: mask and
+  // clear every interrupt here, and Booster enables what it needs itself.
+  irq_set_mask_enabled(0xFFFFFFFFu, false);
+  *((volatile uint32_t *)(PPB_BASE + M0PLUS_NVIC_ICPR_OFFSET)) = 0xFFFFFFFFu;
+  __dsb();
+  __isb();
+  // This code jumps to the Booster application at the top of the flash memory.
+  // The reason to perform this jump is for performance reasons.
+  // It should be placed at the beginning of main() if the SELECT signal or
+  // BOOSTER app is selected. Set VTOR register, set stack pointer, and jump to
+  // reset.
+  __asm__ __volatile__(
+      "mov r0, %[start]\n"
+      "ldr r1, =%[vtable]\n"
+      "str r0, [r1]\n"
+      "ldmia r0, {r0, r1}\n"
+      "msr msp, r0\n"
+      "bx r1\n"
+      :
+      : [start] "r"((unsigned int)&_booster_app_flash_start + 256),
+        [vtable] "X"(PPB_BASE + M0PLUS_VTOR_OFFSET)
+      :);
+  DPRINTF("You should never reach this point\n");
+}
+
+/**
+ * @brief Reset the app and reentry in the main device app in flash
+ *
+ *
+ * Use to reboot the device, it jumps to the start of the Flash
+ *
+ * @note This function should not return. If it does, an error message is
+ * printed.
+ */
+void reset_device();
+
+/**
+ * @brief Reset the app and reentry in the main device app in flash.
+ *       Erase the flash memory before rebooting
+ *
+ *
+ * Use to reboot the device to a fabric configuration, it jumps to the start of
+ * the Flash
+ *
+ * @note This function should not return. If it does, an error message is
+ * printed.
+ */
+void reset_deviceAndEraseFlash();
+
+#endif  // RESET_H
