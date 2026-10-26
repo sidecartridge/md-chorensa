@@ -1016,6 +1016,39 @@ def cmd_play(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench_set(args: argparse.Namespace) -> int:
+    """The bench's copy and sound settings over SWD (bench.c's benchSet*):
+    who copies the frame, the lines the ST copies, the sound path from the
+    ST's next boot. The bench takes them at its next frame (not while it
+    plays: swd.py play --stop first)."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "benchSetCopyMode", "benchSetCopyLines", "benchSetSoundPath")
+    if len(sym) < 3:
+        raise SwdError(f"{os.path.basename(elf)} has no bench settings over SWD")
+    defs = include_defines()
+    cmds = []
+    if args.copy:
+        mode = {"auto": "CART_BLIT_MODE_AUTO", "cpu": "CART_BLIT_MODE_CPU",
+                "blitter": "CART_BLIT_MODE_BLITTER"}[args.copy]
+        cmds.append(f"mww 0x{sym['benchSetCopyMode'][0]:08x} {defs[mode] + 1}")
+    if args.lines:
+        cmds.append(f"mww 0x{sym['benchSetCopyLines'][0]:08x} {args.lines}")
+    if args.sound:
+        cmds.append(f"mww 0x{sym['benchSetSoundPath'][0]:08x} {2 if args.sound == 'ym' else 1}")
+    if not cmds:
+        raise SwdError("nothing to set: --copy, --lines or --sound")
+    openocd(f"targets {CORES[0]}", *cmds)
+    time.sleep(0.2)
+    left = read_words([sym[n][0] for n in ("benchSetCopyMode", "benchSetCopyLines",
+                                            "benchSetSoundPath")])
+    if any(left):
+        raise SwdError("the bench did not take them (is it playing? swd.py play --stop)")
+    print("set: " + ", ".join(f"{k} {v}" for k, v in (("copy", args.copy), ("lines", args.lines),
+                                                       ("sound from the next boot", args.sound))
+                              if v))
+    return 0
+
+
 SD_CHUNK = 65536  # the chunky framebuffer, the bench's buffer for the card
 
 
@@ -1837,6 +1870,13 @@ def build_parser() -> argparse.ArgumentParser:
     he.add_argument("elf")
     he.add_argument("--timeout", type=float, default=30.0)
     he.set_defaults(func=cmd_hello)
+
+    bs = sub.add_parser("bench-set", help="the bench's copy and sound settings")
+    bs.add_argument("--copy", choices=("auto", "cpu", "blitter"))
+    bs.add_argument("--lines", type=int, choices=(240, 256))
+    bs.add_argument("--sound", choices=("ym", "own"), help="from the ST's next boot")
+    bs.add_argument("--elf")
+    bs.set_defaults(func=cmd_bench_set)
 
     pl = sub.add_parser("play", help="the bench's play mode: frames a second and their costs")
     pl.add_argument("--seconds", type=float, default=5.0)

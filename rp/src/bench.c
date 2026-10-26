@@ -107,6 +107,13 @@ static void print_at(int x, int y, unsigned color, const char *text) {
 /* INSERT: the logic run (bench_logic.h), in a build with a translation. */
 #define SC_INSERT 0x52u
 static bool s_bench_prefer_ym; /* F10's state (audio.c keeps its own) */
+/* The same settings over SWD in any build (tools/dev/swd.py bench-set),
+ * taken at the next bench frame and cleared: the copy mode + 1 (and its
+ * lines a blitter piece << 8), the lines the ST copies, the sound path
+ * from the ST's next boot (1 its own, 2 the YM). 0 leaves one as it is. */
+volatile uint32_t benchSetCopyMode;
+volatile uint32_t benchSetCopyLines;
+volatile uint32_t benchSetSoundPath;
 static const uint8_t k_pieces[] = {0, 32, 4, 8};
 static uint8_t s_piece_choice;
 
@@ -232,6 +239,19 @@ static void draw_test_card(void) {
 void bench_frame(void) {
   char line[48];
 
+  if (benchSetCopyMode) {
+    set_copy_mode((uint8_t)((benchSetCopyMode & 0xFFu) - 1u), (uint8_t)(benchSetCopyMode >> 8));
+    benchSetCopyMode = 0;
+  }
+  if (benchSetCopyLines) {
+    set_copy_lines((uint16_t)benchSetCopyLines);
+    benchSetCopyLines = 0;
+  }
+  if (benchSetSoundPath) {
+    s_bench_prefer_ym = benchSetSoundPath == 2u;
+    audio_prefer_ym(s_bench_prefer_ym);
+    benchSetSoundPath = 0;
+  }
   if (bench_logic_poll()) palette_set(s_palette); /* the game had the screen */
   if (bench_logic_holds_screen()) return;           /* the framebuffer is the card's buffer */
   bench_scene_poll();
