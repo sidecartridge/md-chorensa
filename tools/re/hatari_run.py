@@ -10,7 +10,8 @@ Usage: hatari_run.py [--machine st|ste|megast|megaste] [--memsize MB] [--sound]
 The firmware is the host build EmuMD makes of rp/src (emu/README.md):
 build/md-chorensa.mdfw by default, built first with --build. Paths come from
 tools/re/re.cfg (see re.cfg.example): EmuMD's Hatari (HATARI), the TOS images
-(TOS 1.62 for every machine unless TOS_ST is set for the ST and Mega ST), and
+(TOS_STE, 1.62, for every machine unless TOS_ST is set for the ST and Mega ST
+and TOS_MSTE, 2.06, for the Mega STE, which TOS 1.62 does not boot), and
 RUNS, where run folders go: outside the repository, since a run's card and
 dumps may hold the game (default tools/re/logs, gitignored). Each run gets
 <RUNS>/<date>-<machine>[-name]/:
@@ -40,6 +41,8 @@ The expectations file has one step per line ('#' starts a comment):
                           into the run folder, {run} in it replaced by the run
                           folder's path, so `:file {run}/<file>` runs it and the
                           relative paths it saves to land in the run folder
+  reset warm|cold         reset the ST: warm keeps the Multi-device powered (the
+                          RP keeps its state), cold powers it off and on
   shot <name>             a screenshot, shots/<name>.png
   sleep <seconds>
   record <name>           start recording the sound to <name>.wav in the run
@@ -74,7 +77,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 MACHINES = {"st": ("st", "TOS_ST"), "megast": ("megast", "TOS_ST"),
-            "ste": ("ste", "TOS_STE"), "megaste": ("megaste", "TOS_STE")}
+            "ste": ("ste", "TOS_STE"), "megaste": ("megaste", "TOS_MSTE")}
 MDFW = REPO / "emu" / "emumd" / "tools" / "mdfw"
 KEYS = {"space": 0x39, "return": 0x1C, "esc": 0x01, "backspace": 0x0E, "tab": 0x0F,
         "up": 0x48, "down": 0x50, "left": 0x4B, "right": 0x4D, "help": 0x62, "undo": 0x61}
@@ -186,6 +189,10 @@ def parse_steps(path: Path) -> list[tuple[str, ...]]:
             steps.append((kind, rest))
         elif kind == "click":
             steps.append((kind, str(float(rest or 0.2))))
+        elif kind == "reset":
+            if rest not in ("warm", "cold"):
+                sys.exit(f"error: {path}:{n}: reset warm or reset cold")
+            steps.append((kind, rest))
         elif kind == "mouse":
             dx, dy = rest.split()
             steps.append((kind, str(int(dx)), str(int(dy))))
@@ -364,6 +371,9 @@ def main() -> int:
                 time.sleep(float(step[1]))
                 command("hatari-event leftup")
                 say(f"click {step[1]} s")
+            elif kind == "reset":
+                command(f"hatari-shortcut {step[1]}reset")
+                say(f"{step[1]} reset")
             elif kind == "mouse":
                 command(f"hatari-event mousemove {step[1]} {step[2]}")
                 say(f"mouse {step[1]} {step[2]}")

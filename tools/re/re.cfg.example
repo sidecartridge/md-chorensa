@@ -29,3 +29,5 @@ XDFTOOL=/path/to/venv/bin/xdftool
 HATARI=~/.cache/emumd/hatari-fork/build/src/hatari
 TOS_ST=/path/to/TOS 1.04 - English UK - 50Hz.img
 TOS_STE=/path/to/TOS 1.62 - English-UK - 50Hz
+# The Mega STE needs TOS 2.05 or 2.06.
+TOS_MSTE=/path/to/TOS 2.06 - English-UK - 50Hz
