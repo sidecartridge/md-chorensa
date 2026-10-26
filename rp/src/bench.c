@@ -47,12 +47,14 @@ static const uint16_t s_palette[PALETTE_ENTRIES] = {
  * (also readable over SWD by symbol). */
 uint32_t benchFrames;
 uint32_t benchFramesPerSecond;
-/* The still mode (bench_still): the bench stops drawing and publishes what
- * the chunky buffer holds, with this palette, every frame. A host tool
- * (tools/dev/swd.py still) writes both over SWD: a picture to look at on the
- * ST's own screen. */
+/* The still mode (bench_still, or benchStill written over SWD in any
+ * build): the bench stops drawing and publishes what the chunky buffer
+ * holds, with this palette, every frame. A host tool (tools/dev/swd.py
+ * still) writes all three over SWD: a picture to look at on the ST's own
+ * screen. */
 uint16_t benchStillPalette[PALETTE_ENTRIES];
-static bool s_still;
+volatile uint32_t benchStill;
+static bool s_still; /* what the last frame showed */
 static uint32_t s_second_start_us;
 static uint32_t s_second_frames;
 
@@ -238,11 +240,16 @@ void bench_frame(void) {
     benchFrames++;
     return;
   }
-  if (s_still) {
+  if (benchStill) {
+    s_still = true;
     palette_set(benchStillPalette);
     fb_publish();
     benchFrames++;
     return;
+  }
+  if (s_still) {
+    s_still = false;
+    palette_set(s_palette);
   }
 
   font_set_font(&font8x8);
@@ -336,9 +343,8 @@ uint32_t bench_devhook(uint16_t commandId, const uint16_t *payload,
       set_tone(payloadSize >= 2u ? payload[0] : 0u);
       return 1;
     case DEVHOOKS_APP_BENCH_STILL:
-      s_still = payloadSize >= 2u && payload[0] != 0u;
-      if (!s_still) palette_set(s_palette);
-      DPRINTF("bench: still %s\n", s_still ? "on" : "off");
+      benchStill = payloadSize >= 2u && payload[0] != 0u;
+      DPRINTF("bench: still %s\n", benchStill ? "on" : "off");
       return 1;
     case DEVHOOKS_APP_BENCH_COPY_LINES:
       if (payloadSize < 2u) return 0;

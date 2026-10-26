@@ -963,16 +963,16 @@ def cmd_sd_put(args: argparse.Namespace) -> int:
 
 def cmd_still(args: argparse.Namespace) -> int:
     """A still picture on the ST's screen: the bench stops drawing
-    (bench_still 1) and publishes what the chunky buffer holds, with
-    benchStillPalette; this writes both. FILE: 256 x 256 bytes of colour
+    (benchStill 1) and publishes what the chunky buffer holds, with
+    benchStillPalette; this writes all three, in any build. FILE: 256 x 256 bytes of colour
     numbers, then 16 big-endian palette words (tools/re/quantise.py still)."""
     elf = matching_elf(args.elf)
     defines = include_defines()
-    still_id = defines.get("DEVHOOKS_APP_BENCH_STILL")
-    if still_id is None:
-        raise SwdError("no DEVHOOKS_APP_BENCH_STILL define in rp/src/include")
+    flag = elf_symbols(elf, "benchStill").get("benchStill")
+    if flag is None:
+        raise SwdError(f"{os.path.basename(elf)} has no still mode (a bench build?)")
     if args.off:
-        mailbox_request(elf, KIND_APP, still_id, [0])
+        openocd(f"targets {CORES[0]}", f"mww 0x{flag[0]:08x} 0")
         print("still off: the test card again")
         return 0
     data = open(args.file, "rb").read()
@@ -983,7 +983,8 @@ def cmd_still(args: argparse.Namespace) -> int:
     if len(sym) < 2:
         raise SwdError(f"{os.path.basename(elf)} has no still mode (a bench build?)")
     words = struct.unpack(">16H", data[pixels:])
-    mailbox_request(elf, KIND_APP, still_id, [1])
+    openocd(f"targets {CORES[0]}", f"mww 0x{flag[0]:08x} 1")
+    time.sleep(0.1)  # a frame: the bench has stopped drawing
     with tempfile.TemporaryDirectory() as tmp:
         image = os.path.join(tmp, "image.bin")
         with open(image, "wb") as f:
