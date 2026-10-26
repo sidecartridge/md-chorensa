@@ -31,11 +31,11 @@ void xl_memmap_access(uint32_t a, int size, int write);
 #define XL_TOUCH(a, size, write) ((void)0)
 #endif
 
-/* Where an address's byte is. The host: one flat array. The RP (XL_PAGED):
- * 1 KB pages, each in RAM or in flash, through a table in RAM of 256
- * regions of 64 KB, each a row of its pages (tools/xlat/rp_image.py builds
- * it from a snapshot and a memory map). A long that straddles two pages is
- * read and written as two words. */
+/* Where an address's byte is. The host: one flat big-endian array. The RP
+ * (XL_PAGED): 1 KB pages, each in RAM or in flash, through a table in RAM of
+ * 256 regions of 64 KB, each a row of its pages (tools/xlat/rp_image.py
+ * builds it from a snapshot and a memory map). A long that straddles two
+ * pages is read and written as two words. */
 #ifdef XL_PAGED
 #define XL_PAGE_BITS 10
 #define XL_PAGE_MASK ((1u << XL_PAGE_BITS) - 1u)
@@ -61,6 +61,31 @@ XL_INLINE uint8_t *xl_at(uint32_t a) { return xl_mem + (a & 0xFFFFFFu); }
 #define XL_STRADDLES(a) 0
 #endif
 
+#ifdef XL_PAGED
+/* The RP keeps each 16-bit word in its own byte order (the pages are
+ * swapped when rp_image.py packs them): a word is one halfword access, a
+ * byte is at its address ^ 1, a long two words. The 68000 accesses words and
+ * longs at even addresses only. */
+XL_INLINE uint32_t rd8(uint32_t a) { return *xl_at(a ^ 1u); }
+XL_INLINE uint32_t rd16(uint32_t a) { return *(const uint16_t *)xl_at(a); }
+XL_INLINE uint32_t rd32(uint32_t a) {
+  if (XL_STRADDLES(a)) return (rd16(a) << 16) | rd16(a + 2u);
+  const uint16_t *p = (const uint16_t *)xl_at(a);
+  return ((uint32_t)p[0] << 16) | p[1];
+}
+XL_INLINE void wr8(uint32_t a, uint32_t v) { *xl_at(a ^ 1u) = (uint8_t)v; }
+XL_INLINE void wr16(uint32_t a, uint32_t v) { *(uint16_t *)xl_at(a) = (uint16_t)v; }
+XL_INLINE void wr32(uint32_t a, uint32_t v) {
+  if (XL_STRADDLES(a)) {
+    wr16(a, v >> 16);
+    wr16(a + 2u, v);
+    return;
+  }
+  uint16_t *p = (uint16_t *)xl_at(a);
+  p[0] = (uint16_t)(v >> 16);
+  p[1] = (uint16_t)v;
+}
+#else
 XL_INLINE uint32_t rd8(uint32_t a) {
   XL_TOUCH(a, 1, 0);
   return *xl_at(a);
@@ -71,7 +96,6 @@ XL_INLINE uint32_t rd16(uint32_t a) {
   return ((uint32_t)p[0] << 8) | p[1];
 }
 XL_INLINE uint32_t rd32(uint32_t a) {
-  if (XL_STRADDLES(a)) return (rd16(a) << 16) | rd16(a + 2u);
   XL_TOUCH(a, 4, 0);
   const uint8_t *p = xl_at(a);
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -87,11 +111,6 @@ XL_INLINE void wr16(uint32_t a, uint32_t v) {
   p[1] = (uint8_t)v;
 }
 XL_INLINE void wr32(uint32_t a, uint32_t v) {
-  if (XL_STRADDLES(a)) {
-    wr16(a, v >> 16);
-    wr16(a + 2u, v);
-    return;
-  }
   XL_TOUCH(a, 4, 1);
   uint8_t *p = xl_at(a);
   p[0] = (uint8_t)(v >> 24);
@@ -99,6 +118,7 @@ XL_INLINE void wr32(uint32_t a, uint32_t v) {
   p[2] = (uint8_t)(v >> 8);
   p[3] = (uint8_t)v;
 }
+#endif
 
 /* Hardware the translator hooks: reads and writes at absolute addresses the
  * runtime must see (the VBL's GPIP bit, the joysticks, ...). */

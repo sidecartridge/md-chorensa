@@ -133,8 +133,11 @@ echo "Built $TYPE $BUILD_ID: $OUT/rp.uf2"
 [ "$BUILD_ONLY" = 1 ] && exit 0
 
 if [ "$RESET_ST" = 1 ]; then
-  python3 "$HERE/swd.py" st-reset \
-    || echo "WARNING: could not ask the ST for a reset (the running image unknown?)" >&2
+  # The running image's ELF, or else the new one: the cartridge window sits
+  # where memmap_rp.ld puts it in every build.
+  python3 "$HERE/swd.py" st-reset 2>/dev/null \
+    || python3 "$HERE/swd.py" st-reset --elf "$OUT/rp.elf" \
+    || echo "WARNING: could not ask the ST for a reset" >&2
 fi
 if [ "$USE_PROBE" = 1 ]; then
   python3 "$HERE/swd.py" program "$OUT/rp.elf"
