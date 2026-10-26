@@ -307,8 +307,8 @@ void bench_frame(void) {
   } else if (logic->state == BENCH_LOGIC_NO_TRANSLATION) {
     print_at(16, 160, COL_TEXT, "LOGIC: NO TRANSLATION");
   }
-  print_at(16, 192, COL_LABEL,
-           bench_logic_available() ? "HELP: SCENE INSERT: LOGIC" : "HELP: SCENE");
+  /* A build with the translated logic has no scene (bench_scene.c). */
+  print_at(16, 192, COL_LABEL, bench_logic_available() ? "INSERT: LOGIC" : "HELP: SCENE");
   print_at(16, 240, COL_LABEL, "ESC: GEM");
 
   fb_publish();
