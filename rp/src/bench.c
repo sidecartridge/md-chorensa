@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #include "audio.h"
+#include "bench_scene.h"
 #include "cart_shared.h"
 #include "debug.h"
 #include "fb.h"
@@ -96,6 +97,10 @@ static void print_at(int x, int y, unsigned color, const char *text) {
  * where there is one (audio_prefer_ym()): the ST family's sound path on an
  * STE. */
 #define SC_F10 0x44u
+/* HELP: the scene's sweep (bench_scene.h), its table at the end; UNDO: back
+ * to the test card. */
+#define SC_HELP 0x62u
+#define SC_UNDO 0x61u
 static bool s_bench_prefer_ym; /* F10's state (audio.c keeps its own) */
 static const uint8_t k_pieces[] = {0, 32, 4, 8};
 static uint8_t s_piece_choice;
@@ -142,6 +147,7 @@ static void set_silent(bool silent) {
 }
 
 void bench_init(void) {
+  bench_scene_init();
   for (int i = 0; i < 256; i++) {
     s_sine[i] = (int8_t)lround(100.0 * sin(2.0 * M_PI * i / 256.0));
   }
@@ -179,6 +185,13 @@ void bench_handle_key(const ikbd_key_event_t *key) {
   } else if (key->scancode == SC_F9) {
     set_copy_lines(fb_copy_lines() == CART_FB_LINES ? CART_FB_LINES_SHORT
                                                     : CART_FB_LINES);
+  } else if (key->scancode == SC_HELP) {
+    bench_scene_start(BENCH_SCENE_FRAMES_DEFAULT);
+  } else if (key->scancode == SC_UNDO) {
+    if (bench_scene_active()) {
+      bench_scene_stop();
+      palette_set(s_palette);
+    }
   } else if (key->scancode == SC_F10) {
     s_bench_prefer_ym = !s_bench_prefer_ym;
     audio_prefer_ym(s_bench_prefer_ym);
@@ -212,6 +225,12 @@ static void draw_test_card(void) {
 void bench_frame(void) {
   char line[48];
 
+  bench_scene_poll();
+  if (bench_scene_active()) {
+    bench_scene_frame();
+    benchFrames++;
+    return;
+  }
   if (s_still) {
     palette_set(benchStillPalette);
     fb_publish();
@@ -268,6 +287,7 @@ void bench_frame(void) {
                                             : "F5: NO SOUND NEXT BOOT");
   print_at(208, 224, COL_LABEL, s_tone_step ? "F6: TONE" : "F6: -");
   print_at(16, 208, COL_LABEL, "F1-F4: INPUT F7: COPY F8: PIECE");
+  print_at(16, 192, COL_LABEL, "HELP: SCENE");
   print_at(16, 240, COL_LABEL, "ESC: GEM");
 
   fb_publish();

@@ -65,6 +65,7 @@ documents each.
 | `overscan-piece.exp` | The blitter in pieces of 16, 32, 4 and 8 lines (F8) |
 | `overscan-lines.exp` | The copy of the frame's top 240 lines (F9), then all 256 again |
 | `overscan-ym.exp` | The ST family's path on an STE: the YM preferred (F10), a warm reset, the tone, 240 lines |
+| `scene.exp` | The bench scene's sweep (HELP): its frames and the table at the end; the pictures count, not the times (EmuMD times the host) |
 | `dma-tone.exp` | A 440 Hz tone (F6) recorded from Hatari (`--sound`): the DMA chip on an STE, the YM on a plain ST (`--machine st`); the recording's frequency and its longest hold say whether a sample was skipped or held |
 
 ## Examples

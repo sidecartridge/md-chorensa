@@ -198,7 +198,11 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
   its next boot, or the DMA chip again (`audio_prefer_ym()`: the ST family's sound path on an
   STE), `bench_still 0|1` (the bench stops drawing and publishes the chunky buffer with
   `benchStillPalette`: `swd.py still FILE` writes both and turns it on, `--off` back to the card;
-  `tools/re/quantise.py still` makes the file). The ST can be reset from the host by writing the
+  `tools/re/quantise.py still` makes the file). `swd.py scene [--frames N] [--read]` runs the
+  bench scene's sweep (`bench_scene.h`: every draw strategy on a frame built to the ported game's
+  busiest numbers, timed) and prints its table; it writes and reads RAM by symbol, so it works on
+  a release build, the one whose numbers count. HELP on the ST starts the same sweep, which shows
+  its table on screen at the end. The ST can be reset from the host by writing the
   reset command to the sentinel
   (`CART_CMD_RESET` as the ST reads it, `0x00010000`, at `0x20034000`): `userfw` cold-resets it a
   second later, so a mode that takes a boot (the output, the lines) can be measured without

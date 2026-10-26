@@ -122,6 +122,7 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/commemul.pio)
 target_sources(${PROJECT_NAME} PRIVATE
         aconfig.c
         bench.c
+        bench_scene.c
         audio.c
         commemul.c
         emul.c
@@ -148,6 +149,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         game_zap.c
         reset.c
         romemul.c
+        scene_draw.c
         sdcard.c
         select.c
         st_session.c
@@ -326,6 +328,20 @@ target_sources(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR}/build_id.c)
 set_source_files_properties(${BUILD_ID_DIR}/build_id.c PROPERTIES GENERATED TRUE)
 target_include_directories(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR})
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
+
+# The bench's synthetic scene (bench_scene.c): background pages and sprite
+# patterns made from a fixed seed by tools/gen_scene.py, nothing of the game.
+# Rewritten only when the script changes.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(SCENE_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/scene)
+set(SCENE_TOOL ${CMAKE_CURRENT_LIST_DIR}/../../tools/gen_scene.py)
+add_custom_command(OUTPUT ${SCENE_DIR}/bench_scene_assets.h
+    COMMAND ${Python3_EXECUTABLE} ${SCENE_TOOL} --out ${SCENE_DIR}/bench_scene_assets.h
+    DEPENDS ${SCENE_TOOL}
+    COMMENT "Generating the bench scene")
+add_custom_target(bench_scene_assets DEPENDS ${SCENE_DIR}/bench_scene_assets.h)
+add_dependencies(${PROJECT_NAME} bench_scene_assets)
+target_include_directories(${PROJECT_NAME} PRIVATE ${SCENE_DIR})
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)

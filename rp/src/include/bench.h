@@ -17,6 +17,10 @@
  * screen says which layout the RP publishes. F8 cycles the lines a blitter
  * piece: the ST's default, 32, 4, 8.
  *
+ * HELP runs the scene's sweep (bench_scene.h: the draw strategies timed on a
+ * frame built to the ported game's numbers) and shows its table; UNDO goes
+ * back to the test card.
+ *
  * Host commands (debug builds, tools/dev/swd.py app NAME [WORD...]):
  *   bench_ping       result: frames published since the ST's boot, plus one
  *   bench_silent 0|1 the ST plays no sound (1) from its next boot, or plays

@@ -247,6 +247,11 @@ def main() -> int:
     # TOS 1.62 everywhere unless the ST's own is given.
     tos = cfg.get(tos_key) or cfg.get("TOS_STE", "")
     if args.build:
+        # The bench scene's synthetic assets, which the RP's CMake build makes
+        # itself; EmuMD includes build/generated/scene (mdfw.ini).
+        subprocess.run([sys.executable, str(REPO / "tools" / "gen_scene.py"), "--out",
+                        str(REPO / "build" / "generated" / "scene" / "bench_scene_assets.h")],
+                       check=True)
         subprocess.run([str(MDFW), "build"], cwd=REPO, check=True)
     for p in (hatari, tos, args.firmware):
         if not Path(p).is_file():

@@ -1,0 +1,15 @@
+# The bench scene (HELP): a frame built to the ported game's busiest
+# numbers, every draw strategy in turn, then the table of times (EmuMD times
+# the host, not the RP: the pictures are what count here).
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 2
+key help
+expect sweep scene: sweep of
+sleep 3
+shot scene-start
+sleep 20
+shot scene-later
+expect done scene: sweep done
+sleep 2
+shot results

@@ -760,6 +760,60 @@ def cmd_key(args: argparse.Namespace) -> int:
     return 0 if fed == len(data) else 3
 
 
+SCENE_FIELDS = ("config", "sprites", "frames", "draw_sum", "draw_max", "convert_sum",
+                "convert_max", "period_sum", "period_max")
+
+
+def scene_names() -> list[str]:
+    """The scene's configuration names, from rp/src/bench_scene.c."""
+    text = open(os.path.join(os.path.dirname(INCLUDE_DIR), "bench_scene.c")).read()
+    return re.findall(r'\{BG_\w+, SPR_\w+, \d, \d, \w+, "([^"]+)"\}', text)
+
+
+def cmd_scene(args: argparse.Namespace) -> int:
+    """The bench scene's sweep (bench_scene.h): starts one of FRAMES a run
+    unless --read, waits for it, and prints the table. Any build: it writes
+    and reads RAM by symbol, the release build's numbers being the ones
+    that count."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "benchSceneResults", "benchSceneRequest", "benchSceneRun")
+    if len(sym) < 3:
+        raise SwdError(f"{os.path.basename(elf)} has no bench scene")
+    runs = sym["benchSceneResults"][1] // 4 // len(SCENE_FIELDS)  # a sweep's runs
+    if not args.read:
+        openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchSceneRequest'][0]:08x} {args.frames}")
+        started = time.time()
+        time.sleep(1.0)
+        last = None
+        while True:
+            run = read_words([sym["benchSceneRun"][0]])[0]
+            if run >= runs:
+                break
+            if run != last:
+                print(f"run {run + 1} of {runs} ({time.time() - started:.0f} s)", flush=True)
+                last = run
+            if time.time() - started > args.timeout:
+                raise SwdError(f"the sweep did not end within {args.timeout} s")
+            time.sleep(2.0)
+    base, size = sym["benchSceneResults"]
+    words = read_words([base + 4 * i for i in range(size // 4)])
+    names = scene_names()
+    print(f"{'config':10}{'sprites':>8}{'frames':>7}{'draw':>8}{'max':>8}{'c2p':>7}{'max':>7}"
+          f"{'period':>8}{'max':>8}  (us)")
+    width = len(SCENE_FIELDS)
+    for n in range(size // 4 // width):
+        r = dict(zip(SCENE_FIELDS, words[n * width:(n + 1) * width]))
+        name = names[r["config"]] if r["config"] < len(names) else str(r["config"])
+        if not r["frames"]:
+            print(f"{name:10}{r['sprites']:>8}{0:>7}  (skipped)")
+            continue
+        f = r["frames"]
+        print(f"{name:10}{r['sprites']:>8}{f:>7}{r['draw_sum'] // f:>8}{r['draw_max']:>8}"
+              f"{r['convert_sum'] // f:>7}{r['convert_max']:>7}{r['period_sum'] // f:>8}"
+              f"{r['period_max']:>8}")
+    return 0
+
+
 def cmd_still(args: argparse.Namespace) -> int:
     """A still picture on the ST's screen: the bench stops drawing
     (bench_still 1) and publishes what the chunky buffer holds, with
@@ -1477,6 +1531,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("words", nargs="*", help="16-bit payload words")
     ap.add_argument("--elf")
     ap.set_defaults(func=cmd_app)
+
+    sc = sub.add_parser("scene", help="the bench scene's sweep: start it and read its table")
+    sc.add_argument("--frames", type=int, default=1000, help="frames a run")
+    sc.add_argument("--read", action="store_true", help="only read the last sweep's table")
+    sc.add_argument("--timeout", type=float, default=1800.0)
+    sc.add_argument("--elf")
+    sc.set_defaults(func=cmd_scene)
 
     st = sub.add_parser("still", help="a still picture on the ST's screen (the bench)")
     st.add_argument("file", nargs="?", help="256 x 256 colour numbers + 16 palette words")
