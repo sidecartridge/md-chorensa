@@ -14,9 +14,9 @@
 
 #define XL_STORE_BASE 0x10060000u        /* after the firmware's 384 KB */
 #define XL_STORE_COMMON XL_STORE_BASE    /* the common code */
-#define XL_STORE_COMMON_SIZE 0x60000u    /* 384 KB */
-#define XL_STORE_STAGE 0x100C0000u       /* the stage being played */
-#define XL_STORE_STAGE_SIZE 0x60000u     /* 384 KB, up to the Booster's area */
+#define XL_STORE_COMMON_SIZE 0x40000u    /* 256 KB */
+#define XL_STORE_STAGE 0x100A0000u       /* the stage being played */
+#define XL_STORE_STAGE_SIZE 0x80000u     /* 512 KB, up to the Booster's area */
 
 /* The game's memory on the RP: pages of 256 bytes (xl.h's XL_PAGE_BITS),
  * the ones it writes in RAM, the others in the stage's image. The RAM pages
@@ -28,7 +28,7 @@
 #define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 2u          /* 2: pages of 256 bytes */
+#define XL_STORE_VERSION 3u          /* 3: the stage's art */
 #define XL_STORE_KIND_COMMON 0u      /* else the stage's number */
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
 
@@ -53,6 +53,30 @@ typedef struct {
   xl_store_fn_t fn;
 } xl_store_entry_t;
 
+/* A stage's pictures for the renderer, in the ST's 16 colours as the follow
+ * scheme maps the program's palette entries (tools/xlat/palette_fit.py):
+ * the two graphics pages and the sprite patterns converted once, and the
+ * palette worked out each frame from the entries' current colours. */
+typedef struct {
+  const uint8_t *page1;          /* the far layer: 4-bit, 128 bytes a line, opaque
+                                    (the backdrop where the page is clear) */
+  const uint8_t *page0_runs;     /* the near layer's opaque runs: per line their
+                                    number n, n pairs (x, length - 1), then each
+                                    run's pixels, 4-bit, from a byte boundary */
+  const uint32_t *page0_index;   /* each line's record in page0_runs */
+  uint32_t page_lines;           /* both pages' lines (512) */
+  const uint8_t *patterns;       /* 16 x 16, 4-bit, 8 bytes a row, the left pixel
+                                    in the high nibble; the program's colour numbers */
+  const uint16_t *pattern_index; /* per program pattern: its place in patterns,
+                                    or 0xFFFF when the stage never draws it */
+  uint32_t pattern_count;        /* entries of pattern_index */
+  const uint8_t *entry_colour;   /* the 512 palette entries' ST colour numbers
+                                    (0-255 graphics, 256 + n sprite and text) */
+  const uint8_t *entry_weight;   /* their weights in a colour's mean, 0 unused */
+  const uint16_t *linear;        /* 256: an 8-bit level in linear light (0-4095) */
+  const uint16_t *thresholds;    /* 7: between the ST's eight levels, in linear light */
+} xl_store_art_t;
+
 /* The first bytes of an image, at its region's address. The loader programs
  * the page that holds it last, so a store cut short has no valid magic. */
 typedef struct {
@@ -75,6 +99,7 @@ typedef struct {
   const uint8_t *checkpoints;         /* the host's, 32 bytes each */
   uint32_t checkpoint_count;
   uint32_t layout[XL_LAYOUT_WORDS]; /* the common image's: XL_LAYOUT_* */
+  const xl_store_art_t *art;          /* a stage's pictures, or 0 */
 } xl_store_header_t;
 
 #endif /* XL_STORE_H */

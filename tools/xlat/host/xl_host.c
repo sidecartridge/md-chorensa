@@ -32,6 +32,9 @@
 #include "xl.h"
 #include "xl_functions.h"
 #include "xl_layout.h"
+#ifdef XL_RP_RENDER
+#include "xl_render.h"
+#endif
 
 xl_cpu_t xl;
 uint8_t *xl_mem;
@@ -361,12 +364,40 @@ void xl_patch_wait_vbl(void) {
 static uint8_t s_sprites[MAXIMUM_SPRITES * 8];
 static uint32_t s_sprite_list_count;
 
+/* Which patterns the sprite lists draw, and with which flips (bit n: the
+ * attributes' bits 15-14 = n): pattern_use.bin at the end, 'CRSU' then a byte
+ * a pattern (tools/xlat/rp_store.py converts those). */
+#define PATTERNS 2048u
+static uint8_t s_pattern_use[PATTERNS];
+
+#ifdef XL_RP_RENDER
+/* The RP's renderer (rp/src/xl_render.c) beside the host's (XL_RP_RENDER
+ * builds, run_host.py --rp-art): the same frames in the ST's 16 colours, as
+ * rpscreen_NNNNN.bin (the screens' format, 16 colours), to check it against
+ * the host's own picture through the palette scheme. */
+extern const xl_store_art_t xl_stage_art;
+static xl_render_frame_t s_rp_frame;
+
+static void rp_take_sprites(uint32_t count) {
+  s_rp_frame.art = &xl_stage_art;
+  xl_render_take_sprites(&s_rp_frame, XL_SPRITE_DATA_TABLE, count);
+}
+#endif
+
 void xl_patch_xsp_out(void) {
   uint32_t count = (rd32(XL_CURRENT_SPRITE_DATA_ENTRY) - XL_SPRITE_DATA_TABLE) / 8u;
   if (count > MAXIMUM_SPRITES) count = MAXIMUM_SPRITES;
   s_frame_sprite_count = count;
   s_sprite_list_count = count;
   memcpy(s_sprites, xl_mem + XL_SPRITE_DATA_TABLE, count * 8u);
+  for (uint32_t k = 0; k < count; k++) {
+    const uint8_t *e = s_sprites + 8u * k;
+    uint32_t pattern = ((uint32_t)e[4] << 8) | e[5];
+    if (pattern < PATTERNS) s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
+  }
+#ifdef XL_RP_RENDER
+  rp_take_sprites(count);
+#endif
   wr32(XL_CURRENT_SPRITE_DATA_ENTRY, XL_SPRITE_DATA_TABLE);
   D(0) = 0;
   xl.n = 0;
@@ -837,6 +868,32 @@ static void write_entries(uint32_t frame) {
   fclose(f);
 }
 
+#ifdef XL_RP_RENDER
+static void write_rp_screen(uint32_t frame) {
+  static uint8_t fb[XL_RENDER_W * XL_RENDER_H];
+  uint16_t st[16];
+  s_rp_frame.art = &xl_stage_art;
+  xl_render_prepare(&s_rp_frame);
+  xl_render_band(fb, &s_rp_frame, 0, XL_RENDER_H);
+  xl_render_palette(&xl_stage_art, st);
+  char path[1024];
+  snprintf(path, sizeof path, "%s/rpscreen_%05u.bin", s_out_dir, frame);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) return;
+  uint8_t head[12] = {'C', 'R', 'S', 'S', 1, 0, 1, 0, 0, 16, 0, 0};
+  fwrite(head, 1, sizeof head, f);
+  for (uint32_t k = 0; k < 256; k++) {
+    uint8_t rgb[3] = {0, 0, 0};
+    for (uint32_t c = 0; k < 16 && c < 3; c++) {
+      rgb[c] = (uint8_t)((((st[k] >> (8 - 4 * c)) & 7u) * 255u + 3u) / 7u);
+    }
+    fwrite(rgb, 1, 3, f);
+  }
+  fwrite(fb, 1, sizeof fb, f);
+  fclose(f);
+}
+#endif
+
 static void write_screen(uint32_t frame) {
   MEMMAP_PAUSE(1);
   if (getenv("XL_GVRAM_WATCH")) {
@@ -858,6 +915,9 @@ static void write_screen(uint32_t frame) {
   }
 
   if (s_entry_dumps) write_entries(frame);
+#ifdef XL_RP_RENDER
+  write_rp_screen(frame);
+#endif
 
   static uint8_t pixels[SCREEN_WIDTH * SCREEN_LINES];
   uint32_t palette[256];
@@ -1018,6 +1078,16 @@ static void finish(int reason) {
   longjmp(s_exit, 1);
 }
 
+static void write_pattern_use(void) {
+  char path[1024];
+  snprintf(path, sizeof path, "%s/pattern_use.bin", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) return;
+  fwrite("CRSU", 1, 4, f);
+  fwrite(s_pattern_use, 1, sizeof s_pattern_use, f);
+  fclose(f);
+}
+
 static void write_checkpoints(void) {
   char path[1024];
   snprintf(path, sizeof path, "%s/checkpoints.bin", s_out_dir);
@@ -1110,6 +1180,7 @@ int main(int argc, char **argv) {
     for (;;) r = xl_call(r); /* code the program returned into */
   }
   write_checkpoints();
+  write_pattern_use();
   MEMMAP_PAUSE(1);
   write_graphics();
   write_memmap(s_out_dir);

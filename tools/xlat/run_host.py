@@ -37,9 +37,10 @@ import recfg   # noqa: E402
 # build, in a build folder of its own.
 VARIANTS = [v for v in ("XL_TRACE", "XL_MEMMAP") if os.environ.get(v)]
 CFLAGS = ["-std=c11", "-O1", "-w"] + ["-D" + v for v in VARIANTS]
+RP_SRC = os.path.join(HERE, "..", "..", "rp", "src")
 
 
-def build(cfg, out, rebuild, resume=None):
+def build(cfg, out, rebuild, resume=None, art=None):
     original = cfg["ORIGINAL"]
     exe = cfg.get("SZ2X") or os.path.join(os.path.expanduser("~"), "chorensa", "SZ2.X")
     listing = os.path.join(original, "sources", "sz2.s")
@@ -56,11 +57,17 @@ def build(cfg, out, rebuild, resume=None):
         open(tag, "w").close()
     objects = []
     jobs = []
-    for c in sorted(glob.glob(os.path.join(out, "xl_*.c"))) + [os.path.join(HERE, "host", "xl_host.c")]:
+    sources = sorted(glob.glob(os.path.join(out, "xl_*.c"))) + [os.path.join(HERE, "host", "xl_host.c")]
+    flags = list(CFLAGS)
+    if art:
+        # The RP's renderer and the stage's art beside the host's renderer.
+        sources += [os.path.join(RP_SRC, "xl_render.c"), os.path.join(art, "xl_stage_art.c")]
+        flags += ["-DXL_RP_RENDER", "-I", os.path.join(RP_SRC, "include")]
+    for c in sources:
         o = os.path.join(out, os.path.basename(c)[:-2] + ".o")
         objects.append(o)
         if stale or not os.path.exists(o) or os.path.getmtime(c) > os.path.getmtime(o):
-            jobs.append(subprocess.Popen(["cc", *CFLAGS, "-I", HERE, "-I", out, "-c", c, "-o", o]))
+            jobs.append(subprocess.Popen(["cc", *flags, "-I", HERE, "-I", out, "-c", c, "-o", o]))
     if any(j.wait() for j in jobs):
         sys.exit("the build failed")
     binary = os.path.join(out, "xl_host")
@@ -122,6 +129,8 @@ def main():
     ap.add_argument("--screen-reference", help="a folder of the port's screen_NNNNN.bin")
     ap.add_argument("--snapshot", type=int, help="write a snapshot at this frame")
     ap.add_argument("--resume", metavar="RUN", help="start from the snapshot of an earlier run")
+    ap.add_argument("--rp-art", metavar="DIR", help="with the RP's renderer and this stage art "
+                    "(rp_art.py's xl_stage_art.c): rpscreen_NNNNN.bin beside each screen")
     ap.add_argument("--entries", action="store_true",
                     help="beside each screen, each pixel's palette entry (entries_NNNNN.bin)")
     args = ap.parse_args()
@@ -131,7 +140,10 @@ def main():
     resume = os.path.abspath(args.resume) if args.resume else None
     if resume:
         build_dir += "-resume"
-    binary = build(cfg, build_dir, args.rebuild, resume and os.path.join(resume, "resume.txt"))
+    if args.rp_art:
+        build_dir += "-render"
+    binary = build(cfg, build_dir, args.rebuild, resume and os.path.join(resume, "resume.txt"),
+                   args.rp_art and os.path.abspath(args.rp_art))
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run = os.path.join(runs, f"{stamp}-xlat" + (f"-{args.name}" if args.name else ""))
