@@ -31,8 +31,10 @@
 #include "fb_chunked.h"
 #include "ikbd.h"
 #include "select.h"
+#include "palette.h"
 #include "store.h"
 #include "xl.h"
+#include "xl_render.h"
 
 #define LAST_FRAME 6000u
 #define HISTOGRAM_BINS 256u /* the logic times, 32 us a bin: up to 8 ms */
@@ -65,6 +67,13 @@ static uint32_t s_effect_end_tick;
 static int s_samples_decoded;
 static uint32_t s_sprite_list_count;
 static uint32_t s_frame_end_us; /* when the last frame wait ended */
+
+/* The play mode (benchPlay): the frames drawn and shown as the game runs. */
+static int s_playing;
+static xl_render_frame_t s_frame;
+static uint16_t s_palette[PALETTE_ENTRIES];
+volatile uint32_t benchPlay = 1;  /* the host writes 0: back to the bench */
+bench_play_t benchPlayStats;
 
 /* The game's variables the runtime uses, from the common image's header. */
 #define GAME(name) (s_common->layout[XL_LAYOUT_##name])
@@ -221,6 +230,43 @@ static void checkpoint(void) {
   }
 }
 
+/* The bottom half of the frame, on core 1. */
+static void band_job(void *arg) {
+  xl_render_band(fb_chunked_buffer, (const xl_render_frame_t *)arg, XL_RENDER_H / 2,
+                 XL_RENDER_H);
+}
+
+static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
+  *sum += us;
+  if (us > *max) *max = us;
+}
+
+/* Play mode: the frame the game has just finished, drawn on both cores and
+ * shown (fb_publish waits for the ST to have copied the last one: one
+ * game frame a VBL), with what the main loop would do meanwhile. */
+static void present(uint32_t game_us) {
+  uint32_t t0 = time_us_32();
+  s_frame.art = s_stage->art;
+  xl_render_prepare(&s_frame);
+  fb_core1_dispatch(band_job, &s_frame);
+  xl_render_band(fb_chunked_buffer, &s_frame, 0, XL_RENDER_H / 2);
+  fb_core1_wait();
+  if (xl_render_palette(s_stage->art, s_palette)) palette_set(s_palette);
+  uint32_t t1 = time_us_32();
+  fb_publish();
+  uint32_t t2 = time_us_32();
+  ikbd_pump();
+  select_poll();
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+  }
+  benchPlayStats.frames++;
+  note(&benchPlayStats.game_sum, &benchPlayStats.game_max, game_us);
+  note(&benchPlayStats.draw_sum, &benchPlayStats.draw_max, t1 - t0);
+  note(&benchPlayStats.publish_sum, &benchPlayStats.publish_max, t2 - t1);
+  if (!benchPlay) stop(BENCH_LOGIC_DONE, "stopped", 0);
+}
+
 /* XSP_VSYNC: the game's frame ends here. Its logic time is from the end of
  * the last wait; then its VBLs (the handler timed apart) and the checkpoint. */
 void xl_patch_xsp_vsync(void) {
@@ -250,6 +296,7 @@ void xl_patch_xsp_vsync(void) {
   uint32_t vbl = end - start;
   benchLogicResult.vbl_sum += vbl;
   if (vbl > benchLogicResult.vbl_max) benchLogicResult.vbl_max = vbl;
+  if (s_playing) present(logic + vbl);
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) checkpoint();
   if (s_frame_count >= LAST_FRAME) stop(BENCH_LOGIC_DONE, "", 0);
   s_frame_end_us = time_us_32();
@@ -273,6 +320,7 @@ void xl_patch_xsp_out(void) {
   if (count > MAXIMUM_SPRITES) count = MAXIMUM_SPRITES;
   s_frame_sprite_count = count;
   s_sprite_list_count = count;
+  if (s_playing) xl_render_take_sprites(&s_frame, GAME(SPRITE_DATA_TABLE), count);
   wr32(GAME(CURRENT_SPRITE_DATA_ENTRY), GAME(SPRITE_DATA_TABLE));
   D(0) = 0;
   xl.n = 0;
@@ -402,7 +450,14 @@ static void restore(void) {
 
 bool bench_logic_available(void) { return true; }
 
-void bench_logic_run(void) {
+/* Load the images and play from the snapshot to LAST_FRAME: timed (the
+ * logic bench), or drawn and shown, over and over until the host says
+ * otherwise (play). */
+static void run(int drawn);
+
+void bench_logic_run(void) { run(0); }
+
+static void run(int drawn) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
   memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
   /* Called from the main loop, which joins every core 1 job before it goes
@@ -420,15 +475,26 @@ void bench_logic_run(void) {
     strncpy(benchLogicResult.error, problem, sizeof benchLogicResult.error - 1u);
     return;
   }
-  restore();
-  benchLogicResult.first_frame = s_frame_count;
-  DPRINTF("logic: from frame %lu\n", (unsigned long)s_frame_count);
-  uint32_t begin = time_us_32();
-  s_frame_end_us = begin;
-  if (setjmp(s_exit) == 0) {
-    uint32_t r = xl_call(s_stage->resume);
-    for (;;) r = xl_call(r);
+  if (drawn && s_stage->art == NULL) {
+    benchLogicResult.state = BENCH_LOGIC_ERROR;
+    strncpy(benchLogicResult.error, "the stage has no art", sizeof benchLogicResult.error - 1u);
+    return;
   }
+  uint32_t begin = time_us_32();
+  s_playing = drawn;
+  do {
+    restore();
+    benchLogicResult.first_frame = s_frame_count;
+    benchLogicResult.state = BENCH_LOGIC_IDLE;
+    DPRINTF("logic: from frame %lu%s\n", (unsigned long)s_frame_count, drawn ? ", playing" : "");
+    s_frame_end_us = time_us_32();
+    if (setjmp(s_exit) == 0) {
+      uint32_t r = xl_call(s_stage->resume);
+      for (;;) r = xl_call(r);
+    }
+    if (drawn) benchPlayStats.laps++;
+  } while (drawn && benchPlay && benchLogicResult.state == BENCH_LOGIC_DONE);
+  s_playing = 0;
   benchLogicResult.total_us = time_us_32() - begin;
   DPRINTF("logic: %lu frames, %lu us mean, %lu max, %lu/%lu checkpoints differ (%s)\n",
           (unsigned long)benchLogicResult.frames,
@@ -457,11 +523,20 @@ static void serve_card(void) {
 
 bool bench_logic_holds_screen(void) { return benchSd.held != 0; }
 
+/* Play until the host stops it or the run fails (then not again until the
+ * host asks: benchPlay back to 1). */
+static void play(void) {
+  run(1);
+  if (benchLogicResult.state != BENCH_LOGIC_DONE) benchPlay = 0;
+}
+
 #else /* no translation in this build */
 
 bool bench_logic_available(void) { return false; }
 bool bench_logic_holds_screen(void) { return false; }
 static void serve_card(void) {}
+static void play(void) {}
+volatile uint32_t benchPlay;
 
 void bench_logic_run(void) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
@@ -470,12 +545,18 @@ void bench_logic_run(void) {
 
 #endif
 
-void bench_logic_poll(void) {
+bool bench_logic_poll(void) {
   serve_card();
   if (benchLogicRequest) {
     benchLogicRequest = 0;
     bench_logic_run();
+    return true;
   }
+  if (benchPlay && bench_logic_available() && !bench_logic_holds_screen()) {
+    play();
+    return true;
+  }
+  return false;
 }
 
 const bench_logic_result_t *bench_logic_result(void) { return &benchLogicResult; }

@@ -915,6 +915,40 @@ def cmd_logic(args: argparse.Namespace) -> int:
     return 0 if state == "done" and not r["mismatches"] else 1
 
 
+PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
+               "publish_sum", "publish_max")
+
+
+def cmd_play(args: argparse.Namespace) -> int:
+    """The bench's play mode (bench_logic.h): the frames shown and what each
+    cost on the RP (the game, the picture, the c2p and the wait for the
+    ST's copy), over --seconds; --stop / --start."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "benchPlay", "benchPlayStats")
+    if len(sym) < 2:
+        raise SwdError(f"{os.path.basename(elf)} has no play mode (a store build?)")
+    if args.stop or args.start:
+        openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlay'][0]:08x} {1 if args.start else 0}")
+        print("play " + ("started" if args.start else "stopped"))
+        return 0
+    base, size = sym["benchPlayStats"]
+
+    def read():
+        return dict(zip(PLAY_FIELDS, struct.unpack(f"<{len(PLAY_FIELDS)}I", read_memory(base, size))))
+
+    a = read()
+    time.sleep(args.seconds)
+    b = read()
+    frames = b["frames"] - a["frames"]
+    print(f"{frames} frames in {args.seconds:.0f} s: {frames / args.seconds:.1f} a second "
+          f"({b['frames']} shown, {b['laps']} laps)")
+    if frames:
+        for name in ("game", "draw", "publish"):
+            mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
+            print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
+    return 0
+
+
 SD_CHUNK = 65536  # the chunky framebuffer, the bench's buffer for the card
 
 
@@ -1736,6 +1770,13 @@ def build_parser() -> argparse.ArgumentParser:
     he.add_argument("elf")
     he.add_argument("--timeout", type=float, default=30.0)
     he.set_defaults(func=cmd_hello)
+
+    pl = sub.add_parser("play", help="the bench's play mode: frames a second and their costs")
+    pl.add_argument("--seconds", type=float, default=5.0)
+    pl.add_argument("--stop", action="store_true", help="back to the bench's test card")
+    pl.add_argument("--start", action="store_true", help="play again")
+    pl.add_argument("--elf")
+    pl.set_defaults(func=cmd_play)
 
     sp = sub.add_parser("sd-put", help="put files on the SD card, in the app's folder (the bench)")
     sp.add_argument("files", nargs="+")

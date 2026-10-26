@@ -9,18 +9,21 @@ sd-put), and the firmware copies them into the store.
 1. The attract mode with the stages as phases (run_host.py, XL_PHASES):
    which functions each stage runs (reused with --phases RUN).
 2. A snapshot after the stage load and two runs resumed from it: one with
-   the trace (the functions it enters), one with the memory map.
+   the trace (the functions it enters), one with the memory map; a third to
+   the end of the first stage (the patterns its sprites draw), and the
+   attract demo to there with each pixel's palette entry (the palette fit).
 3. Each function's home: the first stage's if only that stage runs it, the
    common image's if anything else does; none if nothing does.
 4. The two translations (xlat.py --image), compiled for the RP and linked at
    their regions' addresses: the common image against the firmware's
    symbols, the stage's against the firmware's and the common image's.
-5. The headers' size and CRC, and the files.
+5. The first stage's art (palette_fit.py, rp_art.py) in its image.
+6. The headers' size and CRC, and the files.
 
 Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
-usage: rp_store.py --firmware ELF [--frame 650] [--phases RUN] [--out DIR]
+usage: rp_store.py --firmware ELF [--frame 650] [--phases RUN] [--entries RUN] [--out DIR]
 """
 
 import argparse
@@ -42,12 +45,17 @@ import recfg  # noqa: E402
 import swd  # noqa: E402
 import xlat  # noqa: E402
 
+# The first stage's frames in the attract demo (its routine from 645, the
+# second stage's from 10,380): the palette is fitted and the patterns
+# gathered over them.
+STAGE1_LAST = 10380
+
 # The stages' routines (the dispatcher's targets), in the order XL_PHASES
 # numbers them from 1: phase 2 is the first stage.
 STAGES = (0x2BA68, 0x2BBE4, 0x2C52E, 0x2D15C, 0x2DD78, 0x2F080, 0x2FBA0, 0x30D72, 0x320D2)
 FIRST_STAGE_PHASE = 2
 PHASE_FRAMES = 150000
-HEADER_SIZE = 124         # sizeof(xl_store_header_t)
+HEADER_SIZE = 128         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
           "SIN_COS_TABLES_START")  # xl_store.h's XL_LAYOUT_* order
@@ -169,6 +177,7 @@ def header_c(path, image, kind, firmware_id, entries, stage=None, layout=None):
         f.write('#include "xl_store.h"\n')
         if stage:
             f.write('#include "xl_rp_image.h"\n')
+            f.write("extern const xl_store_art_t xl_stage_art;\n")
         f.write(f"extern const xl_store_entry_t xl_{image}_entries[];\n")
         f.write(f"__attribute__((section(\".xl_header\"), used)) const xl_store_header_t "
                 f"xl_{image}_header = {{\n")
@@ -181,6 +190,9 @@ def header_c(path, image, kind, firmware_id, entries, stage=None, layout=None):
             f.write("  0, 0, 0, 0, 0, 0, 0, 0,\n")
         if layout:
             f.write("  {" + ", ".join(f"0x{layout[n]:06X}u" for n in LAYOUT) + "},\n")
+        else:
+            f.write("  {0},\n")
+        f.write("  &xl_stage_art,\n" if stage else "  0,\n")
         f.write("};\n")
 
 
@@ -197,6 +209,7 @@ def main():
     ap.add_argument("--firmware", required=True, help="the store build's rp.elf")
     ap.add_argument("--frame", type=int, default=650, help="the snapshot's frame")
     ap.add_argument("--phases", help="a run with the stages as phases (else one is made)")
+    ap.add_argument("--entries", help="a run with the first stage's entries (else one is made)")
     ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-store"))
     args = ap.parse_args()
     cfg = recfg.load()
@@ -213,7 +226,10 @@ def main():
     bench = host_run("store-coverage", ["--resume", snap], {"XL_TRACE": "1"})
     memmap = host_run("store-memmap", ["--resume", snap], {"XL_MEMMAP": "1"})
     resume = os.path.join(snap, "resume.txt")
-    print(f"phases {phases_run}\nsnapshot {snap}")
+    entries_run = args.entries or host_run(
+        "store-entries", ["--frames", str(STAGE1_LAST), "--screens", "10", "--entries"])
+    stage_run = host_run("store-stage1", ["--resume", snap, "--frames", str(STAGE1_LAST)])
+    print(f"phases {phases_run}\nsnapshot {snap}\nentries {entries_run}")
 
     homes = homes_for(exe, listing, resume, coverage(os.path.join(phases_run, "coverage.txt")),
                       set(coverage(os.path.join(bench, "coverage.txt"))))
@@ -242,6 +258,15 @@ def main():
                     "--layout", os.path.join(stage_dir, "xl_layout.h"),
                     "--out", stage_dir], check=True)
     resume_at = struct.unpack("<2I", open(os.path.join(snap, "snapshot.bin"), "rb").read(8))[1]
+    palette = os.path.join(work, "palette1.bin")
+    subprocess.run([sys.executable, os.path.join(HERE, "palette_fit.py"), entries_run,
+                    "--first", str(args.frame), "--last", str(STAGE1_LAST), "--out", palette],
+                   check=True)
+    subprocess.run([sys.executable, os.path.join(HERE, "rp_art.py"),
+                    "--snapshot", os.path.join(snap, "snapshot.bin"), "--palette", palette,
+                    "--patterns", os.path.join(stage_run, "pattern_use.bin"),
+                    "--layout", os.path.join(stage_dir, "xl_layout.h"), "--out", stage_dir],
+                   check=True)
 
     common_h = os.path.join(work, "common_header.c")
     names = {m.group(1): int(m.group(2), 16) for m in re.finditer(

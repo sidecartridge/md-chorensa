@@ -15,7 +15,7 @@
 #define STORE_BLOCK (64u * 1024u) /* an erase: ~150 ms */
 #define STORE_CHUNK 4096u         /* read from the card, then programmed */
 
-_Static_assert(sizeof(xl_store_header_t) == 124u, "the header's size is the host's too");
+_Static_assert(sizeof(xl_store_header_t) == 128u, "the header's size is the host's too");
 _Static_assert(STORE_CHUNK % FLASH_PAGE_SIZE == 0u, "chunks are whole pages");
 
 /* Static: FatFs's FIL and the chunk are too big for core 0's 4 KB stack. */

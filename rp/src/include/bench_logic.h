@@ -53,6 +53,14 @@ typedef struct {
   char error[48];
 } bench_logic_result_t;
 
+/* The play mode's frames, readable over SWD (tools/dev/swd.py play). */
+typedef struct {
+  uint32_t frames, laps;       /* shown; runs to the end and back to the snapshot */
+  uint32_t game_sum, game_max; /* the game's logic and VBL handler a frame, us */
+  uint32_t draw_sum, draw_max; /* the picture on both cores and the palette */
+  uint32_t publish_sum, publish_max; /* the c2p and the wait for the ST's copy */
+} bench_play_t;
+
 enum {
   BENCH_LOGIC_IDLE,
   BENCH_LOGIC_DONE,
@@ -62,9 +70,12 @@ enum {
 
 /* Whether this build can run the translation. */
 bool bench_logic_available(void);
-/* Called every bench frame: runs the logic if the host asked for it, and
- * serves the host's writes to the card. */
-void bench_logic_poll(void);
+/* Called every bench frame: serves the host's writes to the card, runs the
+ * logic if the host asked for it, and plays (benchPlay, 1 from boot in a
+ * store build: the attract demo's stage from the snapshot, drawn and shown
+ * at one game frame a VBL, until the host writes 0). True when it took the
+ * screen: the bench sets its palette again. */
+bool bench_logic_poll(void);
 /* While the host writes to the card: the bench draws nothing. */
 bool bench_logic_holds_screen(void);
 /* Run it now (blocks until it is done). */

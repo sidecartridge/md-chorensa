@@ -351,7 +351,7 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 # is left out (its assets need the flash).
 # Without XLAT_STORE the bench has no logic run and builds the scene.
 if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
-    target_sources(${PROJECT_NAME} PRIVATE store.c)
+    target_sources(${PROJECT_NAME} PRIVATE store.c xl_render.c)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
     target_compile_definitions(${PROJECT_NAME} PRIVATE XL_STORE=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
     target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=xl_runtime")
