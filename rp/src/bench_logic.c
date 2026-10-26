@@ -25,10 +25,12 @@
 #include <setjmp.h>
 
 #include "aconfig.h"
+#include "audio.h"
 #include "cart_shared.h"
 #include "constants.h"
 #include "fb.h"
 #include "fb_chunked.h"
+#include "ff.h"
 #include "ikbd.h"
 #include "select.h"
 #include "palette.h"
@@ -285,6 +287,7 @@ static void present(uint32_t game_us) {
   uint32_t t1 = time_us_32();
   fb_publish();
   uint32_t t2 = time_us_32();
+  audio_render_frame(); /* the music: song_samples */
   ikbd_pump();
   select_poll();
   ikbd_key_event_t key;
@@ -429,10 +432,149 @@ static void iocs(uint32_t pc) {
   }
 }
 
+/* --- The music: MCDRV (trap #4), the songs from the card ------------------ */
+
+/* In play mode the game's MCDRV calls play the songs the host converted
+ * (tools/xlat/music_convert.py: in the app's folder on the card, signed
+ * 8-bit mono, intro then loop; NAME.ST8 at the DMA chip's rate, NAME.YM8 at
+ * the YM's, filtered for it), the one for the output the ST uses, at the
+ * rate its header gives, read from the card as the template's PCM output
+ * asks for samples (audio_render_frame, once a frame). A fade lowers the song by MCDRV's 64 steps over speed x the
+ * song's unit / 10,000 s, then stops it, as the Amiga port measured. */
+#define MCDRV_TRANSMDC 0x01u
+#define MCDRV_PLAYMUSIC 0x02u
+#define MCDRV_STOPMUSIC 0x05u
+#define MCDRV_FADEOUT 0x14u
+#define SONG_HEADER 32u
+#define NO_SONG 0xFFFFFFFFu
+static const uint8_t k_fade_volumes[64] = {
+    64, 59, 54, 49, 45, 42, 38, 35, 32, 29, 27, 25, 23, 21, 19, 18, 16, 15, 14, 12, 11, 10,
+    10, 9,  8,  7,  7,  6,  6,  5,  5,  4,  4,  4,  3,  3,  3,  3,  2,  2,  2,  2,  2,  2,
+    1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0};
+static void card_path(char *out, const char *name);
+static FIL s_song_file; /* static: a FIL does not belong on core 0's stack */
+static struct {
+  int open, playing;
+  uint32_t transferred;          /* the song MCDRV would play next */
+  uint32_t intro, loop, pos;     /* in samples */
+  uint32_t level, fade_unit;
+  uint32_t rate;                 /* the file's, in Hz */
+  uint32_t fade_at, fade_length; /* samples into the fade and its length; 0: none */
+} s_song = {.transferred = NO_SONG};
+
+static void song_samples(int8_t *buf, uint32_t samples);
+
+static void song_stop(void) {
+  s_song.playing = 0;
+  if (s_song.open) f_close(&s_song_file);
+  s_song.open = 0;
+}
+
+/* Play song `index` of the common image's table from `frames` game frames
+ * (50 a second) in. */
+static void song_play(uint32_t index, uint32_t frames) {
+  song_stop();
+  if (index >= s_common->song_count) return;
+  char name[24], path[PATH_BYTES];
+  snprintf(name, sizeof name, audio_uses_dma() ? "%.12s.ST8" : "%.12s.YM8",
+           s_common->songs[index].name);
+  card_path(path, name);
+  uint8_t head[SONG_HEADER];
+  UINT got = 0;
+  if (f_open(&s_song_file, path, FA_READ) != FR_OK) return;
+  s_song.open = 1;
+  if (f_read(&s_song_file, head, sizeof head, &got) != FR_OK || got != sizeof head ||
+      memcmp(head, "CRS8", 4) != 0) {
+    song_stop();
+    return;
+  }
+  s_song.rate = (uint32_t)head[4] | (uint32_t)head[5] << 8 | (uint32_t)head[6] << 16 |
+                (uint32_t)head[7] << 24;
+  if (s_song.rate == 0) {
+    song_stop();
+    return;
+  }
+  s_song.intro = (uint32_t)head[8] | (uint32_t)head[9] << 8 | (uint32_t)head[10] << 16 |
+                 (uint32_t)head[11] << 24;
+  s_song.loop = (uint32_t)head[12] | (uint32_t)head[13] << 8 | (uint32_t)head[14] << 16 |
+                (uint32_t)head[15] << 24;
+  s_song.fade_unit = (uint32_t)head[16] | (uint32_t)head[17] << 8;
+  s_song.level = (uint32_t)head[18] | (uint32_t)head[19] << 8;
+  if (s_song.level == 0 || s_song.level > 64u) s_song.level = 64;
+  uint32_t skip = (uint32_t)((uint64_t)frames * s_song.rate / 50u);
+  s_song.pos = skip < s_song.intro + s_song.loop ? skip : 0;
+  f_lseek(&s_song_file, SONG_HEADER + s_song.pos);
+  s_song.fade_length = 0;
+  s_song.playing = 1;
+  audio_set_pcm_callback(song_samples, s_song.rate);
+}
+
+/* The template's PCM output asks for `samples` (from audio_render_frame). */
+static void song_samples(int8_t *buf, uint32_t samples) {
+  uint32_t done = 0;
+  while (done < samples && s_song.playing) {
+    uint32_t end = s_song.intro + s_song.loop;
+    uint32_t want = samples - done;
+    if (want > end - s_song.pos) want = end - s_song.pos;
+    UINT got = 0;
+    if (f_read(&s_song_file, buf + done, want, &got) != FR_OK || got == 0) {
+      song_stop();
+      break;
+    }
+    done += got;
+    s_song.pos += got;
+    if (s_song.pos >= end) {
+      if (s_song.loop == 0) {
+        song_stop();
+      } else {
+        s_song.pos = s_song.intro;
+        f_lseek(&s_song_file, SONG_HEADER + s_song.pos);
+      }
+    }
+  }
+  memset(buf + done, 0, samples - done);
+  for (uint32_t k = 0; k < done; k++) {
+    uint32_t volume = 64;
+    if (s_song.fade_length) {
+      uint32_t step = (uint32_t)(((uint64_t)(s_song.fade_at + k) * 64u) / s_song.fade_length);
+      volume = step < 64u ? k_fade_volumes[step] : 0u;
+    }
+    buf[k] = (int8_t)((int32_t)buf[k] * (int32_t)(volume * s_song.level) / (64 * 64));
+  }
+  if (s_song.fade_length) {
+    s_song.fade_at += done;
+    if (s_song.fade_at >= s_song.fade_length) song_stop();
+  }
+}
+
+/* MCDRV's calls the game makes: d0.l the function, d1.l, a0. */
+static void mcdrv(void) {
+  uint32_t f = D(0);
+  if (s_playing) {
+    if (f == MCDRV_TRANSMDC) {
+      s_song.transferred = NO_SONG;
+      for (uint32_t k = 0; k < s_common->song_count; k++) {
+        if (s_common->songs[k].address == (A(0) & 0xFFFFFFu)) s_song.transferred = k;
+      }
+    } else if (f == MCDRV_PLAYMUSIC) {
+      song_play(s_song.transferred, 0);
+    } else if (f == MCDRV_STOPMUSIC) {
+      song_stop();
+    } else if (f == MCDRV_FADEOUT && s_song.playing) {
+      s_song.fade_at = 0;
+      s_song.fade_length = (uint32_t)((uint64_t)D(1) * s_song.fade_unit * s_song.rate / 10000u);
+      if (s_song.fade_length == 0) s_song.fade_length = 1;
+    }
+  }
+  D(0) = 0;
+}
+
 void xl_trap(uint32_t n, uint32_t pc) {
   if (n == 15) {
     iocs(pc);
-  } else if (n != 2 && n != 4) {
+  } else if (n == 4) {
+    mcdrv();
+  } else if (n != 2) {
     xl_fatal("TRAP", pc);
   }
 }
@@ -479,6 +621,10 @@ static uint8_t *pool_page(uint32_t k) {
 }
 
 static void restore(void) {
+  if (s_playing) {
+    s_song.transferred = s_stage->song_playing;
+    song_play(s_stage->song_playing, s_stage->song_frames);
+  }
   s_live = 0;
   s_live_read = 0;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
@@ -540,6 +686,7 @@ static void run(int drawn) {
   }
   uint32_t begin = time_us_32();
   s_playing = drawn;
+  if (drawn) audio_set_pcm_callback(song_samples, AUDIO_DMA_RATE_HZ);
   do {
     restore();
     benchLogicResult.first_frame = s_frame_count;
@@ -552,6 +699,10 @@ static void run(int drawn) {
     }
     if (drawn) benchPlayStats.laps++;
   } while (drawn && benchPlay && benchLogicResult.state == BENCH_LOGIC_DONE);
+  if (drawn) {
+    song_stop();
+    audio_set_pcm_callback(NULL, AUDIO_DMA_RATE_HZ);
+  }
   s_playing = 0;
   benchLogicResult.total_us = time_us_32() - begin;
   DPRINTF("logic: %lu frames, %lu us mean, %lu max, %lu/%lu checkpoints differ (%s)\n",

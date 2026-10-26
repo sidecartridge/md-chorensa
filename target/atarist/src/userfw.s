@@ -167,11 +167,11 @@ UFW_MSTE_CTRL         equ $00077F9E          ; word
 UFW_YM_SAMPLES        equ $00077FA0          ; word
 UFW_SAMPLE_BASE       equ $00077FA2          ; longword
 ; Where the copy's sample writes go (A4): the YM's select register when
-; YM samples play, else UFW_SAMPLE_SINK, 8 bytes of RAM a movep.l lands in
-; (24 cycles, no wait states: the writes to the YM cost 36 and about 17
-; more on the machine, 0.4 ms a frame that a silent ST keeps).
+; YM samples play, else UFW_SAMPLE_SINK, 12 bytes of RAM a sample's
+; movep.l and movep.w land in (no wait states: the writes to the YM cost
+; more on the machine, a time a silent ST keeps).
 UFW_SAMPLE_PORT       equ $00077FA6          ; longword
-UFW_SAMPLE_SINK       equ $00077FAC          ; 8 bytes
+UFW_SAMPLE_SINK       equ $00077FBA          ; 12 bytes, up to $77FC5
 ; The lines copied last frame (COPY_LINES_ADDR): when the RP's word changes,
 ; the image's bottom lines of both pages are cleared once (a short copy
 ; never writes them).
@@ -210,12 +210,14 @@ FBDRV_LINE_TAIL       equ (FB_LINE_BYTES - FBDRV_LINE_CHUNKS * FBDRV_ITER_BYTES)
 ;
 ; An interrupt per sample costs about 152 cycles, of which the YM writes are
 ; 48: 112 samples a VBL took 2.1 ms, more than the 256-line copy leaves. So
-; at 50 fps the copy writes the samples itself: after every 7th MOVEM pair,
-; every fifth time the 8th (FBDRV_SAMPLE_EVERY, FBDRV_SAMPLE_LONG_EVERY:
-; 7.2 pairs, 1,428 cycles, the nominal 5,585 Hz), one SAMPLE_WRITE (36
-; cycles: the sample's four bytes, as the RP lays them out, to the YM's
-; select and data registers with one movep.l through A4 = YM_SELECT; the YM
-; mirrors its two registers every 4 bytes). Each border handler writes one
+; at 50 fps the copy writes the samples itself: after every 5th MOVEM pair
+; (FBDRV_SAMPLE_EVERY; FBDRV_SAMPLE_LONG_EVERY, when not 0, makes every
+; such sample a pair later: 5 pairs, about 1,030 cycles, the nominal 7,777
+; Hz), one SAMPLE_WRITE (60
+; cycles: the sample's six bytes, as the RP lays them out, to the YM's
+; select and data registers with a movep.l and a movep.w through A4 =
+; YM_SELECT, the YM's three channels for about 8 bits; the YM mirrors its
+; two registers every 4 bytes). Each border handler writes one
 ; after its switch, since it holds the copy up for about a sample's time
 ; (written before the switch it ate the margin of the handler's wait), and
 ; between the copy's end and the next VBL the main loop writes them at the
@@ -235,24 +237,28 @@ FBDRV_LINE_TAIL       equ (FB_LINE_BYTES - FBDRV_LINE_CHUNKS * FBDRV_ITER_BYTES)
 ; RAM (UFW_SAMPLE_SINK): the writes cost 24 cycles each and touch no YM
 ; (the copy runs there only when the RP forces the CPU, or on a plain ST
 ; with no sound; the blitter path writes no samples).
-FBDRV_SAMPLE_EVERY    equ 7
-FBDRV_SAMPLE_LONG_EVERY equ 5
+FBDRV_SAMPLE_EVERY    equ 5
+FBDRV_SAMPLE_LONG_EVERY equ 0                ; none longer
 FBDRV_FIRST_SAMPLE    equ 3                  ; pairs before the copy's first sample
-FBDRV_INLINE_SAMPLES  equ 106                ; of the 768 pairs: at 7, 14, 21, 28, 36 ... 763
-PROFILE_50FPS_YM_SAMPLES_A_VBL equ 112       ; 106 + 2 + 3.6: 5,585 Hz x 20 ms
+FBDRV_INLINE_SAMPLES  equ 153                ; of the 768 pairs: at 3, 8, 13 ... 763
+PROFILE_50FPS_YM_SAMPLES_A_VBL equ 155       ; 7,777 Hz x 20 ms
 ; The idle loop: an iteration of 30 cycles (the VBL flag, dbf), the sample
-; and the loop's own 56 or so: a sample every 1,436 cycles. The first delay
-; after a copy makes up for the copy's last pairs and the flip.
-IDLE_SAMPLE_ITERS     equ 46
-IDLE_FIRST_ITERS      equ 10
-IDLE_NO_FRAME_ITERS   equ 20
+; and the loop's own 56 or so: a sample every 1,046 cycles. The first delay
+; after a copy makes up for the copy's last pairs and the flip (they take
+; about a sample's time already).
+IDLE_SAMPLE_ITERS     equ 33
+IDLE_FIRST_ITERS      equ 0
+IDLE_NO_FRAME_ITERS   equ 7
 
-; SAMPLE_WRITE \1: the next sample (A0) to the YM (A4 = YM_SELECT), through
-; data register \1. HANDLER_SAMPLE: the same from a border handler, after
+; SAMPLE_WRITE \1: the next sample (A0, six bytes) to the YM (A4 =
+; YM_SELECT), through data register \1: channels A and B with a movep.l,
+; C with a movep.w at the registers' next mirror. HANDLER_SAMPLE: the same from a border handler, after
 ; its switch, saving what it uses, when the YM plays.
 SAMPLE_WRITE          macro
     move.l  (a0)+, \1
     movep.l \1, 0(a4)
+    move.w  (a0)+, \1
+    movep.w \1, 8(a4)
                       endm
 HANDLER_SAMPLE        macro
     ifne    FB_INLINE_SAMPLES
@@ -273,12 +279,13 @@ FBDRV_PAIR_SAMPLE     macro
 FBDRV_TOSAMPLE        set FBDRV_TOSAMPLE-1
     ifeq    FBDRV_TOSAMPLE
     SAMPLE_WRITE d0
+FBDRV_TOSAMPLE        set FBDRV_SAMPLE_EVERY
+    ifne    FBDRV_SAMPLE_LONG_EVERY
 FBDRV_TOLONG          set FBDRV_TOLONG-1
     ifeq    FBDRV_TOLONG
 FBDRV_TOSAMPLE        set FBDRV_SAMPLE_EVERY+1
 FBDRV_TOLONG          set FBDRV_SAMPLE_LONG_EVERY
-    else
-FBDRV_TOSAMPLE        set FBDRV_SAMPLE_EVERY
+    endc
     endc
     endc
     endc
@@ -296,7 +303,8 @@ FBDRV_TOSAMPLE        set FBDRV_SAMPLE_EVERY
 ;   movem.l d0-d7/a1-a2, -(a5)   ;  88: bytes 0..39
 ;   lea     -32(a5), a5          ;   8: the line above, at its byte 128
 ; 580 cycles a line, 148,480 for 256 lines: 18.5 ms of the 20 ms VBL, and
-; at 50 fps a sample every 7.2 pairs (FBDRV_PAIR_SAMPLE), 3,816 more.
+; at 50 fps a sample every 5 pairs (FBDRV_PAIR_SAMPLE), 9,180 more (the 240
+; lines of a plain ST: 139,200 and 8,640).
 ;
 ; Predecrement stores are 4 cycles faster than d16(a5) ones (8+8n against
 ; 12+8n), so the RP lays the framebuffer out in the order this reads it: the
@@ -467,12 +475,14 @@ YM_DATA               equ $FFFF8802
 YM_REG_MIXER          equ 7                  ; tone+noise enables
 YM_REG_CHA_VOL        equ 8                  ; channel A volume (low 4 bits)
 YM_REG_CHB_VOL        equ 9                  ; channel B volume (low 4 bits)
+YM_REG_CHC_VOL        equ 10                 ; channel C volume (low 4 bits)
 YM_MIXER_DAC_CHA      equ $FE                ; tone A enabled, all other tones/noise off, ports out
 YM_MIXER_DAC_AB       equ $FC                ; tones A AND B enabled, tone C off, all noise off, ports out (Ghostbusters dual-channel fake DAC)
+YM_MIXER_DAC_STEADY   equ $FF                ; all tones and noise off, ports out: each channel holds its volume's level (three channels' DAC, as measured)
 
 ; The audio buffer at AUDIO_BUFFER_ADDR: on the YM path a ring of samples
-; the cursor A0 runs through (four bytes a sample at 50 fps, the (vA, vB)
-; pair at 25), on into the spill after it; userfw_vbl brings it back and
+; the cursor A0 runs through (six bytes a sample at 50 fps, the three
+; channels' volumes, the (vA, vB) pair at 25), on into the spill after it; userfw_vbl brings it back and
 ; reports it. Filled by the RP, ahead of the cursor.
 
 ; FB_COPY_LINES (inc/sidecart_layout.s) is the framebuffer's lines, 256 of
@@ -545,10 +555,10 @@ MFP_TIMERA_BIT        equ 5                  ; IERA / IMRA bit of Timer-A
 ; them (Timer-B and Timer-C open the borders); the profile's count keeps its
 ; name, PROFILE_*_TIMERB_COUNT. MFP master clock = 2.4576 MHz, /4 prescaler,
 ; the profile's count (PROFILE_ADDR):
-;   PROFILE_50FPS: 110 -> 5,585.45 Hz, 111.7 samples per PAL VBL (at 50 fps
+;   PROFILE_50FPS:  79 -> 7,777.2 Hz, 155.4 samples per PAL VBL (at 50 fps
 ;      the copy writes them at that cadence, not a timer);
 ;   PROFILE_25FPS:  28 -> 21,942.86 Hz, 438.2 samples per PAL VBL.
-;   -> in the ring (AUDIO_YM_RING_BYTES, inc/sidecart_layout.s): 4 bytes a
+;   -> in the ring (AUDIO_YM_RING_BYTES, inc/sidecart_layout.s): 6 bytes a
 ;      sample at 50 fps, 2 (vA, vB) at 25 (the RP's PROFILE_YM_SAMPLE_BYTES,
 ;      rp/src/include/profile.h);
 ;   -> the RP's rates (cart_shared.h CART_PROFILE_*_YM_RATE_HZ), which the
@@ -887,7 +897,13 @@ userfw:
     ; can write ch A immediately; the handler toggles to reg 9
     ; (ch B) mid-fire and back to reg 8 at the end.
     move.b  #YM_REG_MIXER, YM_SELECT.w
+    ifne    FB_INLINE_SAMPLES
+    ; Three channels: tones off, so each holds the level the RP's table
+    ; was fitted to (measured that way, rp/src/audio.c audioYmTriples).
+    move.b  #YM_MIXER_DAC_STEADY, YM_DATA.w ; $FF: all tones and noise off, ports out
+    else
     move.b  #YM_MIXER_DAC_AB, YM_DATA.w   ; $FC: tones A+B on, tone C off, all noise off, ports out
+    endc
     move.b  #0, YM_SELECT.w
     move.b  #0, YM_DATA.w                 ; R0 = ch A fine period
     move.b  #1, YM_SELECT.w
@@ -896,6 +912,12 @@ userfw:
     move.b  #0, YM_DATA.w                 ; R2 = ch B fine period
     move.b  #3, YM_SELECT.w
     move.b  #0, YM_DATA.w                 ; R3 = ch B coarse period
+    move.b  #4, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R4 = ch C fine period
+    move.b  #5, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R5 = ch C coarse period
+    move.b  #YM_REG_CHC_VOL, YM_SELECT.w  ; latch reg 10 to zero ch C
+    move.b  #0, YM_DATA.w                 ; ch C vol = 0 (silence)
     move.b  #YM_REG_CHB_VOL, YM_SELECT.w  ; latch reg 9 to zero ch B
     move.b  #0, YM_DATA.w                 ; ch B vol = 0 (silence)
     move.b  #YM_REG_CHA_VOL, YM_SELECT.w  ; latch reg 8 (next YM_DATA writes hit ch A volume)
@@ -1560,7 +1582,10 @@ userfw_vbl:
     move.l  a0, d0                        ; the cursor only grows between VBLs
     sub.l   UFW_SAMPLE_LAST, d0
     ifne    FB_INLINE_SAMPLES
-    lsr.w   #2, d0                        ; four bytes a sample
+    divu.w  #6, d0                        ; six bytes a sample
+    swap    d0
+    clr.w   d0                            ; not the remainder
+    swap    d0
     else
     lsr.w   #1, d0                        ; two
     endc

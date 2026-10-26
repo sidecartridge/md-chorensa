@@ -129,24 +129,26 @@
 #define CART_PROFILE_50FPS               0u
 #define CART_PROFILE_25FPS               1u
 #define CART_PROFILE_50FPS_VBLS          1
-#define CART_PROFILE_50FPS_TIMERB_COUNT  110
-#define CART_PROFILE_50FPS_YM_RATE_HZ    5585u
-/* At 50 fps the ST's copy loop plays the samples itself, one every 7.2
+#define CART_PROFILE_50FPS_TIMERB_COUNT  79
+#define CART_PROFILE_50FPS_YM_RATE_HZ    7777u
+/* At 50 fps the ST's copy loop plays the samples itself, one every 5
  * MOVEM pairs, each border handler one, and an idle loop at the same pace
  * between copies: about CART_PROFILE_50FPS_YM_SAMPLES a VBL, the rate
- * above, each written to the ring as four bytes, in the ST's order
- * (register 8, A's volume, register 9, B's volume), which the ST writes to
- * the YM with one movep.l (userfw.s, "Samples by the copy"). At 25 fps
- * Timer-D plays two-byte pairs. */
-#define CART_PROFILE_50FPS_YM_SAMPLES    112u
+ * above, each written to the ring as six bytes, in the ST's order
+ * (register 8, A's volume, register 9, B's volume, register 10, C's
+ * volume), which the ST writes to the YM with a movep.l and a movep.w
+ * (userfw.s, "Samples by the copy"): the YM's three channels, about 8
+ * bits. At 25 fps Timer-D plays two-byte pairs. */
+#define CART_PROFILE_50FPS_YM_SAMPLES    155u
 #define CART_PROFILE_50FPS_YM_BYTES      (2u * CART_PROFILE_50FPS_YM_SAMPLES)
-#define CART_PROFILE_50FPS_YM_SAMPLE_BYTES 4u  /* in the ring: four bytes a sample */
+#define CART_PROFILE_50FPS_YM_SAMPLE_BYTES 6u  /* in the ring: six bytes a sample */
 #define CART_YM_REG_VOL_A                8u
 #define CART_YM_REG_VOL_B                9u
-#define CART_PROFILE_50FPS_DMA_MODE      0x81   /* mono, 12,517 Hz */
-#define CART_PROFILE_50FPS_DMA_RATE_HZ   12517u
-#define CART_PROFILE_50FPS_DMA_BYTES     256u
-#define CART_PROFILE_50FPS_DMA_LEAD      768
+#define CART_YM_REG_VOL_C                10u
+#define CART_PROFILE_50FPS_DMA_MODE      0x82   /* mono, 25,033 Hz */
+#define CART_PROFILE_50FPS_DMA_RATE_HZ   25033u
+#define CART_PROFILE_50FPS_DMA_BYTES     512u
+#define CART_PROFILE_50FPS_DMA_LEAD      1536
 #define CART_PROFILE_25FPS_VBLS          2
 #define CART_PROFILE_25FPS_TIMERB_COUNT  28
 #define CART_PROFILE_25FPS_YM_RATE_HZ    21943u
@@ -177,9 +179,10 @@
 
 /* Audio sample buffer, used one of two ways (audio.c):
  *   - the YM: a ring of CART_AUDIO_YM_RING_BYTES of samples the ST's cursor
- *     (A0) runs through: at 50 fps four bytes a sample (A's volume, 8, B's
- *     volume, 9, in the RP's order: the ST writes them to the YM's select
- *     and data registers with one movep.l), at 25 fps the (vA, vB) pair.
+ *     (A0) runs through: at 50 fps six bytes a sample (A's volume, 8, B's
+ *     volume, 9, C's volume, 10, in the RP's order: the ST writes them to
+ *     the YM's select and data registers with a movep.l and a movep.w), at
+ *     25 fps the (vA, vB) pair.
  *     The cursor runs on past the ring's end, into the spill
  *     (CART_AUDIO_YM_SPILL_BYTES, which the RP keeps a mirror of the ring's
  *     start: a VBL's samples at most), and the ST's VBL handler brings it
@@ -200,8 +203,10 @@
 #define CART_AUDIO_BUFFER_SIZE           4096
 #define CART_AUDIO_DMA_RING_BYTES        CART_AUDIO_BUFFER_SIZE
 #define CART_AUDIO_POS_UNIT              16
-#define CART_AUDIO_YM_RING_BYTES         3072  /* 6.9 VBLs at 50 fps, 3.5 at 25 */
-#define CART_AUDIO_YM_SPILL_BYTES        1024  /* over a VBL's samples in both profiles */
+#define CART_AUDIO_YM_RING_BYTES         3066  /* 3.3 VBLs at 50 fps, 3.5 at 25 */
+#define CART_AUDIO_YM_SPILL_BYTES        1026  /* over a VBL's samples in both profiles, whole
+                                                  samples of either (the buffer's last 4
+                                                  bytes unused) */
 
 /* Boot block, after the audio buffer. The ST reads the status word once
  * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which

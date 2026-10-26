@@ -1,4 +1,5 @@
 // units: rp/src/audio.c
+// cflags: -DAUDIO_YM_SOURCE_RATE_HZ=PROFILE_YM_RATE_HZ
 /* The audio producer (audio.c) on the YM path against a simulated ST: its
  * cursor runs through the ring in the cart buffer, a VBL of samples a VBL,
  * on into the spill, and at every VBL the ST brings it back and reports it;
@@ -12,7 +13,12 @@
  * the nominal rate (the machine does: the YM's wait states, the border
  * handlers, the IKBD's interrupts) gets the stream resampled to the rate it
  * achieves, which the RP measures from the reports. And the .YMS reader:
- * header checks, the wrap at the end of the file, a failed read. */
+ * header checks, the wrap at the end of the file, a failed read.
+ *
+ * YM sources are built here at the output's nominal rate (cflags above), so
+ * that a pair goes through unchanged and the ST's reads can be compared
+ * pair by pair; the firmware's sources are at 5,585 Hz and resampled, as
+ * the PCM triangle below is. */
 #include <string.h>
 
 #include "audio.h"
@@ -30,6 +36,9 @@
 
 unsigned int __rom_in_ram_start__[0x10000 / sizeof(unsigned int)];
 extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioYmRateHz;
+#if PROFILE_YM_MOVEP
+extern const uint8_t audioYmTriples[256][3];
+#endif
 
 /* --- The RP's clock, timer and ROM3 ring --------------------------------- */
 
@@ -112,7 +121,26 @@ static uint32_t cursor;               /* bytes into the buffer: ring, then spill
 static uint32_t st_per_vbl = NOMINAL; /* the samples the ST writes a VBL */
 static uint8_t played[300000][2];     /* every pair the ST read, in order */
 static uint32_t n_played;
-static int bad_registers;             /* at 50 fps: a register byte not 8 then 9 */
+static int bad_registers;             /* at 50 fps: a register byte not 8, 9, 10 */
+
+#if PROFILE_YM_MOVEP
+static const uint8_t k_pairs[64][2];
+/* At 50 fps the ST reads three channels' volumes: the table's pair they
+ * stand for, through the 8-bit sample (the first with those volumes) whose
+ * upper 6 bits index the pairs, as the two-channel table does. (255, 255)
+ * when no sample has them. */
+static void pair_of_triple(const uint8_t *t, uint8_t out[2]) {
+  for (uint32_t v = 0; v < 256u; v++) {
+    if (audioYmTriples[v][0] == t[0] && audioYmTriples[v][1] == t[1] &&
+        audioYmTriples[v][2] == t[2]) {
+      out[0] = k_pairs[v >> 2][0];
+      out[1] = k_pairs[v >> 2][1];
+      return;
+    }
+  }
+  out[0] = out[1] = 255;
+}
+#endif
 
 /* The ST reads `n` samples at its cursor. */
 static void st_read(uint32_t n) {
@@ -120,9 +148,11 @@ static void st_read(uint32_t n) {
   for (uint32_t i = 0; i < n; i++) {
     const uint8_t *p = b + cursor;
 #if PROFILE_YM_MOVEP
-    played[n_played][0] = p[0];
-    played[n_played][1] = p[2];
-    if (p[1] != CART_YM_REG_VOL_A || p[3] != CART_YM_REG_VOL_B) bad_registers++;
+    const uint8_t volumes[3] = {p[0], p[2], p[4]};
+    pair_of_triple(volumes, played[n_played]);
+    if (p[1] != CART_YM_REG_VOL_A || p[3] != CART_YM_REG_VOL_B || p[5] != CART_YM_REG_VOL_C) {
+      bad_registers++;
+    }
 #else
     played[n_played][0] = p[0];
     played[n_played][1] = p[1];
@@ -170,6 +200,27 @@ static const uint8_t k_pairs[64][2] = {
     {3, 13}, {4, 13}, {5, 13}, {6, 13}, {7, 13}, {8, 13}, {8, 13}, {9, 13},
 };
 
+/* What the ST plays for each of the table's pairs: at 50 fps the pair its
+ * three channels' volumes decode to (the RP plays a pair as the middle of
+ * its entries, and towards the ends of the triples' table neighbouring
+ * pairs share their volumes), else the pair itself. */
+static uint8_t k_seen[64][2];
+
+static void make_seen(void) {
+  for (uint32_t i = 0; i < 64u; i++) {
+#if PROFILE_YM_MOVEP
+    uint32_t sum = 0, count = 0;
+    for (uint32_t j = 0; j < 64u; j++) {
+      if (k_pairs[j][0] == k_pairs[i][0] && k_pairs[j][1] == k_pairs[i][1]) sum += j, count++;
+    }
+    pair_of_triple(audioYmTriples[(sum + count / 2u) / count * 4u + 2u], k_seen[i]);
+#else
+    k_seen[i][0] = k_pairs[i][0];
+    k_seen[i][1] = k_pairs[i][1];
+#endif
+  }
+}
+
 #define STREAM_PAIRS 1728u /* a whole number of the 64-pair period, not of VBLs */
 static uint8_t stream[STREAM_PAIRS * 2];
 
@@ -186,7 +237,7 @@ static void make_stream(void) {
 }
 
 static bool pair_is(uint32_t at, uint32_t k) {
-  const uint8_t *p = k_pairs[stream_index(k)];
+  const uint8_t *p = k_seen[stream_index(k)];
   return played[at][0] == p[0] && played[at][1] == p[1];
 }
 
@@ -195,7 +246,7 @@ static bool pair_is(uint32_t at, uint32_t k) {
 static bool follows(uint32_t at, uint32_t k, uint32_t n) {
   for (uint32_t i = 0; i < n; i++) {
     if (!pair_is(at + i, k + i)) {
-      const uint8_t *p = k_pairs[stream_index(k + i)];
+      const uint8_t *p = k_seen[stream_index(k + i)];
       fprintf(stderr, "played %u is (%u, %u), not pair %u (%u, %u)\n",
               (unsigned)(at + i), played[at + i][0], played[at + i][1],
               (unsigned)(k + i), p[0], p[1]);
@@ -250,6 +301,7 @@ static void ramp_cb(int8_t *buf, uint32_t samples) {
 }
 
 int main(void) {
+  make_seen();
   make_stream();
   audio_init();
   CHECK(writer != NULL);
@@ -270,8 +322,10 @@ int main(void) {
   CHECK_EQ(audioYmRateHz, PROFILE_YM_RATE_HZ);
 
   /* The main loop misses 3 frames: 80 ms between two of its top-ups, what
-   * the FIFO covers. Nothing is held; the stream goes on. */
-  for (int f = 0; f < 3; f++) frame(false, true);
+   * the FIFO covers (1, 40 ms, at 50 fps, where it holds three channels'
+   * volumes in the DMA chip's memory: audio.c). Nothing is held; the
+   * stream goes on. */
+  for (int f = 0; f < (PROFILE_YM_MOVEP ? 1 : 3); f++) frame(false, true);
   for (int f = 0; f < 10; f++) frame(true, true);
   CHECK(follows(at0, k0, n_played - at0));
   CHECK_EQ(audioUnderruns, 0);
@@ -332,6 +386,23 @@ int main(void) {
   CHECK_EQ(audioUnderruns, underruns);
   CHECK_EQ(bad_registers, 0);
 
+  /* Again, with the cursor five samples in when the writer first hears of
+   * it: at 50 fps not on the report's unit (six-byte samples), so the
+   * writer starts from the sample at or before the report, on the ST's
+   * samples: every register where the ST writes one. */
+  for (int i = 0; i < 60; i++) {
+    now_us += 4000u;
+    writer->callback(writer);
+  }
+  audio_render_frame();
+  cursor = 5u * SB;
+  for (int f = 0; f < 26; f++) frame(true, true);
+  CHECK(stream_tail(&at0, &k0));
+  CHECK(n_played - at0 >= 20u * st_per_vbl);
+  CHECK_EQ(audioLateSlices, late);
+  CHECK_EQ(audioUnderruns, underruns);
+  CHECK_EQ(bad_registers, 0);
+
   /* A slower ST: 3.5% fewer samples a VBL, as the machine writes with the
    * YM's wait states and the IKBD's interrupts. Within a few seconds the RP
    * measures the rate it achieves, within 1%, and resamples to it. A PCM
@@ -371,14 +442,15 @@ int main(void) {
 
   /* .YMS files: the header is checked, and a failure keeps the loop. */
   static BYTE yms[16 + 2 * 300]; /* the body ends inside a VBL */
+  static BYTE seen_body[2 * 300]; /* what the ST plays for it */
   memcpy(yms, "YMS1", 4);
-  uint32_t rate = 5585, len = sizeof yms - 16;
+  uint32_t rate = AUDIO_YM_SOURCE_RATE_HZ, len = sizeof yms - 16;
   memcpy(yms + 4, &rate, 4); /* the host is little-endian, as the file */
   memcpy(yms + 8, &len, 4);
   yms[12] = 1; /* dual-ghost */
   /* Table pairs in a pseudo-random order, no run of 20 repeated anywhere
-   * in the body (checked), so that a run of them says where in the body it
-   * is. */
+   * in what the ST plays for the body (checked), so that a run of them says
+   * where in the body it is. */
   uint32_t x = 0x9E3779B9u;
   for (unsigned k = 0; k < 300; k++) {
     x ^= x << 13;
@@ -387,13 +459,15 @@ int main(void) {
     const uint8_t *p = k_pairs[x & 63u];
     yms[16 + 2 * k] = p[0];
     yms[17 + 2 * k] = p[1];
+    seen_body[2 * k] = k_seen[x & 63u][0];
+    seen_body[2 * k + 1] = k_seen[x & 63u][1];
   }
   for (unsigned a = 0; a < 300; a++) {
     for (unsigned b = a + 1; b < 300; b++) {
       bool same = true;
       for (unsigned j = 0; j < 20 && same; j++) {
-        same = yms[16 + 2 * ((a + j) % 300)] == yms[16 + 2 * ((b + j) % 300)] &&
-               yms[17 + 2 * ((a + j) % 300)] == yms[17 + 2 * ((b + j) % 300)];
+        same = seen_body[2 * ((a + j) % 300)] == seen_body[2 * ((b + j) % 300)] &&
+               seen_body[2 * ((a + j) % 300) + 1] == seen_body[2 * ((b + j) % 300) + 1];
       }
       CHECK(!same);
     }
@@ -405,7 +479,8 @@ int main(void) {
   yms[0] = 'X';
   CHECK_EQ(audio_play_yms_file("A.YMS"), -1); /* bad magic */
   yms[0] = 'Y';
-  yms[4] = 0xB0; /* 5,552 Hz */
+  uint32_t other = rate - 33;
+  memcpy(yms + 4, &other, 4);
   CHECK_EQ(audio_play_yms_file("A.YMS"), -1); /* another rate */
   memcpy(yms + 4, &rate, 4);
   yms[12] = 2;
@@ -421,7 +496,7 @@ int main(void) {
    * is the next of the file's body, which wraps at its end to the body's
    * start, never to the header. */
   CHECK_EQ(audio_play_yms_file("A.YMS"), 0);
-  const BYTE *body = yms + 16;
+  const BYTE *body = seen_body; /* as the ST plays it */
   const uint32_t body_pairs = len / 2;
   for (int f = 0; f < 40; f++) frame(true, true);
   /* The body's run the played pairs end with. */

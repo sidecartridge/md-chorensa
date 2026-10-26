@@ -4,7 +4,7 @@
  *
  * Two outputs, picked at every ST boot (audio.c):
  *   - on an STE or a Mega STE, the DMA sound chip: 8-bit samples at
- *     12,517 Hz, no interrupt per sample, from a ring in ST RAM that the ST
+ *     25,033 Hz, no interrupt per sample, from a ring in ST RAM that the ST
  *     fills every VBL from the cart buffer;
  *   - elsewhere (or when the app prefers it: audio_prefer_ym()), the YM: the
  *     ST (target/atarist/src/userfw.s) writes (vA, vB) volume pairs from a
@@ -35,8 +35,8 @@
  *      they stand for.
  *   2. audio_play_pcm_loop(pcm, samples, rate) /
  *      audio_set_pcm_callback(cb, rate): signed 8-bit PCM at any rate. The
- *      DMA chip plays it at 12,517 Hz (unchanged at that rate); the YM plays
- *      its upper 6 bits through the same table.
+ *      DMA chip plays it at 25,033 Hz (unchanged at that rate); the YM plays
+ *      it through its channels' volumes (three at 50 fps, a pair at 25).
  *
  * With no source installed, audio_render_frame() only follows the ST, and
  * the output holds the last sample played (zero after boot = silence).
@@ -72,7 +72,7 @@ void audio_init(void);
 /* The DMA chip's rate, and the signed 8-bit sample callback: write exactly
  * `samples` samples into `buf` (the library asks for a few dozen at a
  * time). Called from audio_render_frame(), as for audio_fill_cb_t. */
-#define AUDIO_DMA_RATE_HZ PROFILE_DMA_RATE_HZ /* 12,517, or 25,033 Hz at 25 fps */
+#define AUDIO_DMA_RATE_HZ PROFILE_DMA_RATE_HZ /* 25,033 Hz in both profiles */
 typedef void (*audio_pcm_cb_t)(int8_t *buf, uint32_t samples);
 
 /* Install a PCM source at `rate_hz` (AUDIO_DMA_RATE_HZ plays unchanged on

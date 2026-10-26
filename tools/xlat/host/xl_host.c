@@ -60,6 +60,17 @@ static const char *s_out_dir;
 static uint32_t s_frame_limit, s_screen_interval = 500;
 static uint32_t s_frame_count, s_total_vbl, s_frame_sprite_count, s_last_sprite_count;
 static FILE *s_files[FILE_HANDLES];
+
+/* What each file read put where (the music calls name a song by its data's
+ * address): the file's path in the data folder, the buffer, the length. */
+#define LOADS 128
+static char s_file_names[FILE_HANDLES][96];
+static struct {
+  uint32_t buffer, length;
+  char name[96];
+} s_loads[LOADS];
+static uint32_t s_load_count;
+
 static jmp_buf s_exit;
 static int s_exit_reason; /* 1: frame limit, 2: the game's exit */
 static uint8_t *s_checkpoints;
@@ -598,10 +609,69 @@ static void note_call_site(uint32_t f, uint32_t pc) {
   }
 }
 
+/* MCDRV (trap #4), with XL_MUSIC set: the game finds a driver (as the
+ * port's MCDRV 0.69 probe reports one, through the signature the original
+ * looks for before the handler) and its calls are logged in music.txt:
+ * the frame, the call, the song (the file its data was read from). */
+#define MCDRV_VECTOR 0x90u
+#define MCDRV_HANDLER 0x800u   /* in low memory nothing else uses */
+#define MCDRV_VERSION 0x69u
+#define MCDRV_TRANSMDC 0x01u
+#define MCDRV_PLAYMUSIC 0x02u
+#define MCDRV_STOPMUSIC 0x05u
+#define MCDRV_FADEOUT 0x14u
+static FILE *s_music_log;
+static char s_music_song[96];
+static char s_music_playing[96]; /* the song playing, and the frame it started */
+static uint32_t s_music_since;
+
+static void mcdrv_install(void) {
+  wr32(MCDRV_HANDLER - 12u, 0x2D4D4344u); /* "-MCD" */
+  wr32(MCDRV_HANDLER - 8u, 0x5256302Du);  /* "RV0-" */
+  wr32(MCDRV_HANDLER - 4u, MCDRV_VERSION);
+  wr32(MCDRV_VECTOR, MCDRV_HANDLER);
+  char path[1024];
+  snprintf(path, sizeof path, "%s/music.txt", s_out_dir);
+  s_music_log = fopen(path, "w");
+  if (s_music_log) fprintf(s_music_log, "# frame call song argument\n");
+}
+
+static void mcdrv(void) {
+  uint32_t f = D(0);
+  const char *what = f == MCDRV_TRANSMDC    ? "transfer"
+                     : f == MCDRV_PLAYMUSIC ? "play"
+                     : f == MCDRV_STOPMUSIC ? "stop"
+                     : f == MCDRV_FADEOUT   ? "fade"
+                                            : "other";
+  if (f == MCDRV_TRANSMDC) {
+    snprintf(s_music_song, sizeof s_music_song, "?%06X", A(0) & 0xFFFFFFu);
+    for (uint32_t k = s_load_count; k-- > 0;) {
+      if (s_loads[k].buffer == (A(0) & 0xFFFFFFu)) {
+        snprintf(s_music_song, sizeof s_music_song, "%s", s_loads[k].name);
+        break;
+      }
+    }
+  }
+  if (f == MCDRV_PLAYMUSIC) {
+    memcpy(s_music_playing, s_music_song, sizeof s_music_playing);
+    s_music_since = s_frame_count;
+  } else if (f == MCDRV_STOPMUSIC || f == MCDRV_FADEOUT) {
+    s_music_playing[0] = 0;
+  }
+  if (s_music_log) {
+    fprintf(s_music_log, "%u %s %s %u", s_frame_count, what, s_music_song, D(1));
+    if (strcmp(what, "other") == 0) fprintf(s_music_log, " (function %u)", f);
+    fprintf(s_music_log, "\n");
+  }
+  D(0) = 0;
+}
+
 void xl_trap(uint32_t n, uint32_t pc) {
   if (n == 15) {
     note_call_site(D(0) & 0xFFu, pc);
     iocs();
+  } else if (n == 4 && s_music_log) {
+    mcdrv();
   } else if (n == 2 || n == 4) {
     /* PCM8 (mode reads), MCDRV (no driver: never called) */
   } else {
@@ -636,6 +706,7 @@ static uint32_t open_file(uint32_t name, const char *mode) {
   FILE *f = fopen(path, mode);
   if (f == NULL) return (uint32_t)-2;
   s_files[slot] = f;
+  snprintf(s_file_names[slot], sizeof s_file_names[slot], "%s", path + strlen(s_data_dir) + 1);
   return (uint32_t)(slot + FIRST_FILE_HANDLE);
 }
 
@@ -730,6 +801,12 @@ void xl_linef(uint32_t word, uint32_t pc) {
       } else if (word == 0xFF3F) {
         r = (uint32_t)fread(xl_mem + (buffer & 0xFFFFFFu), 1, length, *f);
         memmap_range(buffer, r, 1);
+        if (s_load_count < LOADS) {
+          s_loads[s_load_count].buffer = buffer & 0xFFFFFFu;
+          s_loads[s_load_count].length = r;
+          memcpy(s_loads[s_load_count].name, s_file_names[f - s_files], sizeof s_loads[0].name);
+          s_load_count++;
+        }
       } else {
         memmap_range(buffer, length, 0);
         r = (uint32_t)fwrite(xl_mem + (buffer & 0xFFFFFFu), 1, length, *f);
@@ -1074,6 +1151,25 @@ static void write_snapshot(void) {
     if (v >= XL_LOAD && v < XL_BSS && !(v & 1u)) fprintf(f, "?%06X # at %06X\n", v, at);
   }
   fclose(f);
+
+  /* With the music (XL_MUSIC): the songs the game has loaded, where (the
+   * MCDRV calls name a song by its data's address), and the one playing. */
+  if (s_music_log) {
+    snprintf(path, sizeof path, "%s/songs.txt", s_out_dir);
+    f = fopen(path, "w");
+    if (f) {
+      fprintf(f, "# address song (load); playing song since-frame\n");
+      for (uint32_t k = 0; k < s_load_count; k++) {
+        const char *n = s_loads[k].name;
+        size_t len = strlen(n);
+        if (len > 4 && (strcmp(n + len - 4, ".MDC") == 0 || strcmp(n + len - 4, ".mdc") == 0)) {
+          fprintf(f, "load %06X %s\n", s_loads[k].buffer, n);
+        }
+      }
+      if (s_music_playing[0]) fprintf(f, "playing %s %u\n", s_music_playing, s_music_since);
+      fclose(f);
+    }
+  }
   printf("xl: snapshot at frame %u\n", s_frame_count);
   MEMMAP_PAUSE(0);
 }
@@ -1219,6 +1315,7 @@ int main(int argc, char **argv) {
 #ifdef XL_TRACE
   read_phases();
 #endif
+  if (getenv("XL_MUSIC")) mcdrv_install();
   uint32_t start = XL_ENTRY;
   if (resume_path) start = read_snapshot(resume_path);
 
@@ -1228,6 +1325,7 @@ int main(int argc, char **argv) {
   }
   write_checkpoints();
   write_pattern_use();
+  if (s_music_log) fclose(s_music_log);
   MEMMAP_PAUSE(1);
   write_graphics();
   write_memmap(s_out_dir);

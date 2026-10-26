@@ -173,6 +173,7 @@ PAIRS = [
      lambda rp: rp["CART_PROFILE_50FPS_YM_SAMPLES"]),
     ("YM register: A's volume", lambda st: st["YM_REG_CHA_VOL"], lambda rp: rp["CART_YM_REG_VOL_A"]),
     ("YM register: B's volume", lambda st: st["YM_REG_CHB_VOL"], lambda rp: rp["CART_YM_REG_VOL_B"]),
+    ("YM register: C's volume", lambda st: st["YM_REG_CHC_VOL"], lambda rp: rp["CART_YM_REG_VOL_C"]),
     ("profile: 50 fps", lambda st: st["PROFILE_50FPS"], lambda rp: rp["CART_PROFILE_50FPS"]),
     ("profile: 25 fps", lambda st: st["PROFILE_25FPS"], lambda rp: rp["CART_PROFILE_25FPS"]),
     ("audio output word", lambda st: window(st, "AUDIO_OUT_ADDR"),
@@ -281,15 +282,15 @@ class Layout(unittest.TestCase):
     def test_audio_bytes_per_frame(self):
         """In each profile the RP refills what the ST plays in one frame: at
         25 fps two bytes per Timer-D interrupt, within one sample; at 50 fps
-        the samples the copy, the handlers and the idle loop write, four
-        bytes each in the ring; and a DMA FIFO slot holds a VBL of the chip's
-        samples."""
+        the samples the copy, the handlers and the idle loop write, six
+        bytes each in the ring (the YM's three channels); and a DMA FIFO slot
+        holds a VBL of the chip's samples."""
         st, rp = st_names(), rp_names()
         for p in PROFILES:
             with self.subTest(p):
                 if p == "50FPS":
                     samples = st["PROFILE_50FPS_YM_SAMPLES_A_VBL"]
-                    self.assertEqual(rp["CART_PROFILE_50FPS_YM_SAMPLE_BYTES"], 4)
+                    self.assertEqual(rp["CART_PROFILE_50FPS_YM_SAMPLE_BYTES"], 6)
                 else:
                     rate = MFP_CLOCK_HZ / (MFP_PRESCALER[st["YM_TIMER_PRESCALER"]] *
                                            st[f"PROFILE_{p}_TIMERB_COUNT"])
@@ -302,16 +303,18 @@ class Layout(unittest.TestCase):
                 self.assertGreaterEqual(rp[f"CART_PROFILE_{p}_DMA_BYTES"], dma)
 
     def test_audio_ym_ring(self):
-        """The YM ring and its spill fill the audio buffer; the spill holds a
+        """The YM ring and its spill fit the audio buffer; the spill holds a
         VBL of samples in each profile (the cursor reads on into it until
-        the VBL brings it back); the cursor's report fits a byte."""
+        the VBL brings it back); both hold whole samples; the cursor's
+        report fits a byte."""
         st, rp = st_names(), rp_names()
         ring, spill = rp["CART_AUDIO_YM_RING_BYTES"], rp["CART_AUDIO_YM_SPILL_BYTES"]
-        self.assertEqual(ring + spill, rp["CART_AUDIO_BUFFER_SIZE"])
+        self.assertLessEqual(ring + spill, rp["CART_AUDIO_BUFFER_SIZE"])
         for p in PROFILES:
             a_vbl = rp[f"CART_PROFILE_{p}_YM_SAMPLES"] * rp[f"CART_PROFILE_{p}_YM_SAMPLE_BYTES"]
             self.assertLess(a_vbl * 11 // 10, spill, p)
             self.assertEqual(ring % rp[f"CART_PROFILE_{p}_YM_SAMPLE_BYTES"], 0, p)
+            self.assertEqual(spill % rp[f"CART_PROFILE_{p}_YM_SAMPLE_BYTES"], 0, p)
         self.assertLessEqual(ring // rp["CART_AUDIO_POS_UNIT"], 256)
 
     def test_dma_ring(self):

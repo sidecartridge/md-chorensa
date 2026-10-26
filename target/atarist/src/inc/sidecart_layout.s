@@ -62,7 +62,7 @@ PALETTE_SIZE            equ 32                                         ; 16 word
 ; where the chip plays (AUDIO_POS_WINDOW), copies the mirror from its last copy
 ; to AUDIO_DMA_LEAD bytes ahead of that, and the RP writes the mirror further
 ; ahead still. On the YM path the ST's cursor runs through a ring of
-; AUDIO_YM_RING_BYTES in the buffer (four bytes a sample at 50 fps, the
+; AUDIO_YM_RING_BYTES in the buffer (six bytes a sample at 50 fps, the
 ; pair at 25), on into the spill after it, which mirrors the ring's start,
 ; and comes back by the ring's size at the VBL, which reports it
 ; (AUDIO_POS_WINDOW, by AUDIO_POS_UNIT bytes); the RP writes ahead of it.
@@ -71,8 +71,8 @@ AUDIO_BUFFER_SIZE       equ 4096
 AUDIO_BUFFER_END        equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)    ; $FA5100
 AUDIO_DMA_RING_BYTES    equ AUDIO_BUFFER_SIZE   ; 16 VBLs at 12,517 Hz, 8 at 25,033
 AUDIO_POS_UNIT          equ 16          ; where the ST plays is reported by 16 bytes
-AUDIO_YM_RING_BYTES     equ 3072        ; the YM path's ring of samples; the rest is its spill
-AUDIO_YM_SPILL_BYTES    equ 1024
+AUDIO_YM_RING_BYTES     equ 3066        ; the YM path's ring of samples; the rest is its spill
+AUDIO_YM_SPILL_BYTES    equ 1026        ; whole samples of either profile
 
 ; The app's profile (rp/src/include/profile.h), a word the RP writes before
 ; the ST boots and userfw reads once: how often the ST takes a new frame
@@ -85,12 +85,12 @@ PROFILE_ADDR            equ (SHARED_VARIABLES + (8 * 4))               ; $FA4030
 ; the bottom 16 left black (the ST family's budget with sampled sound).
 COPY_LINES_ADDR         equ (SHARED_VARIABLES + (9 * 4))               ; $FA4034
 FB_COPY_LINES_SHORT     equ 240
-PROFILE_50FPS           equ 0           ; 50 fps, YM 5,585 Hz, DMA 12,517 Hz
+PROFILE_50FPS           equ 0           ; 50 fps, YM 7,777 Hz, DMA 25,033 Hz
 PROFILE_25FPS           equ 1           ; 25 fps, YM 21,943 Hz, DMA 25,033 Hz
 PROFILE_50FPS_VBLS      equ 1
-PROFILE_50FPS_TIMERB_COUNT equ 110      ; the nominal rate; at 50 fps the copy plays them (userfw.s)
-PROFILE_50FPS_DMA_MODE  equ $81         ; mono, 12,517 Hz
-PROFILE_50FPS_DMA_LEAD  equ 768
+PROFILE_50FPS_TIMERB_COUNT equ 79       ; the nominal rate; at 50 fps the copy plays them (userfw.s)
+PROFILE_50FPS_DMA_MODE  equ $82         ; mono, 25,033 Hz
+PROFILE_50FPS_DMA_LEAD  equ 1536
 PROFILE_25FPS_VBLS      equ 2
 PROFILE_25FPS_TIMERB_COUNT equ 28
 PROFILE_25FPS_DMA_MODE  equ $82         ; mono, 25,033 Hz

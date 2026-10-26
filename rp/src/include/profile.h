@@ -4,7 +4,8 @@
  *              shows a new frame, and how fast it plays the sound.
  *
  *   PROFILE_50FPS (the default): a frame every VBL, 50 frames a second; the
- *     YM at 5,585 Hz, the DMA chip of an STE or a Mega STE at 12,517 Hz.
+ *     YM at about 7,777 Hz (three channels), the DMA chip of an STE or a
+ *     Mega STE at 25,033 Hz.
  *     For arcade games and effects that change the whole screen.
  *   PROFILE_25FPS: a frame every second VBL, 25 frames a second on every
  *     machine; the YM at 21,943 Hz, the DMA chip at 25,033 Hz. On a plain
@@ -55,7 +56,7 @@
 #define PROFILE_DMA_LEAD CART_PROFILE_50FPS_DMA_LEAD
 #define PROFILE_YM_SAMPLES_PER_VBL CART_PROFILE_50FPS_YM_SAMPLES
 #define PROFILE_YM_SAMPLE_BYTES CART_PROFILE_50FPS_YM_SAMPLE_BYTES
-#define PROFILE_YM_MOVEP 1 /* four bytes a sample, for the copy's movep.l */
+#define PROFILE_YM_MOVEP 1 /* six bytes a sample, for the copy's movep.l and movep.w */
 #else
 #error "APP_PROFILE must be PROFILE_50FPS or PROFILE_25FPS"
 #endif

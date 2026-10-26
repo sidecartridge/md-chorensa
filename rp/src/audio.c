@@ -60,8 +60,8 @@
 /* A PAL VBL, nominally: the period the sample arithmetic below is for. */
 #define AUDIO_FRAME_PERIOD_US 20000u
 
-/* The YM path's ring: a VBL of samples at the nominal rate (111.7 at
- * 5,585 Hz, 438.2 at 21,943), each AUDIO_YM_SAMPLE_BYTES in the ring (the
+/* The YM path's ring: a VBL of samples at the nominal rate (155.4 at
+ * 7,777 Hz, 438.2 at 21,943), each AUDIO_YM_SAMPLE_BYTES in the ring (the
  * profile, profile.h). The writer keeps the ring written AUDIO_YM_AHEAD
  * samples ahead of where the cursor is now (the last report plus what the
  * ST read since, at the rate it achieves): the writer's period and how late
@@ -87,15 +87,19 @@
  * which wandered by a percent. */
 #define AUDIO_YM_RATE_VBLS 25u
 #define AUDIO_VBL_PERIOD_US 19979u
-_Static_assert(AUDIO_YM_RING + AUDIO_YM_SPILL == CART_AUDIO_BUFFER_SIZE,
-               "the ring and its spill fill the buffer");
+_Static_assert(AUDIO_YM_RING + AUDIO_YM_SPILL <= CART_AUDIO_BUFFER_SIZE,
+               "the ring and its spill fit the buffer");
 _Static_assert(AUDIO_YM_RING % AUDIO_YM_SAMPLE_BYTES == 0 &&
                    AUDIO_YM_SPILL % AUDIO_YM_SAMPLE_BYTES == 0,
                "whole samples");
 _Static_assert(AUDIO_YM_SPILL >= AUDIO_YM_SAMPLES_PER_VBL * AUDIO_YM_SAMPLE_BYTES * 11u / 10u,
                "the spill holds a VBL of samples and a tenth more");
-_Static_assert(AUDIO_YM_RING / AUDIO_YM_SAMPLE_BYTES >= AUDIO_YM_AHEAD + 2u * AUDIO_YM_SAMPLES_PER_VBL,
-               "the ring holds what is written ahead and two VBLs more");
+/* A VBL and a half more than what is written ahead: the writer's estimate
+ * of the cursor would have to be off by that much (the ST's VBL handler
+ * held up for longer than a VBL) to overwrite samples not yet played. */
+_Static_assert(AUDIO_YM_RING / AUDIO_YM_SAMPLE_BYTES >=
+                   AUDIO_YM_AHEAD + AUDIO_YM_SAMPLES_PER_VBL * 3u / 2u,
+               "the ring holds what is written ahead and a VBL and a half more");
 
 /* The FIFO between the app's source and the writer, in VBLs of samples:
  * the longest the main loop may go between two top-ups. More delays the
@@ -104,7 +108,21 @@ _Static_assert(AUDIO_YM_RING / AUDIO_YM_SAMPLE_BYTES >= AUDIO_YM_AHEAD + 2u * AU
 #ifndef AUDIO_FIFO_VBLS
 #define AUDIO_FIFO_VBLS 4u
 #endif
-#define AUDIO_YM_FIFO_PAIRS ((AUDIO_FIFO_VBLS + 1u) * AUDIO_YM_SAMPLES_PER_VBL)
+/* A sample's volumes: at 50 fps the YM's three channels (the copy writes
+ * them with a movep.l and a movep.w), at 25 fps two (Timer-D's pair). */
+#if PROFILE_YM_MOVEP
+#define AUDIO_YM_VOICES 3u
+#else
+#define AUDIO_YM_VOICES 2u
+#endif
+/* The YM's FIFO, in samples: AUDIO_FIFO_VBLS VBLs and one more, or as many
+ * as the DMA chip's FIFO, whose memory it shares, holds of its volumes:
+ * at 50 fps, three channels' worth, 2.7 VBLs (the main loop may then go 40
+ * ms between two top-ups, not 80). */
+#define AUDIO_YM_FIFO_WANT ((AUDIO_FIFO_VBLS + 1u) * AUDIO_YM_SAMPLES_PER_VBL)
+#define AUDIO_YM_FIFO_FITS (AUDIO_DMA_FIFO_BYTES / AUDIO_YM_VOICES)
+#define AUDIO_YM_FIFO_SAMPLES \
+  (AUDIO_YM_FIFO_WANT < AUDIO_YM_FIFO_FITS ? AUDIO_YM_FIFO_WANT : AUDIO_YM_FIFO_FITS)
 
 /* The writer runs this often; the ST's report is seen at most this long
  * after its VBL, well before the samples are needed. */
@@ -120,19 +138,24 @@ _Static_assert(AUDIO_YM_RING / AUDIO_YM_SAMPLE_BYTES >= AUDIO_YM_AHEAD + 2u * AU
 #define AUDIO_NATIVE_RATE_HZ      PROFILE_YM_RATE_HZ
 
 /* The rate of YM-pair sources: .YMS files, the built-in jingle, fill
- * callbacks. At another output rate they are resampled like PCM. */
+ * callbacks. At another output rate they are resampled like PCM. (A host
+ * test sets it to the output's, where a source goes through unchanged.) */
+#ifndef AUDIO_YM_SOURCE_RATE_HZ
 #define AUDIO_YM_SOURCE_RATE_HZ   5585u
+#endif
 
-/* The DMA output: its FIFO holds five VBLs of samples (250.3 a VBL at
- * 12,517 Hz, 500.7 at 25,033): it is topped up by the chunk, and the main
- * loop may still go four VBLs between two top-ups, in both profiles (it
- * shares the YM FIFO's memory). The
+/* The DMA output: its FIFO (500.7 samples a VBL at 25,033 Hz) is topped up
+ * by the chunk; it shares the YM FIFO's memory. At 25 fps it holds five
+ * VBLs, so the main loop, which tops it up every second VBL, may go four
+ * between two top-ups; at 50 fps two and a half (1,280 bytes: what the
+ * translated game's RAM leaves), so the main loop, which tops it up every
+ * VBL, may go two. The
  * writer keeps the mirror written this far ahead of where
  * the chip plays now: its last report, plus the samples played since (a
  * missed VBL sends no report, and the chip goes on). At its next VBL the ST
  * copies up to PROFILE_DMA_LEAD ahead; the rest covers the writer's period
  * and how late it sees a report (4 ms each: 5/8 of a VBL together). */
-#define AUDIO_DMA_FIFO_BYTES (5u * PROFILE_DMA_BYTES_PER_VBL)
+#define AUDIO_DMA_FIFO_BYTES (PROFILE_VBLS_A_FRAME == 1 ? 1280u : 5u * PROFILE_DMA_BYTES_PER_VBL)
 #define AUDIO_DMA_AHEAD (PROFILE_DMA_LEAD + PROFILE_DMA_BYTES_PER_VBL * 5u / 8u)
 /* The estimate goes at most this far past the last report. */
 #define AUDIO_DMA_EST_MAX_US (3u * AUDIO_FRAME_PERIOD_US)
@@ -159,16 +182,16 @@ static audio_fill_cb_t s_fill_cb;
 static audio_pcm_cb_t s_pcm_cb;
 static uint32_t s_pcm_rate;
 
-/* The output's FIFO: pairs for the YM, samples for the DMA chip. One output
- * plays at a time, so they share the memory. */
+/* The output's FIFO: volumes for the YM, samples for the DMA chip. One
+ * output plays at a time, so they share the memory. */
 static union {
-  uint8_t ym[AUDIO_YM_FIFO_PAIRS * 2u];
+  uint8_t ym[AUDIO_YM_FIFO_SAMPLES * AUDIO_YM_VOICES];
   int8_t dma[AUDIO_DMA_FIFO_BYTES];
 } s_fifo_mem;
 #define s_ym_fifo (s_fifo_mem.ym)
 #define s_dma_fifo (s_fifo_mem.dma)
-static volatile uint32_t s_ym_head; /* pairs produced (main loop) */
-static volatile uint32_t s_ym_tail; /* pairs consumed (writer) */
+static volatile uint32_t s_ym_head; /* samples produced (main loop) */
+static volatile uint32_t s_ym_tail; /* samples consumed (writer) */
 static volatile uint32_t s_dma_head; /* samples produced (main loop) */
 static volatile uint32_t s_dma_tail; /* samples consumed (writer) */
 
@@ -182,7 +205,7 @@ static uint32_t s_ym_acc_vbls;   /* the ST's VBLs over the same reports */
 static bool s_ym_rate_known;     /* a first window has set the rate */
 static uint16_t s_last_report = 0xFFFFu; /* none yet: the first one is fresh */
 static uint32_t s_last_report_us;
-static uint8_t s_hold[2];    /* the last sample written: what an underrun holds */
+static uint8_t s_hold[AUDIO_YM_VOICES]; /* the last sample written: what an underrun holds */
 
 /* The DMA writer's view of the ST. */
 static bool s_dma_known;
@@ -239,6 +262,49 @@ static const uint8_t k_ghost_pairs[64][2] = {
     {8, 12}, {8, 12}, {9, 12}, {9, 12}, {9, 12}, {10, 12}, {0, 13}, {2, 13},
     {3, 13}, {4, 13}, {5, 13}, {6, 13}, {7, 13}, {8, 13}, {8, 13}, {9, 13},
 };
+
+#if AUDIO_YM_VOICES == 3
+/* For each unsigned 8-bit sample the YM's three volumes (vA, vB, vC) whose
+ * output, as measured on an ST, lies nearest to a straight line over
+ * tools/ym_triples.py's span: about 8 bits. The ST ties the three outputs together, so the channels do not add;
+ * tools/ym_triples.py fits this table to Paulo Simoes' measurements of every
+ * combination (Hatari's ym2149_fixed_vol.h), which hold with the mixer's
+ * tones off, as userfw.s sets it. Not static: the host tests read it. */
+const uint8_t audioYmTriples[256][3] = {
+    {0, 0, 0}, {2, 0, 0}, {3, 0, 0}, {2, 1, 1}, {4, 1, 0}, {3, 3, 1}, {5, 1, 1}, {4, 3, 2},
+    {4, 4, 2}, {5, 5, 0}, {5, 4, 3}, {5, 4, 4}, {6, 4, 3}, {7, 4, 1}, {6, 6, 1}, {7, 5, 2},
+    {8, 3, 1}, {7, 6, 2}, {7, 5, 5}, {8, 5, 2}, {7, 7, 3}, {9, 4, 0}, {9, 3, 3}, {9, 5, 1},
+    {8, 7, 3}, {9, 6, 1}, {8, 7, 5}, {10, 1, 0}, {8, 7, 6}, {8, 8, 4}, {8, 8, 5}, {9, 8, 1},
+    {8, 8, 6}, {10, 6, 1}, {8, 8, 7}, {9, 9, 0}, {11, 0, 0}, {9, 9, 3}, {11, 3, 0}, {11, 4, 0},
+    {11, 3, 3}, {11, 4, 3}, {11, 5, 3}, {10, 9, 1}, {11, 7, 1}, {10, 9, 4}, {9, 9, 8}, {11, 6, 6},
+    {10, 9, 6}, {11, 8, 3}, {10, 9, 7}, {11, 8, 5}, {11, 9, 1}, {12, 0, 0}, {11, 9, 4}, {11, 9, 5},
+    {12, 3, 2}, {12, 4, 2}, {12, 5, 2}, {11, 10, 0}, {11, 10, 2}, {12, 6, 4}, {12, 6, 5}, {12, 7, 4},
+    {12, 8, 0}, {12, 8, 2}, {11, 10, 7}, {12, 8, 4}, {12, 9, 0}, {11, 11, 2}, {12, 9, 3}, {12, 8, 7},
+    {10, 10, 10}, {12, 9, 6}, {12, 8, 8}, {12, 9, 7}, {12, 10, 1}, {13, 2, 2}, {13, 5, 0}, {13, 5, 2},
+    {12, 10, 6}, {13, 6, 3}, {13, 6, 4}, {13, 7, 3}, {12, 11, 0}, {12, 11, 2}, {12, 11, 4}, {13, 8, 4},
+    {12, 10, 9}, {13, 9, 2}, {13, 9, 4}, {13, 9, 5}, {12, 11, 8}, {13, 8, 8}, {13, 9, 7}, {13, 10, 0},
+    {13, 10, 3}, {13, 9, 8}, {13, 10, 5}, {13, 10, 6}, {12, 12, 2}, {12, 12, 4}, {12, 11, 10}, {13, 11, 0},
+    {13, 11, 2}, {13, 11, 4}, {13, 11, 5}, {12, 12, 8}, {13, 11, 7}, {12, 11, 11}, {12, 12, 9}, {13, 11, 8},
+    {13, 10, 10}, {13, 10, 10}, {13, 11, 9}, {12, 12, 10}, {12, 12, 10}, {14, 0, 0}, {14, 3, 0}, {14, 3, 2},
+    {13, 12, 4}, {14, 6, 1}, {14, 7, 0}, {14, 7, 3}, {14, 6, 6}, {14, 8, 1}, {14, 8, 4}, {14, 8, 5},
+    {14, 9, 0}, {14, 8, 7}, {14, 9, 5}, {14, 9, 6}, {14, 9, 7}, {13, 12, 10}, {14, 10, 1}, {14, 10, 4},
+    {14, 10, 6}, {13, 13, 0}, {13, 13, 4}, {13, 12, 11}, {13, 13, 7}, {14, 11, 0}, {14, 11, 4}, {14, 11, 6},
+    {14, 11, 7}, {13, 13, 9}, {14, 11, 8}, {14, 10, 10}, {14, 11, 9}, {13, 13, 10}, {13, 13, 10}, {13, 12, 12},
+    {13, 12, 12}, {14, 11, 10}, {14, 11, 10}, {13, 13, 11}, {14, 12, 4}, {14, 12, 6}, {14, 12, 7}, {14, 11, 11},
+    {14, 12, 8}, {14, 12, 9}, {14, 12, 9}, {14, 12, 9}, {14, 12, 10}, {14, 12, 10}, {13, 13, 12}, {13, 13, 12},
+    {13, 13, 12}, {14, 12, 11}, {14, 12, 11}, {14, 12, 11}, {14, 12, 11}, {14, 13, 0}, {14, 13, 2}, {14, 13, 7},
+    {15, 3, 0}, {15, 6, 3}, {15, 7, 6}, {15, 8, 5}, {15, 8, 7}, {15, 8, 8}, {15, 9, 7}, {15, 9, 8},
+    {15, 9, 9}, {15, 10, 7}, {15, 10, 8}, {15, 10, 9}, {15, 10, 9}, {15, 11, 0}, {15, 11, 7}, {15, 11, 8},
+    {15, 11, 9}, {15, 11, 9}, {14, 13, 12}, {15, 11, 10}, {15, 11, 10}, {15, 11, 10}, {15, 11, 11}, {15, 11, 11},
+    {15, 11, 11}, {15, 12, 0}, {15, 12, 7}, {15, 12, 9}, {15, 12, 9}, {15, 12, 10}, {14, 14, 0}, {14, 14, 7},
+    {14, 14, 9}, {15, 12, 11}, {14, 14, 10}, {14, 14, 10}, {14, 14, 11}, {14, 14, 11}, {14, 14, 11}, {14, 14, 11},
+    {15, 13, 0}, {15, 13, 0}, {15, 13, 9}, {15, 13, 10}, {15, 13, 10}, {14, 14, 12}, {15, 13, 11}, {15, 13, 11},
+    {15, 13, 11}, {15, 13, 11}, {15, 13, 11}, {15, 13, 12}, {15, 13, 12}, {15, 13, 12}, {15, 13, 12}, {14, 14, 13},
+    {14, 14, 13}, {14, 14, 13}, {14, 14, 13}, {14, 14, 13}, {14, 14, 13}, {15, 13, 13}, {15, 13, 13}, {15, 13, 13},
+    {15, 13, 13}, {15, 13, 13}, {15, 13, 13}, {15, 13, 13}, {15, 14, 0}, {15, 14, 0}, {15, 14, 0}, {15, 14, 10},
+    {15, 14, 11}, {15, 14, 11}, {15, 14, 11}, {15, 14, 11}, {15, 14, 12}, {15, 14, 12}, {15, 14, 12}, {14, 14, 14},
+};
+#endif
 
 /* A YM channel's amplitude at each volume, x 10,000: 2^((v - 15) / 2), the
  * curve tools/wav_to_ym4.py fits pairs to. */
@@ -356,14 +422,19 @@ static uint32_t rate_step(uint32_t out_rate) {
   return (uint32_t)(((uint64_t)source_rate() << 16) / out_rate);
 }
 
-/* `n` YM pairs at the rate the ST achieves (a source at that rate goes
- * through the table unchanged: its pairs are the table's). */
+/* `n` samples' YM volumes at the rate the ST achieves: three channels'
+ * through audioYmTriples, or a pair (a source at that rate goes through the
+ * table unchanged: its pairs are the table's). */
 static void produce_ym(uint8_t *dst, uint32_t n) {
   uint32_t step = rate_step(audioYmRateHz);
   for (uint32_t i = 0; i < n; i++) {
-    uint32_t index = (uint32_t)(resample(step) + 128) >> 2;
-    dst[2u * i] = k_ghost_pairs[index][0];
-    dst[2u * i + 1u] = k_ghost_pairs[index][1];
+    uint32_t value = (uint32_t)(resample(step) + 128);
+#if AUDIO_YM_VOICES == 3
+    for (uint32_t v = 0; v < 3u; v++) dst[3u * i + v] = audioYmTriples[value][v];
+#else
+    dst[2u * i] = k_ghost_pairs[value >> 2][0];
+    dst[2u * i + 1u] = k_ghost_pairs[value >> 2][1];
+#endif
   }
 }
 
@@ -374,19 +445,21 @@ static void produce_pcm(int8_t *dst, uint32_t n) {
 }
 
 /* One sample into the ring at byte `at` (and into the spill when the spill
- * mirrors it): at 50 fps the four bytes the ST's movep.l writes to the YM's
- * select and data registers, in the RP's order (cart_shared.h); at 25 fps
- * the pair. */
-static inline void ym_put(uint32_t at, uint8_t va, uint8_t vb) {
+ * mirrors it): at 50 fps the six bytes the ST's movep.l and movep.w write to
+ * the YM's select and data registers, in the RP's order (cart_shared.h); at
+ * 25 fps the pair. */
+static inline void ym_put(uint32_t at, const uint8_t *v) {
   uint8_t *p = s_audio_buf + at;
 #if PROFILE_YM_MOVEP
-  p[0] = va;
+  p[0] = v[0];
   p[1] = CART_YM_REG_VOL_A;
-  p[2] = vb;
+  p[2] = v[1];
   p[3] = CART_YM_REG_VOL_B;
+  p[4] = v[2];
+  p[5] = CART_YM_REG_VOL_C;
 #else
-  p[0] = va;
-  p[1] = vb;
+  p[0] = v[0];
+  p[1] = v[1];
 #endif
   if (at < AUDIO_YM_SPILL) {
     uint8_t *q = p + AUDIO_YM_RING;
@@ -417,7 +490,7 @@ static void select_output(uint8_t machine) {
   s_ym_known = false;
   s_dma_known = false;
   s_last_report = 0xFFFFu;
-  s_hold[0] = s_hold[1] = 0;
+  memset(s_hold, 0, sizeof s_hold);
   s_dma_hold = 0;
   audioYmRateHz = AUDIO_NATIVE_RATE_HZ;
   s_ym_rate_known = false;
@@ -426,9 +499,8 @@ static void select_output(uint8_t machine) {
    * let that be silence, not the last session's sound: zeros for the DMA
    * chip, silent samples in the ring's format for the YM. */
   if (out == AUDIO_OUT_YM) {
-    for (uint32_t i = 0; i < CART_AUDIO_BUFFER_SIZE; i += AUDIO_YM_SAMPLE_BYTES) {
-      ym_put(i, 0, 0);
-    }
+    static const uint8_t silent[AUDIO_YM_VOICES];
+    for (uint32_t i = 0; i < AUDIO_YM_RING; i += AUDIO_YM_SAMPLE_BYTES) ym_put(i, silent);
   } else {
     memset(s_audio_buf, 0, CART_AUDIO_BUFFER_SIZE);
   }
@@ -667,6 +739,10 @@ static void __not_in_flash_func(ym_writer)(void) {
   uint32_t now_us = time_us_32();
   uint32_t play = (report & 0xFFu) * CART_AUDIO_POS_UNIT;
   if (play >= AUDIO_YM_RING) play -= AUDIO_YM_RING; /* never: the ST wraps first */
+  /* The ST's cursor is on a sample, within the unit reported: the sample
+   * at or before it (six-byte samples do not divide the unit), so every
+   * write lands on the ST's samples. */
+  play -= play % AUDIO_YM_SAMPLE_BYTES;
   if (!s_ym_known) {
     s_ym_known = true;
     s_ym_front = (play + AUDIO_YM_LEAD * AUDIO_YM_SAMPLE_BYTES) % AUDIO_YM_RING;
@@ -723,14 +799,13 @@ static void __not_in_flash_func(ym_writer)(void) {
   uint32_t head = s_ym_head;
   for (uint32_t i = 0; i < n; i += AUDIO_YM_SAMPLE_BYTES) {
     if (tail != head) {
-      const uint8_t *pair = &s_ym_fifo[(tail % AUDIO_YM_FIFO_PAIRS) * 2u];
-      s_hold[0] = pair[0];
-      s_hold[1] = pair[1];
+      const uint8_t *volumes = &s_ym_fifo[(tail % AUDIO_YM_FIFO_SAMPLES) * AUDIO_YM_VOICES];
+      for (uint32_t v = 0; v < AUDIO_YM_VOICES; v++) s_hold[v] = volumes[v];
       tail++;
     } else {
       held = true;
     }
-    ym_put(front, s_hold[0], s_hold[1]);
+    ym_put(front, s_hold);
     front += AUDIO_YM_SAMPLE_BYTES;
     if (front >= AUDIO_YM_RING) front -= AUDIO_YM_RING;
   }
@@ -830,16 +905,15 @@ void audio_render_frame(void) {
     }
     return;
   }
-  /* Top up the FIFO a chunk at a time: the writer reads only the pairs
+  /* Top up the FIFO a chunk at a time: the writer reads only the samples
    * below s_ym_head. */
-  while (AUDIO_YM_FIFO_PAIRS - (s_ym_head - s_ym_tail) >= AUDIO_PCM_CHUNK) {
-    uint8_t chunk[AUDIO_PCM_CHUNK * 2u];
+  while (AUDIO_YM_FIFO_SAMPLES - (s_ym_head - s_ym_tail) >= AUDIO_PCM_CHUNK) {
+    uint8_t chunk[AUDIO_PCM_CHUNK * AUDIO_YM_VOICES];
     produce_ym(chunk, AUDIO_PCM_CHUNK);
     uint32_t head = s_ym_head;
     for (uint32_t i = 0; i < AUDIO_PCM_CHUNK; i++) {
-      uint8_t *pair = &s_ym_fifo[((head + i) % AUDIO_YM_FIFO_PAIRS) * 2u];
-      pair[0] = chunk[2u * i];
-      pair[1] = chunk[2u * i + 1u];
+      uint8_t *volumes = &s_ym_fifo[((head + i) % AUDIO_YM_FIFO_SAMPLES) * AUDIO_YM_VOICES];
+      for (uint32_t v = 0; v < AUDIO_YM_VOICES; v++) volumes[v] = chunk[AUDIO_YM_VOICES * i + v];
     }
     __dmb();
     s_ym_head = head + AUDIO_PCM_CHUNK;

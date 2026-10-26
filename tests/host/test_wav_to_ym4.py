@@ -19,6 +19,13 @@ TOOL = os.path.join(REPO, "tools", "wav_to_ym4.py")
 _spec = importlib.util.spec_from_file_location("wav_to_ym4", TOOL)
 ym = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ym)
+_spec = importlib.util.spec_from_file_location(
+    "ym_triples", os.path.join(REPO, "tools", "ym_triples.py"))
+triples = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(triples)
+# The ST's measured YM levels (tools/ym_triples.py), from a Hatari tree.
+MEASURED = os.path.join(os.environ.get("HATARI_SRC", os.path.join(REPO, "..", "hatari")),
+                        "src", "includes", "ym2149_fixed_vol.h")
 
 
 def audio_defines():
@@ -88,6 +95,26 @@ class RpTables(unittest.TestCase):
     def test_pairs(self):
         flat = self._c_array("k_ghost_pairs[64][2]")
         self.assertEqual(list(zip(flat[0::2], flat[1::2])), [tuple(p) for p in ym.GHOSTBUSTERS_LUT])
+
+    def _triples(self):
+        flat = self._c_array("audioYmTriples[256][3]")
+        return list(zip(flat[0::3], flat[1::3], flat[2::3]))
+
+    def test_triples(self):
+        """The three channels' volumes for each 8-bit sample (50 fps)."""
+        got = self._triples()
+        self.assertEqual(len(got), 256)
+        self.assertEqual(got[0], (0, 0, 0))
+        self.assertTrue(all(0 <= v <= 15 for t in got for v in t))
+
+    @unittest.skipUnless(os.path.exists(MEASURED), "no Hatari tree (HATARI_SRC)")
+    def test_triples_from_the_measurements(self):
+        """tools/ym_triples.py's fit to the ST's measured levels, and a louder
+        sample never plays quieter on the ST."""
+        level = triples.measured_levels(MEASURED)
+        _top, want, levels = triples.fit(level, triples.SPAN)
+        self.assertEqual(self._triples(), want)
+        self.assertEqual(levels, sorted(levels))
 
     def test_ym_curve(self):
         amps = self._c_array("k_ym_amp[16]")

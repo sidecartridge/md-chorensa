@@ -28,7 +28,7 @@
 #define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 3u          /* 3: the stage's art */
+#define XL_STORE_VERSION 4u          /* 4: the songs */
 #define XL_STORE_KIND_COMMON 0u      /* else the stage's number */
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
 
@@ -52,6 +52,13 @@ typedef struct {
   uint32_t address; /* the 68000 address the function starts at */
   xl_store_fn_t fn;
 } xl_store_entry_t;
+
+/* A song the game has loaded (MCDRV names it by its data's address) and the
+ * file on the card that plays it (NAME.ST8, tools/xlat/music_convert.py). */
+typedef struct {
+  uint32_t address;
+  char name[12]; /* "SZ2_S1": the song's base name */
+} xl_store_song_t;
 
 /* A stage's pictures for the renderer, in the ST's 16 colours as the follow
  * scheme maps the program's palette entries (tools/xlat/palette_fit.py):
@@ -100,6 +107,11 @@ typedef struct {
   uint32_t checkpoint_count;
   uint32_t layout[XL_LAYOUT_WORDS]; /* the common image's: XL_LAYOUT_* */
   const xl_store_art_t *art;          /* a stage's pictures, or 0 */
+  const xl_store_song_t *songs;       /* the common image's: the songs loaded */
+  uint32_t song_count;
+  uint32_t song_playing;              /* a stage's snapshot: the song playing (in the
+                                         common image's table), or 0xFFFFFFFF */
+  uint32_t song_frames;               /* the frames it had played then */
 } xl_store_header_t;
 
 #endif /* XL_STORE_H */

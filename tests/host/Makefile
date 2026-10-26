@@ -38,14 +38,16 @@ py-tests:
 
 # A test's own firmware sources are listed in its first line:
 #   // units: rp/src/fb_blit.c
+# and the defines it builds them with, if any, in its second:
+#   // cflags: -DNAME=VALUE
 # Always rebuilt (it takes about a second): a test must never pass on a binary
 # older than the firmware source it checks.
 $(BUILD)/%: %.c FORCE | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $< \
+	$(CC) $(CFLAGS) $(shell sed -n '2s|^// cflags: ||p' $<) -o $@ $< \
 	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
 
 $(BUILD)/%-25fps: %.c FORCE | $(BUILD)
-	$(CC) $(CFLAGS) -DAPP_PROFILE=PROFILE_25FPS -o $@ $< \
+	$(CC) $(CFLAGS) $(shell sed -n '2s|^// cflags: ||p' $<) -DAPP_PROFILE=PROFILE_25FPS -o $@ $< \
 	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
 
 $(BUILD):

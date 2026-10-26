@@ -31,6 +31,9 @@
 
 unsigned int __rom_in_ram_start__[0x10000 / sizeof(unsigned int)];
 extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioOutput;
+#if PROFILE_YM_MOVEP
+extern const uint8_t audioYmTriples[256][3];
+#endif
 
 /* --- The RP's world ------------------------------------------------------- */
 
@@ -218,12 +221,14 @@ static void test_steady(void) {
   CHECK_EQ(audioUnderruns, under0);
 }
 
-/* The main loop away for three VBLs every so often: the FIFO and the
- * samples written ahead cover it. */
+/* The main loop away every so often, for as long as the FIFO and the
+ * samples written ahead cover: three VBLs at 25 fps, one at 50, where the
+ * FIFO holds two and a half VBLs (audio.c). */
 static void test_stalls_covered(void) {
   start(0x11);
   uint32_t under0 = audioUnderruns;
-  for (int i = 0; i < 1000; i++) frame(i % 25 >= 3 || i < 25, false);
+  const int away = PROFILE_VBLS_A_FRAME == 1 ? 1 : 3;
+  for (int i = 0; i < 1000; i++) frame(i % 25 >= away || i < 25, false);
   uint32_t s = first_sound(0), repeats;
   CHECK_EQ(follows(s, 0, false, &repeats), n_played - s);
   CHECK_EQ(audioUnderruns, under0);
@@ -358,12 +363,13 @@ static void test_pcm_source_on_ym(void) {
     }
   }
   /* Written ahead of the cursor: the pattern's samples in a row, as pairs,
-   * or at 50 fps four bytes each (the pair with the YM's register numbers,
-   * profile.h). Find where it starts, half a VBL on (the spill mirrors the
-   * ring's start, so a run can be read straight through the end). */
+   * or at 50 fps six bytes each (three channels' volumes with the YM's
+   * register numbers, profile.h). Find where it starts, half a VBL on (the
+   * spill mirrors the ring's start, so a run can be read straight through
+   * the end). */
   const uint8_t *slice = buf + cursor + PROFILE_YM_SAMPLES_PER_VBL / 2u * PROFILE_YM_SAMPLE_BYTES;
-  const uint32_t stride = PROFILE_YM_MOVEP ? 4u : 2u;
-  const uint32_t b_at = PROFILE_YM_MOVEP ? 2u : 1u;
+  const uint32_t stride = PROFILE_YM_SAMPLE_BYTES;
+#if !PROFILE_YM_MOVEP
   static const uint8_t k_lut_a[64] = {0, 0, 1, 2, 2, 1, 2, 2, 0, 2, 3, 4, 2, 4, 5, 2,
                                       3, 4, 5, 2, 3, 4, 5, 6, 7, 3, 4, 5, 6, 7, 0, 1,
                                       2, 4, 5, 6, 7, 8, 8, 9, 9, 0, 1, 2, 3, 4, 5, 6,
@@ -373,13 +379,19 @@ static void test_pcm_source_on_ym(void) {
                                       10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 11,
                                       11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
                                       12, 12, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13};
+#endif
   bool found = false;
   for (uint32_t k = 0; k < PATTERN && !found; k++) {
     bool ok = true;
     for (uint32_t i = 0; i < 112u && ok; i++) {
-      uint32_t index = (uint32_t)(pattern[(k + i) % PATTERN] + 128) >> 2;
-      ok = slice[stride * i] == k_lut_a[index] &&
-           slice[stride * i + b_at] == k_lut_b[index];
+      uint32_t value = (uint32_t)(pattern[(k + i) % PATTERN] + 128);
+#if PROFILE_YM_MOVEP
+      ok = slice[stride * i] == audioYmTriples[value][0] &&
+           slice[stride * i + 2u] == audioYmTriples[value][1] &&
+           slice[stride * i + 4u] == audioYmTriples[value][2];
+#else
+      ok = slice[stride * i] == k_lut_a[value >> 2] && slice[stride * i + 1u] == k_lut_b[value >> 2];
+#endif
     }
     found = ok;
   }
