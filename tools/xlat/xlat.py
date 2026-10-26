@@ -67,10 +67,22 @@ PATCHES = {
     0x29222: ("xl_patch_sincos();", ("goto", 0x29408)),        # the sine and cosine tables
 }
 # Code the runtime runs just before an original instruction, which then runs
-# as usual: the port decodes the ADPCM samples there (and rewrites the game's
-# sample table, whose lengths the effects' timing then uses).
+# as usual (unless the code returns): the port decodes the ADPCM samples there
+# (and rewrites the game's sample table, whose lengths the effects' timing
+# then uses), and the live input steers the demo's replay.
 PATCHES_BEFORE = {
     0x29422: "xl_patch_samples_loaded();",   # before LOAD_RANDOM_TABLE
+    # Live input in the attract demo (xl_live_input): the replay-or-record
+    # routines of the stick's directions and buttons read the stick, as when
+    # they record (their argument forced to 0), and return what they read
+    # without recording it; only those reads see the live stick
+    # (xl_live_read), the demo's own check for a press does not.
+    0x239E6: "if (xl_live_input()) { wr16(A(7) + 6u, 0u); xl_live_read(1); }",
+    0x23A14: "if (xl_live_input()) { xl_live_read(0); D(0) = sx16(D(1) & M16); "
+             "{ uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
+    0x23AF8: "if (xl_live_input()) { wr16(A(7) + 10u, 0u); xl_live_read(1); }",
+    0x23B28: "if (xl_live_input()) { xl_live_read(0); D(0) = sx16(D(2) & M16); "
+             "D(3) = rd32(A(7)); A(7) += 4; { uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
 }
 # The program's variables the runtime reads or writes, by the listing's names.
 EXPORTS = ("PCM_SAMPLE_INFO_TABLE", "PLAYER_SCORE", "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",

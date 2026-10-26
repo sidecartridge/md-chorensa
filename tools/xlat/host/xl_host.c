@@ -461,6 +461,32 @@ void xl_patch_samples_loaded(void) {
   s_samples_decoded = 1;
 }
 
+/* The host plays the demo as recorded, unless XL_LIVE_FROM names a frame:
+ * from there a scripted player takes over (the stick left for a second,
+ * right for a second, the shot held), to try the live path. */
+static int s_live_read;
+
+int xl_live_input(void) {
+  static long from = -2;
+  if (from == -2) {
+    const char *v = getenv("XL_LIVE_FROM");
+    from = v ? strtol(v, NULL, 10) : -1;
+  }
+  return from >= 0 && s_frame_count >= (uint32_t)from;
+}
+
+void xl_live_read(int on) { s_live_read = on; }
+
+/* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
+ * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
+ * seconds. */
+static uint32_t scripted_stick(void) {
+  uint32_t closed = ((s_frame_count / 55u) & 1u) ? 0x08u : 0x04u;
+  closed |= 0x20u;
+  if (s_frame_count % 330u < 3u) closed |= 0x40u;
+  return 0xFFFFFF00u | (~closed & 0xFFu);
+}
+
 /* --- IOCS (TRAP #15), as the port serves it ----------------------------- */
 
 static const uint32_t k_adpcm_rates_hz100[5] = {4000000u * 100u / 1024u, 4000000u * 100u / 768u,
@@ -493,8 +519,8 @@ static void iocs(void) {
       }
       return;
     }
-    case 0x3B: /* _JOYGET: nothing pressed (active low) */
-      D(0) = 0xFFFFFFFFu;
+    case 0x3B: /* _JOYGET: nothing pressed (active low), or the scripted player */
+      D(0) = s_live_read ? scripted_stick() : 0xFFFFFFFFu;
       return;
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes */
       uint32_t channels = D(1) & 3u, length = D(2);
@@ -552,8 +578,29 @@ static void iocs(void) {
   }
 }
 
+/* Where each IOCS call comes from: (function, the trap's address, the
+ * return address on the stack then, calls), printed at the end with the
+ * calls. */
+#define CALL_SITES 64
+static uint32_t s_call_sites[CALL_SITES][4];
+
+static void note_call_site(uint32_t f, uint32_t pc) {
+  uint32_t caller = rd32(A(7));
+  for (int k = 0; k < CALL_SITES; k++) {
+    uint32_t *c = s_call_sites[k];
+    if (c[3] == 0 || (c[0] == f && c[1] == pc && c[2] == caller)) {
+      c[0] = f;
+      c[1] = pc;
+      c[2] = caller;
+      c[3]++;
+      return;
+    }
+  }
+}
+
 void xl_trap(uint32_t n, uint32_t pc) {
   if (n == 15) {
+    note_call_site(D(0) & 0xFFu, pc);
     iocs();
   } else if (n == 2 || n == 4) {
     /* PCM8 (mode reads), MCDRV (no driver: never called) */
@@ -1189,6 +1236,10 @@ int main(int argc, char **argv) {
   }
   for (uint32_t k = 0; k < 512; k++) {
     if (s_calls_linef[k]) printf("xl: $%04X %u calls\n", 0xFE00u + k, s_calls_linef[k]);
+  }
+  for (int k = 0; k < CALL_SITES && s_call_sites[k][3]; k++) {
+    printf("xl: IOCS $%02X from %06X (returning to %06X): %u calls\n", s_call_sites[k][0],
+           s_call_sites[k][1], s_call_sites[k][2] & 0xFFFFFFu, s_call_sites[k][3]);
   }
 #ifdef XL_TRACE
   write_coverage(s_out_dir);

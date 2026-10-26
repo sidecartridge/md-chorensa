@@ -80,6 +80,29 @@ volatile uint32_t benchPlayHoldAt;
 volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
 
+/* Live input (xlat.py's patches): from the first touch of joystick 1, its
+ * fire, the cursor keys or the space bar, the player flies the demo's ship;
+ * each lap starts as the demo again. The stick as _JOYGET reports it to the
+ * player's reads (closed switches: bits 0-3 up, down, left, right, bit 5
+ * button A, bit 6 button B). */
+#define STICK_UP 0x01u
+#define STICK_DOWN 0x02u
+#define STICK_LEFT 0x04u
+#define STICK_RIGHT 0x08u
+#define STICK_SHOT 0x20u  /* button A: the fire button */
+#define STICK_BOMB 0x40u  /* button B: the space bar */
+#define SC_UP 0x48u
+#define SC_DOWN 0x50u
+#define SC_LEFT 0x4Bu
+#define SC_RIGHT 0x4Du
+#define SC_SPACE 0x39u
+static int s_live, s_live_read;
+static uint8_t s_keys;  /* the stick's bits the keyboard holds */
+static uint8_t s_stick;
+
+int xl_live_input(void) { return s_live; }
+void xl_live_read(int on) { s_live_read = on; }
+
 /* The game's variables the runtime uses, from the common image's header. */
 #define GAME(name) (s_common->layout[XL_LAYOUT_##name])
 
@@ -186,7 +209,8 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_linef,         (const void *)xl_patch_xsp_vsync,
     (const void *)xl_patch_xsp_out, (const void *)xl_patch_clear_text_planes,
     (const void *)xl_patch_wait_vbl, (const void *)xl_patch_sincos,
-    (const void *)xl_patch_samples_loaded, (const void *)&xl,
+    (const void *)xl_patch_samples_loaded, (const void *)xl_live_input,
+    (const void *)xl_live_read,     (const void *)&xl,
     (const void *)xl_regions,       (const void *)&xl_mem,
 };
 
@@ -222,6 +246,7 @@ static void checkpoint(void) {
   c[12] = (uint8_t)(s_last_sprite_count >> 8);
   c[13] = (uint8_t)s_last_sprite_count;
   read_bytes(c + 16, GAME(PLAYER_INFO_STRUCT), 14);
+  if (s_live) return; /* the player's game is not the host's */
   uint32_t k = s_frame_count / CHECKPOINT_INTERVAL - 1u;
   benchLogicResult.checkpoints++;
   if (k >= s_stage->checkpoint_count) return;
@@ -264,7 +289,22 @@ static void present(uint32_t game_us) {
   select_poll();
   ikbd_key_event_t key;
   while (ikbd_pop_key(&key)) {
+    uint8_t bit = key.scancode == SC_UP      ? STICK_UP
+                  : key.scancode == SC_DOWN  ? STICK_DOWN
+                  : key.scancode == SC_LEFT  ? STICK_LEFT
+                  : key.scancode == SC_RIGHT ? STICK_RIGHT
+                  : key.scancode == SC_SPACE ? STICK_BOMB
+                                             : 0u;
+    s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
   }
+  ikbd_joystick_t stick;
+  ikbd_read_joystick(1, &stick);
+  s_stick = (uint8_t)(s_keys | ((stick.state & IKBD_JOY_UP) ? STICK_UP : 0u) |
+                      ((stick.state & IKBD_JOY_DOWN) ? STICK_DOWN : 0u) |
+                      ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
+                      ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
+                      ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
+  if (s_stick) s_live = 1;
   if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
     benchPlayHeld = benchPlayHoldAt;
     while (benchPlayHoldAt == benchPlayHeld && benchPlay) {
@@ -361,8 +401,8 @@ static void iocs(uint32_t pc) {
     case 0x04: /* _BITSNS: no key held */
       D(0) = 0;
       return;
-    case 0x3B: /* _JOYGET: nothing pressed */
-      D(0) = 0xFFFFFFFFu;
+    case 0x3B: /* _JOYGET: nothing pressed, but to the player's reads */
+      D(0) = s_live_read ? (0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu)) : 0xFFFFFFFFu;
       return;
     case 0x60: { /* _ADPCMOUT */
       uint32_t channels = D(1) & 3u, length = D(2);
@@ -439,6 +479,8 @@ static uint8_t *pool_page(uint32_t k) {
 }
 
 static void restore(void) {
+  s_live = 0;
+  s_live_read = 0;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
   for (uint32_t k = 0; k < s_stage->ram_pages; k++) {
     memcpy(pool_page(k), s_stage->ram_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
@@ -542,7 +584,9 @@ bool bench_logic_holds_screen(void) { return benchSd.held != 0; }
 /* Play until the host stops it or the run fails (then not again until the
  * host asks: benchPlay back to 1). */
 static void play(void) {
+  ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
   run(1);
+  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
   if (benchLogicResult.state != BENCH_LOGIC_DONE) benchPlay = 0;
 }
 

@@ -9,7 +9,8 @@ sd-put), and the firmware copies them into the store.
 1. The attract mode with the stages as phases (run_host.py, XL_PHASES):
    which functions each stage runs (reused with --phases RUN).
 2. A snapshot after the stage load and two runs resumed from it: one with
-   the trace (the functions it enters), one with the memory map; a third to
+   the trace (the functions it enters), one with the memory map (and another
+   with a scripted player taking over: what live input writes); a third to
    the end of the first stage (the patterns its sprites draw), and the
    attract demo to there with each pixel's palette entry (the palette fit).
 3. Each function's home: the first stage's if only that stage runs it, the
@@ -49,6 +50,10 @@ import xlat  # noqa: E402
 # second stage's from 10,380): the palette is fitted and the patterns
 # gathered over them.
 STAGE1_LAST = 10380
+# The scripted player of the host (XL_LIVE_FROM: flying, shooting, a bomb
+# every six seconds) takes over the demo here; its memory map runs to before
+# it loses its last life (a game over writes the text plane and much else).
+LIVE_FROM, LIVE_UNTIL = 1000, 2900
 
 # The stages' routines (the dispatcher's targets), in the order XL_PHASES
 # numbers them from 1: phase 2 is the first stage.
@@ -65,14 +70,15 @@ CFLAGS = ["-mcpu=cortex-m0plus", "-mthumb", "-Os", "-std=c11", "-w", "-ffunction
           "-fdata-sections", "-fno-common", "-DXL_PAGED"]
 
 
-def host_run(name, extra, env=None):
-    """run_host.py with these arguments: the run's folder (it must PASS)."""
+def host_run(name, extra, env=None, check=True):
+    """run_host.py with these arguments: the run's folder (it must PASS,
+    unless not `check`: a run the player changed cannot match the oracle)."""
     out = subprocess.run([sys.executable, os.path.join(HERE, "run_host.py"), "--frames", "6000",
                           "--screens", "0", "--name", name] + extra,
                          capture_output=True, text=True, env={**os.environ, **(env or {})})
     lines = out.stdout.splitlines()
     run = next((line for line in lines if os.path.isdir(line)), None)
-    if out.returncode != 0 or run is None or "PASS" not in lines:
+    if out.returncode not in (0, 1) or run is None or (check and "PASS" not in lines):
         sys.exit(f"run_host.py {name} failed:\n{out.stdout[-2000:]}{out.stderr[-2000:]}")
     return run
 
@@ -225,6 +231,10 @@ def main():
     snap = host_run(f"store-snap{args.frame}", ["--snapshot", str(args.frame)])
     bench = host_run("store-coverage", ["--resume", snap], {"XL_TRACE": "1"})
     memmap = host_run("store-memmap", ["--resume", snap], {"XL_MEMMAP": "1"})
+    # And a scripted player flying from frame LIVE_FROM until before its game
+    # over: the memory live input writes beside the demo's.
+    live = host_run("store-live-memmap", ["--resume", snap, "--frames", str(LIVE_UNTIL)],
+                    {"XL_MEMMAP": "1", "XL_LIVE_FROM": str(LIVE_FROM)}, check=False)
     resume = os.path.join(snap, "resume.txt")
     entries_run = args.entries or host_run(
         "store-entries", ["--frames", str(STAGE1_LAST), "--screens", "10", "--entries"])
@@ -254,6 +264,7 @@ def main():
     subprocess.run([sys.executable, os.path.join(HERE, "rp_image.py"),
                     "--snapshot", os.path.join(snap, "snapshot.bin"),
                     "--memmap", os.path.join(memmap, "memmap.bin"),
+                    "--memmap", os.path.join(live, "memmap.bin"),
                     "--checkpoints", os.path.join(bench, "checkpoints.bin"),
                     "--layout", os.path.join(stage_dir, "xl_layout.h"),
                     "--out", stage_dir], check=True)

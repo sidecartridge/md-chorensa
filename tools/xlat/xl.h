@@ -142,6 +142,12 @@ void xl_patch_clear_text_planes(void);
 void xl_patch_wait_vbl(void);
 void xl_patch_sincos(void);
 void xl_patch_samples_loaded(void);
+/* Live input in the attract demo (xlat.py PATCHES_BEFORE): whether the
+ * player has taken over the demo's replay, and whether a read of the stick
+ * on the player's behalf is in progress (the runtime's _JOYGET answers it
+ * with the live stick, every other read with nothing pressed). */
+int xl_live_input(void);
+void xl_live_read(int on);
 
 /* Enter the code at a 68000 address: the translated function that starts
  * there; returns the address its RTS (or RTE) popped. Unknown: fatal. */

@@ -13,7 +13,7 @@ against. tools/xlat/rp_store.py builds it into the stage's image.
 Its output is the game's: it goes into a build folder outside the
 repository, never committed.
 
-usage: rp_image.py --snapshot RUN/snapshot.bin --memmap RUN/memmap.bin
+usage: rp_image.py --snapshot RUN/snapshot.bin --memmap RUN/memmap.bin [--memmap ...]
                    --checkpoints RUN/checkpoints.bin --layout BUILD/xl_layout.h
                    --out DIR
 """
@@ -76,7 +76,8 @@ def c_bytes(data, indent="  "):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--snapshot", required=True)
-    ap.add_argument("--memmap", required=True)
+    ap.add_argument("--memmap", required=True, action="append",
+                    help="a resumed run's memory map (several: what any of them touches)")
     ap.add_argument("--checkpoints", required=True)
     ap.add_argument("--layout", required=True)
     ap.add_argument("--out", required=True)
@@ -93,9 +94,12 @@ def main():
     memory = snap[at:at + MEMORY]
     if len(memory) != MEMORY:
         sys.exit(f"{args.snapshot}: short")
-    touched = bytearray(open(args.memmap, "rb").read())
-    if len(touched) != MEMORY:
-        sys.exit(f"{args.memmap}: not a memory map")
+    touched = bytearray(MEMORY)
+    for path in args.memmap:
+        data = open(path, "rb").read()
+        if len(data) != MEMORY:
+            sys.exit(f"{path}: not a memory map")
+        touched = bytearray(a | b for a, b in zip(touched, data))
     layout = {m.group(1): int(m.group(2), 16) for m in
               re.finditer(r"#define XL_(\w+) 0x([0-9A-F]+)u", open(args.layout).read())}
 
