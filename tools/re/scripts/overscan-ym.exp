@@ -1,0 +1,18 @@
+# The ST family's path on an STE: the YM preferred (F10), a warm reset, the
+# tone (F6) and the copy of the top 240 lines (F9): the screen as the
+# machine shows it in that mode.
+expect hello ST hello #1
+sleep 2
+key f10
+expect ym audio: the YM from the next ST boot
+reset warm
+expect hello2 ST hello #2
+sleep 2
+key f6
+sleep 1
+key f9
+sleep 3
+shot card-ym-240
+key f9
+sleep 2
+shot card-ym-256

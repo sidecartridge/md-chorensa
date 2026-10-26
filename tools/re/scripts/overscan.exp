@@ -1,0 +1,8 @@
+# The overscan screen: the test card after the ST's hello, the borders'
+# counts after a few seconds.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 4
+shot card
+sleep 4
+shot card-later

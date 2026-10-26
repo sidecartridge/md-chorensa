@@ -1,0 +1,11 @@
+# The copy of the frame's top 240 lines (F9), then all 256 again: the bottom
+# 16 lines of the test card vanish and come back.
+expect hello ST hello #1
+sleep 3
+shot card-256
+key F9
+sleep 2
+shot card-240
+key F9
+sleep 2
+shot card-256-again

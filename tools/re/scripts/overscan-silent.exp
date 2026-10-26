@@ -1,0 +1,11 @@
+# The plain ST with no sound (F5, then a warm reset): what its frame costs
+# without the YM samples.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 2
+key f5
+expect silent the ST plays nothing
+reset warm
+expect hello2 ST hello #2: machine
+sleep 6
+shot silent

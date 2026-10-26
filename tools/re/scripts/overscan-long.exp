@@ -1,0 +1,10 @@
+# The overscan screen left running: the borders frame by frame over a long
+# run (the counts on the card), screenshots along the way.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 60
+shot after-60s
+sleep 60
+shot after-120s
+sleep 60
+shot after-180s

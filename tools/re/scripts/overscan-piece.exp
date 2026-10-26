@@ -1,0 +1,15 @@
+# The lines a blitter piece (F8: the default, 32, 4, 8): the copy end per size
+# from --trace video_ste.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 3
+key f8
+expect p32 copy mode AUTO, 32 lines
+sleep 3
+key f8
+expect p4 copy mode AUTO, 4 lines
+sleep 3
+key f8
+expect p8 copy mode AUTO, 8 lines
+sleep 3
+shot pieces

@@ -1,0 +1,13 @@
+# The DMA sound ring: a 440 Hz tone (F6) recorded from Hatari, to check the
+# copy into the ring by what the chip plays (--sound).
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 2
+key f6
+expect tone bench: tone 440 Hz
+sleep 1
+record tone
+sleep 4
+record
+sleep 1
+shot tone

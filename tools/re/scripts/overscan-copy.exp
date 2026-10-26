@@ -1,0 +1,14 @@
+# The three copy modes on one machine (F7: auto, the CPU, the blitter), a
+# screenshot each: the frame is right in both layouts.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 3
+shot auto
+key f7
+expect cpu bench: copy mode CPU
+sleep 3
+shot cpu
+key f7
+expect blitter bench: copy mode BLITTER
+sleep 3
+shot blitter

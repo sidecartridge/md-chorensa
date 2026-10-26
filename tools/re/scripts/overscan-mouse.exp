@@ -1,0 +1,609 @@
+# The overscan screen with the mouse moved flat out: IKBD interrupts while
+# the borders are opened (F2: mouse mode).
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 2
+key f2
+expect mouse IKBD: input mode 1
+sleep 1
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+mouse 40 -30
+sleep 0.02
+mouse -40 30
+sleep 0.02
+shot mouse
