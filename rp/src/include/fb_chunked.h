@@ -6,7 +6,8 @@
  * index in the low nibble). A single conversion pass per frame
  * (`fb_chunky_to_planar`) transposes the chunked bytes into the Atari
  * ST 4 bpp planar layout that lives in the shared cart framebuffer at
- * $FA8300, where the m68k VBL blit picks it up.
+ * $FA8000, where the m68k's copy picks it up, in the order that copier
+ * reads it (cart_shared.h, "Framebuffer layout for the m68k's copy").
  *
  * The conversion writes 16-bit plane WORDS into cart-mirrored RP RAM,
  * so the cart-bus byte-swap is transparent at the word level (same
@@ -26,10 +27,10 @@
 extern "C" {
 #endif
 
-/* Chunked framebuffer dimensions. Matches the Atari ST low-res screen
- * the planar conversion targets. */
-#define FB_CHUNKED_W 320
-#define FB_CHUNKED_H 200
+/* Chunked framebuffer dimensions: the 256 x 256 the ST shows in its overscan
+ * screen (cart_shared.h, "Framebuffer layout for the m68k's copy"). */
+#define FB_CHUNKED_W 256
+#define FB_CHUNKED_H 256
 #define FB_CHUNKED_SIZE (FB_CHUNKED_W * FB_CHUNKED_H)
 
 /* Storage lives in regular RP RAM (`RAM` region at 0x20000000), not the
@@ -83,7 +84,7 @@ static inline void fb_chunked_plot(unsigned int x, unsigned int y,
  * block on a pop that never resolves).
  *
  * @param planar  Destination, must point to the cart framebuffer at
- *                $FA8300 (= 32 000 bytes of cart-mirrored RP RAM).
+ *                $FA8000 (= 32,768 bytes of cart-mirrored RP RAM).
  *                Cart-bus byte-swap is invisible because we write
  *                16-bit values, not raw bytes.
  */
@@ -97,10 +98,14 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
  * RAM). Does NOT touch the cart FB; safe to run while the m68k blits. */
 void __not_in_flash_func(fb_transpose)(void);
 
-/* Chunk-reversed copy of the last transpose's scratch -> `planar` (the
- * cart FB). The ONLY cart-FB write; ~120 us. Call after fb_transpose()
- * and after the m68k has finished blitting the previous frame. */
-void __not_in_flash_func(fb_planar_publish)(uint16_t *planar);
+/**
+ * Copy the planar scratch to the cartridge framebuffer in the copier's
+ * layout (cart_shared.h, "Framebuffer layout for the m68k's copy"): the
+ * MOVEM copy's, or with `natural` the blitter's, the planes as they are.
+ * The only write to the cartridge framebuffer: fb_publish() calls it after
+ * the ST's acknowledgement of the last copy.
+ */
+void __not_in_flash_func(fb_planar_publish)(uint16_t *planar, bool natural);
 
 #ifdef __cplusplus
 }

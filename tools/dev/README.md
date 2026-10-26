@@ -26,7 +26,10 @@ Python tools use the standard library only.
 - `stopwatch [--seconds S]` (debug builds, `TIME_STUDY = 1` in `userfw.s`): the VBL's period,
   when the ST's loop wakes, starts and ends a frame's copy and goes idle, each after its VBL,
   the copy's length and the frames a second, in microseconds (4.07 µs ticks of MFP Timer-A on
-  one timeline). A 25 fps build (`APP_PROFILE=PROFILE_25FPS tools/dev/flash.sh debug`) builds in
+  one timeline), and three counts: the samples each VBL wrote to the YM at 50 fps, the Timer-C
+  ticks the top border was switched at (6 on line 33) and the video counter's bytes into line
+  262 at the bottom switch (80 on the machine). The stopwatch loses a wrap in a CPU hold over
+  1.04 ms (a blitter piece over 16 lines): the copy then reads shorter than it is. A 25 fps build (`APP_PROFILE=PROFILE_25FPS tools/dev/flash.sh debug`) builds in
   its own folder and its ID ends in `+25fps`.
 - Debug builds carry the devhooks mailbox (`rp/src/include/devhooks.h`, included once from
   `emul.c`, served by `devhooks_poll()` in the main loop), which `key` and `app` write.
@@ -126,7 +129,8 @@ python3 tools/dev/swd.py reset                                   # reset the who
 python3 tools/dev/swd.py resume                                  # release cores a debugger left halted
 ```
 
-`counters` reads, without halting: the ST's hellos, the frames published, the blits the ST
+`counters` reads, without halting (the YM rate is the rate the ST achieves on the YM path,
+from its cursor reports, `audioYmRateHz`): the ST's hellos, the frames published, the blits the ST
 acknowledged, the publishes that gave up waiting for an acknowledgement (`fbAckTimeouts`: expected
 until the ST runs the app, never while it does), the keyboard ACIA's overruns, the IKBD bytes and
 the mouse and joystick packets decoded, the decoder's resyncs and how many were byte-count
@@ -147,8 +151,8 @@ end it checks the ST's counts against the bytes between them, without the decode
 record while it drives the app with the `IkbdLog` class, as long as only one OpenOCD runs at a
 time.
 
-`fb` writes the framebuffer as the ST shows it, in colour: it undoes the reversed 48-byte chunks
-the m68k's MOVEM blit needs, decodes the low-resolution planes and applies the published palette.
+`fb` writes the framebuffer as the ST shows it, in colour: it undoes the layout the ST's copier
+reads (the MOVEM copy's lines in reverse and its 44-byte chunks, or the blitter's natural planes), decodes the low-resolution planes and applies the published palette.
 A dump takes longer than a frame, so it waits for a complete one: a watchpoint on the frame
 counter, which `fb_publish()` writes last, stops core 0 until the dump is done (about 0.1 s). Core
 1 and the ST keep running. `--pair` writes two consecutive frames (`OUT-1`, `OUT-2`), `--raw` also
@@ -187,6 +191,15 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
 - `copy_mode MODE [PIECE]`: who copies the frame on the ST, from its next VBL (0 auto: the
   blitter on the DMA sound path; 1 the CPU; 2 the blitter), and the blitter's chunks per piece
   (0: 40). With the stopwatch on, the slack histogram shows what each one leaves.
+- The bench (`rp/src/bench.c`, `swd.py app bench_...`): `bench_ping`, `bench_silent 0|1` (F5:
+  no sound at all from the ST's next boot), `bench_tone HZ` (F6: a sine through the PCM path, 0
+  off), `bench_copy_mode 0-2 [LINES]` (F7, F8), `bench_copy_lines 256|240` (F9: the lines the
+  ST copies, the bottom 16 cut at 240; `fb_set_copy_lines()`), and F10 on the ST: the YM from
+  its next boot, or the DMA chip again (`audio_prefer_ym()`: the ST family's sound path on an
+  STE). The ST can be reset from the host by writing the reset command to the sentinel
+  (`CART_CMD_RESET` as the ST reads it, `0x00010000`, at `0x20034000`): `userfw` cold-resets it a
+  second later, so a mode that takes a boot (the output, the lines) can be measured without
+  touching the machine, and a flash with `swd.py program` right after it comes up in time.
 
 An app adds its own the same way: a `DEVHOOKS_APP_<NAME>` define and a handler set with
 `devhooks_setAppHandler()`.

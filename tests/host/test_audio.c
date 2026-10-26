@@ -1,34 +1,41 @@
 // units: rp/src/audio.c
-/* The audio producer (audio.c) against a simulated ST: at every VBL the ST
- * moves to the next slice and reports it, the slice writer's timer runs five
- * times per VBL, and the main loop tops up the FIFO once per frame unless
- * the test stalls it.
+/* The audio producer (audio.c) on the YM path against a simulated ST: its
+ * cursor runs through the ring in the cart buffer, a VBL of samples a VBL,
+ * on into the spill, and at every VBL the ST brings it back and reports it;
+ * the writer's timer runs five times per VBL, and the main loop tops up the
+ * FIFO once per frame unless the test stalls it.
  *
- * Every slice the ST plays must be the next piece of the stream, or, when
- * the FIFO ran dry, the last sample held; a slice is never rewritten while
- * it plays; late slices and underruns are counted as the RP sees them. And
- * the .YMS reader: header checks, the wrap at the end of the file, a failed
- * read. */
+ * Everything the ST reads must be the next pair of the stream, or, when the
+ * FIFO ran dry, the last pair held: never a pair the writer had not written
+ * for it, never one skipped or repeated; late reads and underruns are
+ * counted as the RP sees them. An ST that reads fewer samples a VBL than
+ * the nominal rate (the machine does: the YM's wait states, the border
+ * handlers, the IKBD's interrupts) gets the stream resampled to the rate it
+ * achieves, which the RP measures from the reports. And the .YMS reader:
+ * header checks, the wrap at the end of the file, a failed read. */
 #include <string.h>
 
 #include "audio.h"
 #include "cart_shared.h"
 #include "ff.h"
 #include "pico/time.h"
+#include "profile.h"
 #include "test.h"
 
 #define VBL_US 20000u
 #define WRITER_RUNS_PER_VBL 5
-#define CHUNK 224u /* AUDIO_FILL_BYTES_PER_VBL */
+#define RING CART_AUDIO_YM_RING_BYTES
+#define SB PROFILE_YM_SAMPLE_BYTES
+#define NOMINAL PROFILE_YM_SAMPLES_PER_VBL /* samples a VBL at the nominal rate */
 
 unsigned int __rom_in_ram_start__[0x10000 / sizeof(unsigned int)];
-extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices;
+extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioYmRateHz;
 
 /* --- The RP's clock, timer and ROM3 ring --------------------------------- */
 
 static uint32_t now_us;
 static repeating_timer_t *writer;
-static int st_report = -1; /* the slice of the latest report, -1: none */
+static int st_report = -1; /* the latest position report, -1: none */
 
 uint32_t time_us_32(void) { return now_us; }
 
@@ -48,10 +55,10 @@ bool add_repeating_timer_us(int64_t delay_us, repeating_timer_callback_t callbac
 bool commemul_latest(uint16_t mask, uint16_t match, uint32_t max_back,
                      uint16_t *sample) {
   (void)max_back;
-  if (st_report < 0 || (match & mask) != CART_ROM3_AUDIO_SLICE_WINDOW) {
+  if (st_report < 0 || (match & mask) != CART_ROM3_AUDIO_POS_WINDOW) {
     return false;
   }
-  *sample = (uint16_t)(CART_ROM3_AUDIO_SLICE_WINDOW | (uint16_t)st_report);
+  *sample = (uint16_t)(CART_ROM3_AUDIO_POS_WINDOW | (uint16_t)st_report);
   return true;
 }
 
@@ -96,65 +103,150 @@ FRESULT f_close(FIL *fp) {
 
 /* --- The ST ---------------------------------------------------------------- */
 
-static uint8_t *slice(uint32_t s) {
-  return (uint8_t *)__rom_in_ram_start__ + CART_AUDIO_BUFFER_OFFSET +
-         (s % CART_AUDIO_SLICES) * CART_AUDIO_SLICE_BYTES;
+static uint8_t *buffer(void) {
+  return (uint8_t *)__rom_in_ram_start__ + CART_AUDIO_BUFFER_OFFSET;
 }
 
-static uint32_t st_vbl;   /* the ST's VBLs */
-static uint8_t playing[CART_AUDIO_SLICE_BYTES];
-static int torn;          /* a slice changed while it played */
+static uint32_t st_vbl;               /* the ST's VBLs */
+static uint32_t cursor;               /* bytes into the buffer: ring, then spill */
+static uint32_t st_per_vbl = NOMINAL; /* the samples the ST writes a VBL */
+static uint8_t played[300000][2];     /* every pair the ST read, in order */
+static uint32_t n_played;
+static int bad_registers;             /* at 50 fps: a register byte not 8 then 9 */
 
-/* One frame: the VBL (the ST moves to the next slice and reports it), then
- * 20 ms with the writer running every 4 ms, and the main loop's top-up
- * unless stalled. Returns the slice the ST played this frame. */
-static const uint8_t *frame(bool main_loop, bool writer_runs) {
+/* The ST reads `n` samples at its cursor. */
+static void st_read(uint32_t n) {
+  const uint8_t *b = buffer();
+  for (uint32_t i = 0; i < n; i++) {
+    const uint8_t *p = b + cursor;
+#if PROFILE_YM_MOVEP
+    played[n_played][0] = p[0];
+    played[n_played][1] = p[2];
+    if (p[1] != CART_YM_REG_VOL_A || p[3] != CART_YM_REG_VOL_B) bad_registers++;
+#else
+    played[n_played][0] = p[0];
+    played[n_played][1] = p[1];
+#endif
+    n_played++;
+    cursor += SB;
+  }
+}
+
+/* One frame: the VBL (the cursor past the ring comes back by the ring, and
+ * is reported unless `report` is off), then 20 ms in which the ST reads its
+ * samples in five parts, the writer runs every 4 ms, and the main loop's
+ * top-up comes unless stalled. */
+static void frame_with(bool main_loop, bool writer_runs, bool report) {
   st_vbl++;
-  st_report = (int)(st_vbl % CART_AUDIO_SLICES);
-  memcpy(playing, slice(st_vbl), sizeof playing);
+  if (cursor >= RING) cursor -= RING;
+  CHECK(cursor < RING);
+  if (report) st_report = (int)(cursor / CART_AUDIO_POS_UNIT);
+  uint32_t left = st_per_vbl;
   for (int i = 0; i < WRITER_RUNS_PER_VBL; i++) {
+    uint32_t part = left / (uint32_t)(WRITER_RUNS_PER_VBL - i);
+    st_read(part);
+    left -= part;
     now_us += VBL_US / WRITER_RUNS_PER_VBL;
     if (writer_runs) writer->callback(writer);
     if (i == 2 && main_loop) audio_render_frame();
   }
-  if (memcmp(playing, slice(st_vbl), sizeof playing) != 0) torn++;
-  return playing;
 }
+
+static void frame(bool main_loop, bool writer_runs) { frame_with(main_loop, writer_runs, true); }
 
 /* --- The stream ------------------------------------------------------------ */
 
-static uint8_t stream[CHUNK * 7 + 100]; /* not a whole number of slices */
+/* The table's pairs, which the output's table maps back to themselves at the
+ * nominal rate (no resampling between equal rates), so what the ST reads
+ * can be compared pair by pair. */
+static const uint8_t k_pairs[64][2] = {
+    {0, 0},  {0, 2},  {1, 2},  {2, 2},  {2, 3},  {1, 4},  {2, 4},  {2, 5},
+    {0, 6},  {2, 6},  {3, 6},  {4, 6},  {2, 7},  {4, 7},  {5, 7},  {2, 8},
+    {3, 8},  {4, 8},  {5, 8},  {2, 9},  {3, 9},  {4, 9},  {5, 9},  {6, 9},
+    {7, 9},  {3, 10}, {4, 10}, {5, 10}, {6, 10}, {7, 10}, {0, 11}, {1, 11},
+    {2, 11}, {4, 11}, {5, 11}, {6, 11}, {7, 11}, {8, 11}, {8, 11}, {9, 11},
+    {9, 11}, {0, 12}, {1, 12}, {2, 12}, {3, 12}, {4, 12}, {5, 12}, {6, 12},
+    {8, 12}, {8, 12}, {9, 12}, {9, 12}, {9, 12}, {10, 12}, {0, 13}, {2, 13},
+    {3, 13}, {4, 13}, {5, 13}, {6, 13}, {7, 13}, {8, 13}, {8, 13}, {9, 13},
+};
+
+#define STREAM_PAIRS 1728u /* a whole number of the 64-pair period, not of VBLs */
+static uint8_t stream[STREAM_PAIRS * 2];
+
+/* Pair k of the stream: an entry of the table, every entry in turn with an
+ * odd stride, so that a run of a few pairs says where in the 64 it is. */
+static uint32_t stream_index(uint32_t k) { return (k * 7u) % 64u; }
 
 static void make_stream(void) {
-  for (unsigned i = 0; i < sizeof stream; i++) {
-    stream[i] = (uint8_t)(i * 7u + i / 251u + 1u);
+  for (uint32_t k = 0; k < STREAM_PAIRS; k++) {
+    const uint8_t *p = k_pairs[stream_index(k)];
+    stream[2 * k] = p[0];
+    stream[2 * k + 1] = p[1];
   }
 }
 
-/* Does `s` hold chunk n of the looped stream? */
-static bool is_chunk(const uint8_t *s, uint32_t n) {
-  for (uint32_t j = 0; j < CHUNK; j++) {
-    if (s[j] != stream[(n * CHUNK + j) % sizeof stream]) return false;
+static bool pair_is(uint32_t at, uint32_t k) {
+  const uint8_t *p = k_pairs[stream_index(k)];
+  return played[at][0] == p[0] && played[at][1] == p[1];
+}
+
+/* From `at`, the played pairs follow the stream from pair `k` on, for `n`
+ * pairs. */
+static bool follows(uint32_t at, uint32_t k, uint32_t n) {
+  for (uint32_t i = 0; i < n; i++) {
+    if (!pair_is(at + i, k + i)) {
+      const uint8_t *p = k_pairs[stream_index(k + i)];
+      fprintf(stderr, "played %u is (%u, %u), not pair %u (%u, %u)\n",
+              (unsigned)(at + i), played[at + i][0], played[at + i][1],
+              (unsigned)(k + i), p[0], p[1]);
+      return false;
+    }
   }
   return true;
 }
 
-/* The chunk of the looped stream that `s` holds, looking from `from` up to
- * `span` chunks on; -1 if none. After a disruption the stream goes on, but
- * the test does not work out exactly where. */
-static long find_chunk(const uint8_t *s, uint32_t from, uint32_t span) {
-  for (uint32_t n = from; n < from + span; n++) {
-    if (is_chunk(s, n)) return (long)n;
+/* The run of the stream the played pairs end with: its start `at` and the
+ * pair `k` there (k is counted from a high base, so that it never goes
+ * below zero); false when the last pairs are not the stream at all. The
+ * stream's pairs repeat every 64, so eight of them in a row say where. */
+static bool stream_tail(uint32_t *at, uint32_t *k) {
+  if (n_played < 8) return false;
+  uint32_t end = n_played - 8, kend = 0;
+  bool found = false;
+  for (uint32_t c = 0; c < 64 && !found; c++) {
+    bool ok = true;
+    for (uint32_t j = 0; j < 8 && ok; j++) ok = pair_is(end + j, c + j);
+    if (ok) found = true, kend = 64u * 100000u + c;
+  }
+  if (!found) return false;
+  uint32_t a = end, kk = kend;
+  while (a > 0 && pair_is(a - 1, kk - 1)) a--, kk--;
+  *at = a;
+  *k = kk;
+  return true;
+}
+
+/* The pairs the stream holds between two of its runs... the table's index
+ * of a played pair (the first entry with it), for the resampled phase. */
+static int index_of(uint32_t at) {
+  for (int i = 0; i < 64; i++) {
+    if (k_pairs[i][0] == played[at][0] && k_pairs[i][1] == played[at][1]) return i;
   }
   return -1;
 }
 
-/* Does `s` hold one sample pair over the whole slice (an underrun)? */
-static bool is_hold(const uint8_t *s, uint8_t a, uint8_t b) {
-  for (uint32_t j = 0; j < CART_AUDIO_SLICE_BYTES; j += 2) {
-    if (s[j] != a || s[j + 1] != b) return false;
+/* --- A PCM triangle, for the resampled phase --------------------------------- */
+
+/* One more each source sample from -128 up to 127, then one less back down:
+ * no jump for the resampler to interpolate across. */
+static int ramp_value = -128, ramp_dir = 1;
+static void ramp_cb(int8_t *buf, uint32_t samples) {
+  for (uint32_t i = 0; i < samples; i++) {
+    buf[i] = (int8_t)ramp_value;
+    if (ramp_value == 127) ramp_dir = -1;
+    if (ramp_value == -128) ramp_dir = 1;
+    ramp_value += ramp_dir;
   }
-  return true;
 }
 
 int main(void) {
@@ -166,104 +258,146 @@ int main(void) {
   audio_play_loop(stream, sizeof stream);
   audio_render_frame(); /* the FIFO fills before the ST starts */
 
-  /* The ST starts: the first report tells the writer where it is; the slice
-   * after it is the first of the stream. */
-  frame(true, true);
-  uint32_t next = 0;
-  for (int f = 0; f < 200; f++) {
-    const uint8_t *s = frame(true, true);
-    CHECK(is_chunk(s, next));
-    next++;
-  }
+  /* The ST starts: silence until the writer has seen its first report and
+   * written ahead of it, then the stream, pair after pair. */
+  uint32_t at0, k0;
+  for (int f = 0; f < 204; f++) frame(true, true);
+  CHECK(stream_tail(&at0, &k0));
+  CHECK(at0 < 4u * NOMINAL); /* the stream within the first frames */
   CHECK_EQ(audioLateSlices, 0);
   CHECK_EQ(audioUnderruns, 0);
-  CHECK_EQ(torn, 0);
+  CHECK_EQ(bad_registers, 0);
+  CHECK_EQ(audioYmRateHz, PROFILE_YM_RATE_HZ);
 
   /* The main loop misses 3 frames: 80 ms between two of its top-ups, what
-   * the FIFO's 4 slices cover. Nothing is held; the stream goes on. */
-  for (int f = 0; f < 3; f++) {
-    CHECK(is_chunk(frame(false, true), next));
-    next++;
-  }
-  for (int f = 0; f < 10; f++) {
-    CHECK(is_chunk(frame(true, true), next));
-    next++;
-  }
+   * the FIFO covers. Nothing is held; the stream goes on. */
+  for (int f = 0; f < 3; f++) frame(false, true);
+  for (int f = 0; f < 10; f++) frame(true, true);
+  CHECK(follows(at0, k0, n_played - at0));
   CHECK_EQ(audioUnderruns, 0);
 
-  /* It misses 8: the FIFO runs dry, and the slices written then hold the
-   * last sample; the stream resumes where it stopped. */
-  uint32_t held = 0;
-  for (int f = 0; f < 8; f++) {
-    const uint8_t *s = frame(false, true);
-    if (is_chunk(s, next)) {
-      next++;
-    } else {
-      const uint8_t *last = &stream[(next * CHUNK - 2u) % sizeof stream];
-      CHECK(is_hold(s, last[0], last[1]));
-      held++;
-    }
+  /* It misses 8: the FIFO runs dry, and the pairs written then hold the
+   * last one; the stream resumes where it stopped. */
+  uint32_t before = n_played;
+  for (int f = 0; f < 8; f++) frame(false, true);
+  for (int f = 0; f < 10; f++) frame(true, true);
+  CHECK(audioUnderruns > 0);
+  uint32_t good = before;
+  while (good < n_played && pair_is(good, k0 + (good - at0))) good++;
+  CHECK(good < n_played);
+  uint32_t held = good;
+  while (held < n_played && played[held][0] == played[good - 1][0] &&
+         played[held][1] == played[good - 1][1]) {
+    held++;
   }
-  for (int f = 0; f < 10; f++) {
-    const uint8_t *s = frame(true, true);
-    if (is_chunk(s, next)) {
-      next++;
-    } else {
-      const uint8_t *last = &stream[(next * CHUNK - 2u) % sizeof stream];
-      CHECK(is_hold(s, last[0], last[1]));
-      held++;
-    }
-  }
-  CHECK(held > 0);
-  CHECK_EQ(audioUnderruns, held);
+  CHECK(held > good + 50); /* a run of the held pair */
+  CHECK(held < n_played);
+  /* The stream resumes at `held` with the pair `good` was due to. */
+  k0 = k0 + (good - at0);
+  at0 = held;
+  CHECK(follows(at0, k0, n_played - at0));
   CHECK_EQ(audioLateSlices, 0);
   uint32_t underruns = audioUnderruns;
 
   /* The writer misses 2 frames (interrupts off for a flash write, about
-   * 50 ms): the ST reaches a slice that was not written for it, counted as
-   * late. Then the stream goes on: no chunk lost or repeated. */
+   * 50 ms): the ST reads past what was written, counted as late. Then the
+   * stream goes on: the pairs it read meanwhile were old, and after them it
+   * is the stream again, from the FIFO on. */
   for (int f = 0; f < 2; f++) frame(true, false);
-  frame(true, true);
-  CHECK_EQ(audioLateSlices, 1);
-  long found = find_chunk(frame(true, true), next, 4);
-  CHECK(found >= 0);
-  next = (uint32_t)found + 1;
-  for (int f = 0; f < 10; f++) {
-    CHECK(is_chunk(frame(true, true), next));
-    next++;
-  }
-  CHECK_EQ(audioLateSlices, 1);
+  for (int f = 0; f < 13; f++) frame(true, true);
+  CHECK(audioLateSlices >= 1);
+  uint32_t late = audioLateSlices;
+  CHECK(stream_tail(&at0, &k0));
+  CHECK(n_played - at0 >= 10u * st_per_vbl - 2u * NOMINAL);
+
+  /* The ST reports only every other VBL (a VBL handler held up): the writer
+   * estimates the cursor from the rate; nothing is late. */
+  for (int f = 0; f < 30; f++) frame_with(true, true, (f & 1) == 0);
+  CHECK(follows(at0, k0, n_played - at0));
+  CHECK_EQ(audioLateSlices, late);
 
   /* The ST leaves (GEM): no new report for longer than the timeout. Then it
-   * boots again and starts over at slice 1. Its first slice is what was left
-   * there; the two slices written ahead before it left are never played; no
-   * late slice, no underrun, and the stream goes on from there. */
+   * boots again with its cursor at the ring's start: silence (the writer
+   * starts over), then the stream goes on from where the FIFO is. */
   for (int i = 0; i < 60; i++) {
     now_us += 4000u;
     writer->callback(writer);
   }
   audio_render_frame();
-  st_vbl = 0;
-  uint32_t late = audioLateSlices;
-  frame(true, true);
-  CHECK(is_chunk(frame(true, true), next + 2));
-  next += 3;
-  for (int f = 0; f < 20; f++) {
-    CHECK(is_chunk(frame(true, true), next));
-    next++;
-  }
+  cursor = 0;
+  for (int f = 0; f < 26; f++) frame(true, true);
+  CHECK(stream_tail(&at0, &k0));
+  CHECK(n_played - at0 >= 20u * st_per_vbl);
   CHECK_EQ(audioLateSlices, late);
   CHECK_EQ(audioUnderruns, underruns);
-  CHECK_EQ(torn, 0);
+  CHECK_EQ(bad_registers, 0);
+
+  /* A slower ST: 3.5% fewer samples a VBL, as the machine writes with the
+   * YM's wait states and the IKBD's interrupts. Within a few seconds the RP
+   * measures the rate it achieves, within 1%, and resamples to it. A PCM
+   * triangle (one more or less each source sample at the nominal rate, so a
+   * table index on every four) then advances by the rate's ratio: counted
+   * over 100 frames by the index steps the ST reads, within 2%. */
+  st_per_vbl = NOMINAL * 965u / 1000u;
+  audio_set_pcm_callback(ramp_cb, PROFILE_YM_RATE_HZ);
+  for (int f = 0; f < 500; f++) frame(true, true); /* the rate's windows smooth it in */
+  uint32_t achieved = st_per_vbl * 1000000u / VBL_US;
+  CHECK(audioYmRateHz > achieved * 99u / 100u && audioYmRateHz < achieved * 101u / 100u);
+  CHECK_EQ(audioLateSlices, late);
+  CHECK_EQ(audioUnderruns, underruns);
+  uint32_t start = n_played;
+  for (int f = 0; f < 100; f++) frame(true, true);
+  uint32_t steps = 0;
+  int prev = index_of(start);
+  CHECK(prev >= 0);
+  for (uint32_t a = start + 1; a < n_played; a++) {
+    int cur = index_of(a);
+    CHECK(cur >= 0);
+    int d = cur > prev ? cur - prev : prev - cur;
+    CHECK(d <= 3); /* the table's duplicate entries read as the first of them */
+    steps += (uint32_t)d;
+    prev = cur;
+  }
+  uint32_t expected = (uint32_t)((uint64_t)(n_played - start) * NOMINAL / st_per_vbl / 4u);
+  CHECK(steps > expected * 98u / 100u && steps < expected * 102u / 100u);
+  st_per_vbl = NOMINAL;
+  audio_play_loop(stream, sizeof stream);
+  for (int f = 0; f < 500; f++) frame(true, true);
+  CHECK_EQ(audioYmRateHz, PROFILE_YM_RATE_HZ);
+  /* The rate came back to the nominal one over a few of its one-second
+   * windows; since then the stream goes through as it is. */
+  CHECK(stream_tail(&at0, &k0));
+  CHECK(n_played - at0 >= 20u * NOMINAL);
 
   /* .YMS files: the header is checked, and a failure keeps the loop. */
-  static BYTE yms[16 + CHUNK * 2 + 50]; /* the body ends inside a chunk */
+  static BYTE yms[16 + 2 * 300]; /* the body ends inside a VBL */
   memcpy(yms, "YMS1", 4);
   uint32_t rate = 5585, len = sizeof yms - 16;
   memcpy(yms + 4, &rate, 4); /* the host is little-endian, as the file */
   memcpy(yms + 8, &len, 4);
   yms[12] = 1; /* dual-ghost */
-  for (unsigned i = 16; i < sizeof yms; i++) yms[i] = (BYTE)(i * 3u + 5u);
+  /* Table pairs in a pseudo-random order, no run of 20 repeated anywhere
+   * in the body (checked), so that a run of them says where in the body it
+   * is. */
+  uint32_t x = 0x9E3779B9u;
+  for (unsigned k = 0; k < 300; k++) {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    const uint8_t *p = k_pairs[x & 63u];
+    yms[16 + 2 * k] = p[0];
+    yms[17 + 2 * k] = p[1];
+  }
+  for (unsigned a = 0; a < 300; a++) {
+    for (unsigned b = a + 1; b < 300; b++) {
+      bool same = true;
+      for (unsigned j = 0; j < 20 && same; j++) {
+        same = yms[16 + 2 * ((a + j) % 300)] == yms[16 + 2 * ((b + j) % 300)] &&
+               yms[17 + 2 * ((a + j) % 300)] == yms[17 + 2 * ((b + j) % 300)];
+      }
+      CHECK(!same);
+    }
+  }
   file_name = "A.YMS";
   file_data = yms;
   file_size = sizeof yms;
@@ -280,61 +414,61 @@ int main(void) {
   file_size = 10;
   CHECK_EQ(audio_play_yms_file("A.YMS"), -1); /* short header */
   file_size = sizeof yms;
-  for (int f = 0; f < 10; f++) {
-    CHECK(is_chunk(frame(true, true), next));
-    next++;
-  }
+  for (int f = 0; f < 10; f++) frame(true, true);
+  CHECK(follows(at0, k0, n_played - at0));
 
-  /* Streaming: once the loop's chunks already queued have played, every
-   * slice is the next piece of the file's body, which wraps at its end to
-   * the body's start, never to the header. */
+  /* Streaming: once the loop's pairs already queued have played, every pair
+   * is the next of the file's body, which wraps at its end to the body's
+   * start, never to the header. */
   CHECK_EQ(audio_play_yms_file("A.YMS"), 0);
   const BYTE *body = yms + 16;
-  const uint32_t body_len = len;
-  uint32_t ymsn = 0;
-  bool started = false;
-  for (int f = 0; f < 30; f++) {
-    const uint8_t *s = frame(true, true);
-    bool match = true;
-    for (uint32_t j = 0; j < CHUNK; j++) {
-      if (s[j] != body[(ymsn * CHUNK + j) % body_len]) match = false;
+  const uint32_t body_pairs = len / 2;
+  for (int f = 0; f < 40; f++) frame(true, true);
+  /* The body's run the played pairs end with. */
+  uint32_t end = n_played - 20, kend = body_pairs;
+  for (uint32_t c = 0; c < body_pairs && kend == body_pairs; c++) {
+    bool ok = true;
+    for (uint32_t j = 0; j < 20 && ok; j++) {
+      ok = played[end + j][0] == body[2 * ((c + j) % body_pairs)] &&
+           played[end + j][1] == body[2 * ((c + j) % body_pairs) + 1];
     }
-    if (!started) {
-      if (match) started = true;
-      else continue;
-    }
-    CHECK(match);
-    ymsn++;
+    if (ok) kend = c;
   }
-  CHECK(started);
-  CHECK(ymsn >= 20); /* crossed the end of the file several times */
+  CHECK(kend < body_pairs);
+  uint32_t ystart = end, ymsn = kend + 10u * body_pairs;
+  while (ystart > 0 && played[ystart - 1][0] == body[2 * ((ymsn - 1) % body_pairs)] &&
+         played[ystart - 1][1] == body[2 * ((ymsn - 1) % body_pairs) + 1]) {
+    ystart--, ymsn--;
+  }
+  CHECK(n_played - ystart > 3 * body_pairs); /* crossed the end of the file several times */
+  CHECK(ystart > n_played - 40u * NOMINAL);  /* and started in these frames */
 
-  /* A failed read (a pulled card) gives one slice of silence, and the next
+  /* A failed read (a pulled card) gives a chunk of silence, and the next
    * read starts again at the body's start. */
   fail_next_reads = 1;
-  bool silence = false;
-  uint32_t after = 0;
-  for (int f = 0; f < 12; f++) {
-    const uint8_t *s = frame(true, true);
-    if (!silence) {
-      bool zero = true;
-      for (uint32_t j = 0; j < CART_AUDIO_SLICE_BYTES; j++) {
-        if (s[j] != 0) zero = false;
-      }
-      silence = zero;
-      continue;
+  uint32_t fstart = n_played;
+  for (int f = 0; f < 12; f++) frame(true, true);
+  uint32_t silence = n_played;
+  for (uint32_t a = fstart; a + 8 < n_played; a++) {
+    bool zero = true;
+    for (uint32_t j = 0; j < 8 && zero; j++) zero = played[a + j][0] == 0 && played[a + j][1] == 0;
+    if (zero) {
+      silence = a;
+      break;
     }
-    bool match = true;
-    for (uint32_t j = 0; j < CHUNK; j++) {
-      if (s[j] != body[(after * CHUNK + j) % body_len]) match = false;
-    }
-    CHECK(match);
-    after++;
   }
-  CHECK(silence);
-  CHECK(after > 0);
+  CHECK(silence < n_played);
+  bool found = false;
+  for (uint32_t a = silence; a + 20 < n_played && !found; a++) {
+    bool ok = true;
+    for (uint32_t j = 0; j < 20 && ok; j++) {
+      ok = played[a + j][0] == body[2 * j] && played[a + j][1] == body[2 * j + 1];
+    }
+    found = ok;
+  }
+  CHECK(found);
   CHECK_EQ(audioLateSlices, late);
-  CHECK_EQ(torn, 0);
 
+  CHECK_EQ(bad_registers, 0);
   TEST_END();
 }

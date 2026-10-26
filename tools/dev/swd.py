@@ -82,6 +82,10 @@ a frame's copy starts and ends and when the loop goes idle, each after its
 VBL, the copy's length, and the frames a second, in microseconds (min,
 median, 95th percentile, max, mean). The ST reports 4.07 us ticks of MFP
 Timer-A on one timeline, so a copy that runs across a VBL is measured whole.
+It also reports three counts: the samples each VBL wrote to the YM at 50 fps
+(fewer than the nominal 112 lower the rate the RP resamples to), the Timer-C
+ticks the top border was switched at, and the video counter's bytes into line
+262 at the bottom switch.
 
 `fb` writes the framebuffer as the ST shows it, in colour, as a PNG: it waits
 for the next complete frame (a watchpoint on the frame counter stops core 0
@@ -160,6 +164,7 @@ COUNTERS = (("stSessionHellos", "ST hellos"),
             ("audioLateSlices", "audio slices late"),
             ("audioUnderruns", "audio underruns"),
             ("audioOutput", "audio output (1 YM, 2 DMA)"),
+            ("audioYmRateHz", "YM rate Hz"),
             ("stSessionFeatures", "ST features (1 blitter)"))
 # Counters that --watch also prints as a rate.
 RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen", "audioSlicesWritten", "ikbdBytes")
@@ -522,28 +527,34 @@ def write_png_rgb(path: str, width: int, height: int, rows: list[bytes]) -> None
 
 def image_from_cart_fb(defs: dict[str, int], fb: bytes) -> list[int]:
     """The planar image as the ST shows it, from the cartridge framebuffer.
-    The m68k's MOVEM blit stores 48-byte chunks backwards, so the RP keeps
-    them in reverse order, with a short tail in natural order after them (see
-    "Framebuffer chunk layout" in cart_shared.h): undo that."""
+    The m68k's copy stores each line backwards, from the last line to the
+    first, so the RP keeps the lines in reverse order, each as its last two
+    44-byte chunks and then its first bytes (see "Framebuffer layout for the
+    m68k's copy" in cart_shared.h): undo that."""
     words = st_words(fb)
+    lines = defs["CART_FB_LINES"]
+    line_words = defs["CART_FB_LINE_BYTES"] // 2
     chunk = defs["CART_FB_CHUNK_BYTES"] // 2
-    count = defs["CART_FB_CHUNK_COUNT"]
+    tail = defs["CART_FB_LINE_TAIL"] // 2
     image = []
-    for c in range(count):
-        k = count - 1 - c
-        image += words[k * chunk:(k + 1) * chunk]
-    return image + words[count * chunk:]
+    for y in range(lines):
+        piece = words[(lines - 1 - y) * line_words:(lines - y) * line_words]
+        image += piece[2 * chunk:] + piece[chunk:2 * chunk] + piece[:chunk]
+        assert len(piece[2 * chunk:]) == tail
+    return image
 
 
 def image_rows(image: list[int], rgb: list[tuple[int, int, int]],
-               scale: int) -> list[bytes]:
-    """ST low resolution, 320x200 in 16 colours: each 16-pixel group is four
+               scale: int, width: int = 256, height: int = 256) -> list[bytes]:
+    """The framebuffer's planes in 16 colours: each 16-pixel group is four
     plane words, bit 15 the leftmost pixel."""
     rows = []
-    for y in range(200):
+    line_words = width // 4
+    for y in range(height):
         line = bytearray()
-        for g in range(20):
-            p0, p1, p2, p3 = image[y * 80 + g * 4:y * 80 + g * 4 + 4]
+        for g in range(width // 16):
+            base = y * line_words + g * 4
+            p0, p1, p2, p3 = image[base:base + 4]
             for bit in range(15, -1, -1):
                 idx = (((p0 >> bit) & 1) | (((p1 >> bit) & 1) << 1) |
                        (((p2 >> bit) & 1) << 2) | (((p3 >> bit) & 1) << 3))
@@ -610,14 +621,17 @@ def grab_frames(elf: str, count: int, now: bool,
 def cmd_fb(args: argparse.Namespace) -> int:
     elf = matching_elf(args.elf)
     defs = header_defines(CART_SHARED_H)
+    # The layout the RP published in: the blitter's (the planes as they are)
+    # or the MOVEM copy's (fb.c).
+    natural = read_word(elf_symbols(elf, "fbLayoutNatural")["fbLayoutNatural"][0]) != 0
     frames = grab_frames(elf, 2 if args.pair else 1, args.now)
     stem, ext = os.path.splitext(args.out)
     for i, (frame, fb, pal) in enumerate(frames):
         path = f"{stem}-{i + 1}{ext or '.png'}" if args.pair else args.out
-        image = image_from_cart_fb(defs, fb)
+        image = st_words(fb) if natural else image_from_cart_fb(defs, fb)
         rgb = palette_rgb(st_words(pal))
-        write_png_rgb(path, 320 * args.scale, 200 * args.scale,
-                      image_rows(image, rgb, args.scale))
+        write_png_rgb(path, 256 * args.scale, defs["CART_FB_LINES"] * args.scale,
+                      image_rows(image, rgb, args.scale, 256, defs["CART_FB_LINES"]))
         note = f"frame {frame}"
         if args.raw:
             raw = os.path.splitext(path)[0] + ".bin"
@@ -838,6 +852,9 @@ def heap_line(snap: dict) -> str:
 
 STOPWATCH_TICK_US = 10 / 2.4576  # MFP Timer-A /10 (userfw.s TIME_STUDY)
 STOPWATCH_POINTS = {0: "wake", 1: "copy", 2: "copied", 3: "idle", 4: "VBL"}
+# Points that carry a count in place of the ticks: the samples the last VBL
+# wrote, the Timer-C ticks the top border was switched at.
+STOPWATCH_COUNTS = {5: "samples a VBL", 6: "top switch ticks", 7: "bottom wake bytes"}
 
 
 def cmd_stopwatch(args: argparse.Namespace) -> int:
@@ -873,10 +890,13 @@ def cmd_stopwatch(args: argparse.Namespace) -> int:
     if not points:
         print("no stopwatch points: is userfw built with TIME_STUDY = 1?")
         return 3
+    counts = {p: [r & 0xFFFF for r in points if r >> 16 == p] for p in STOPWATCH_COUNTS}
     # One timeline: the ST reports the low 16 bits of its ticks.
     timeline, last, base = [], None, 0
     for r in points:
         point, ticks = r >> 16, r & 0xFFFF
+        if point in STOPWATCH_COUNTS:
+            continue
         if last is not None and ticks < last:
             base += 0x10000
         last = ticks
@@ -911,6 +931,22 @@ def cmd_stopwatch(args: argparse.Namespace) -> int:
         print(row(f"{STOPWATCH_POINTS.get(p, p)} @VBL+", after_vbl[p]))
     if copies:
         print(row("copy", copies))
+    for p, name in STOPWATCH_COUNTS.items():
+        if counts[p]:
+            print(row(name, counts[p]))
+    samples = counts[5]
+    if samples:
+        nominal = include_defines().get("CART_PROFILE_50FPS_YM_SAMPLES")
+        if nominal is not None:
+            short = sum(1 for s in samples if s < nominal)
+            print(f"  {short} of {len(samples)} VBLs wrote fewer than the nominal {nominal}"
+                  f" samples, {sum(1 for s in samples if s > nominal)} more: the RP"
+                  " resamples to the rate the ST achieves (counters: YM rate Hz)")
+    from collections import Counter
+    for p in (6, 7):
+        if counts[p]:
+            dist = sorted(Counter(counts[p]).items())
+            print(f"  {STOPWATCH_COUNTS[p]}: " + ", ".join(f"{t}: {n}" for t, n in dist))
     frames = len(after_vbl.get(1, []))
     vbls = len(periods) + 1
     print(f"  {frames} frames in {vbls} VBLs: {50.0 * frames / max(vbls, 1):.1f} fps at 50 Hz")

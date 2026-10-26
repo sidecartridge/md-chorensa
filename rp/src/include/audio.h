@@ -7,20 +7,22 @@
  *     12,517 Hz, no interrupt per sample, from a ring in ST RAM that the ST
  *     fills every VBL from the cart buffer;
  *   - elsewhere (or when the app prefers it: audio_prefer_ym()), the YM: the
- *     m68k Timer-B IRQ (target/atarist/src/userfw.s) plays (vA, vB) volume
- *     pairs from the cart buffer at 5,585 Hz, one slice per VBL.
+ *     ST (target/atarist/src/userfw.s) writes (vA, vB) volume pairs from a
+ *     ring in the cart buffer, at 5,585 Hz nominally from its frame's copy
+ *     loop (or Timer-D at 25 fps), and reports its cursor every VBL; the RP
+ *     resamples to the rate it actually achieves.
  * Either way the RP writes ahead of what the ST plays from a timer
  * interrupt, so the sound never tears and never repeats, however long the
  * app takes to draw a frame: audio_render_frame() only keeps a small FIFO
  * topped up, from the main loop, with the app's audio.
  *
- * Latency and stalls: the main loop may go AUDIO_FIFO_SLICES VBLs (4:
- * 80 ms by default) between two calls to audio_render_frame() without the
- * sound noticing. A sample plays at most AUDIO_FIFO_SLICES + 2 VBLs
- * (120 ms) after the source produced it on the YM, and about 150 ms on
- * the DMA chip, whose ring stays a few VBLs ahead. An app that wants less
- * latency defines a smaller AUDIO_FIFO_SLICES (at least 1) when it builds
- * audio.c, and tolerates shorter stalls. When the FIFO runs dry the output
+ * Latency and stalls: the main loop may go AUDIO_FIFO_VBLS VBLs (4: 80 ms
+ * by default) between two calls to audio_render_frame() without the sound
+ * noticing. A sample plays at most about AUDIO_FIFO_VBLS + 3 VBLs (140 ms)
+ * after the source produced it on the YM, and about 150 ms on the DMA
+ * chip, whose ring stays a few VBLs ahead. An app that wants less latency
+ * defines a smaller AUDIO_FIFO_VBLS (at least 1) when it builds audio.c,
+ * and tolerates shorter stalls. When the FIFO runs dry the output
  * holds the last sample, and audioUnderruns counts it (readable over SWD).
  *
  * The app's audio is YM pairs or 8-bit PCM; either plays on both outputs,
@@ -85,12 +87,17 @@ void audio_play_pcm_loop(const int8_t *pcm, uint32_t samples, uint32_t rate_hz);
  * boot (the ST picks its output when it boots). Default: false. */
 void audio_prefer_ym(bool prefer);
 
+/* The ST plays nothing at all, from its next boot: no DMA chip, no YM
+ * samples (what the rest of its frame costs without them). The RP writes
+ * the YM's ring all the same. Default: false. */
+void audio_silence_st(bool silent);
+
 /* True when the ST plays through the DMA chip (as of its last boot). */
 bool audio_uses_dma(void);
 
 /* Top up the FIFO through the fill callback (if one is installed). Call
- * once per main-loop iteration; more often does no harm. The slices
- * themselves are written from a timer interrupt, on the ST's VBLs. */
+ * once per main-loop iteration; more often does no harm. The ST's buffer
+ * itself is written from a timer interrupt, following the ST's reports. */
 void audio_render_frame(void);
 
 /* Install (or clear, if cb == NULL) the fill callback. */

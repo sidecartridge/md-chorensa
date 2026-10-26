@@ -22,6 +22,7 @@
 #include "fb_font.h"
 #include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
 #include "ikbd.h"
+#include "audio.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
 #include "profile.h"
 #include "st_session.h"
@@ -49,6 +50,22 @@ static uint32_t s_vbl_published;
 /* Publishes that gave up waiting for the ack: expected until the ST runs
  * userfw, never while it does. Readable over SWD by its symbol. */
 uint32_t fbAckTimeouts = 0;
+
+/* The copy mode the app asked for (fb_set_copy_mode()), written to the window
+ * by fb_publish() with each frame, and the layout that frame was published
+ * in, 1 for the blitter's natural layout, 0 for the MOVEM copy's (readable
+ * over SWD: swd.py fb decodes by it). */
+static uint8_t s_copy_mode = CART_BLIT_MODE_AUTO;
+static uint8_t s_copy_piece;
+/* The lines the ST copies of each frame, from its top (fb_set_copy_lines()),
+ * written to the window with each frame as the copy mode is. */
+static uint16_t s_copy_lines = CART_FB_LINES;
+uint32_t fbLayoutNatural;
+
+/* The ST's report at every VBL on the frame before (CART_ROM3_BORDER_WINDOW):
+ * which borders it had open, CART_BORDER_TOP | CART_BORDER_BOTTOM, counted by
+ * that value (0: neither, 3: both). Readable over SWD. */
+uint32_t fbBorderFrames[4];
 
 /* Demo sprite. Multi-colour 16x16 ball with a transparent
  * background (key = 0xFF; transparent corners give it a rounded look
@@ -82,7 +99,7 @@ static void fb_build_demo_sprite(void) {
   }
 }
 
-const struct FB_MODE fb_mode_320x200 = {320, 200, 4};
+const struct FB_MODE fb_mode_256x256 = {256, 256, 4};
 
 struct FB_SCREEN fb_screen;
 
@@ -271,7 +288,10 @@ void fb_render_frame(void) {
  * a frame after the one before the copy) the copy ended. A histogram in
  * FB_SLACK_BUCKET_US steps (the last bucket holds the rest), the smallest
  * slack seen, and the copies that ended after that VBL (the next frame
- * waited a VBL more). Readable over SWD. */
+ * waited a VBL more). Readable over SWD. Points 5 and 6 carry a count, not
+ * ticks: the samples the last VBL wrote to the YM, the Timer-C ticks the
+ * top border was switched at (userfw.s STUDY_POINT_SAMPLES, _TOPWAKE); they
+ * go into the ring as they are. */
 #define FB_STOPWATCH_POINTS 128u
 #define FB_STOPWATCH_POINT_COPY 1u
 #define FB_STOPWATCH_POINT_COPIED 2u
@@ -350,14 +370,32 @@ static void fb_rom3_dispatch(uint16_t sample) {
     s_vbl_seen++;
   }
   fb_stopwatch_sample(sample);
+  if ((sample & CART_ROM3_WINDOW_MASK) == CART_ROM3_BORDER_WINDOW) {
+    fbBorderFrames[sample & (CART_BORDER_TOP | CART_BORDER_BOTTOM)]++;
+  }
 }
 
 void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }
 
+void fb_set_copy_lines(uint16_t lines) {
+  s_copy_lines = lines == CART_FB_LINES_SHORT ? CART_FB_LINES_SHORT : CART_FB_LINES;
+}
+
+uint16_t fb_copy_lines(void) { return s_copy_lines; }
+
 void fb_set_copy_mode(uint8_t mode, uint8_t piece) {
-  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
-                          CART_BLIT_MODE_OFFSET)) =
-      (uint16_t)(mode | (piece << 8));
+  s_copy_mode = mode;
+  s_copy_piece = piece;
+}
+
+/* Whether the ST will copy the next frame with its blitter: userfw's rule
+ * (the mode word, a blitter, the DMA sound path), applied here to publish
+ * the frame in the layout the blitter reads (cart_shared.h). */
+static bool copy_uses_blitter(void) {
+  if (!(st_session_features() & CART_ST_FEATURE_BLITTER)) return false;
+  if (s_copy_mode == CART_BLIT_MODE_BLITTER) return true;
+  if (s_copy_mode != CART_BLIT_MODE_AUTO) return false;
+  return audio_uses_dma();
 }
 
 void fb_publish(void) {
@@ -388,7 +426,14 @@ void fb_publish(void) {
    *    the m68k's post-blit slack -- no overrun, no tearing, full 50 Hz.
    *    Mark the frame ready as the last write (barrier first). */
   uint32_t t1 = time_us_32();
-  fb_planar_publish((uint16_t *)fb_screen.framebuffer);
+  bool natural = copy_uses_blitter();
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_BLIT_MODE_OFFSET)) =
+      (uint16_t)(s_copy_mode | (s_copy_piece << 8));
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_COPY_LINES_OFFSET)) = s_copy_lines;
+  fbLayoutNatural = natural;
+  fb_planar_publish((uint16_t *)fb_screen.framebuffer, natural);
   last_convert_us = transpose_us + (time_us_32() - t1);
 
   fb_frame_tick++;

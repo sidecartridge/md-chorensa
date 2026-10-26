@@ -5,7 +5,7 @@
  * The STE plays its ring at the profile's rate (250.3 samples a VBL at
  * 12,517 Hz, 500.7 at 25,033: the Makefile builds this test for both
  * profiles); at every VBL userfw reports where it plays, rounded to
- * CART_AUDIO_DMA_POS_UNIT bytes, and copies the cart buffer, the ring's
+ * CART_AUDIO_POS_UNIT bytes, and copies the cart buffer, the ring's
  * mirror, up to the profile's lead ahead (byte i of the ring is byte i ^ 1
  * of the RP's buffer). Everything the chip plays
  * must be the source in order, silence before it starts, or, when the FIFO
@@ -16,6 +16,7 @@
 #include "cart_shared.h"
 #include "ff.h"
 #include "pico/time.h"
+#include "profile.h"
 #include "test.h"
 
 #define VBL_US 20000u
@@ -36,7 +37,6 @@ extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioOutput
 static uint32_t now_us;
 static repeating_timer_t *writer;
 static int dma_report = -1;   /* the latest DMA position report */
-static int slice_report = -1; /* the latest audio slice report */
 static uint32_t hellos;
 static uint8_t machine;
 
@@ -56,12 +56,8 @@ bool add_repeating_timer_us(int64_t delay_us, repeating_timer_callback_t callbac
 bool commemul_latest(uint16_t mask, uint16_t match, uint32_t max_back,
                      uint16_t *sample) {
   (void)max_back;
-  if ((match & mask) == CART_ROM3_DMA_POS_WINDOW && dma_report >= 0) {
-    *sample = (uint16_t)(CART_ROM3_DMA_POS_WINDOW | (uint16_t)dma_report);
-    return true;
-  }
-  if ((match & mask) == CART_ROM3_AUDIO_SLICE_WINDOW && slice_report >= 0) {
-    *sample = (uint16_t)(CART_ROM3_AUDIO_SLICE_WINDOW | (uint16_t)slice_report);
+  if ((match & mask) == CART_ROM3_AUDIO_POS_WINDOW && dma_report >= 0) {
+    *sample = (uint16_t)(CART_ROM3_AUDIO_POS_WINDOW | (uint16_t)dma_report);
     return true;
   }
   return false;
@@ -107,7 +103,6 @@ static void st_boot(uint8_t m) {
   chip_q16 = 0;
   st_front = 0;
   dma_report = -1;
-  slice_report = -1;
 }
 
 /* userfw at a VBL on the DMA path: report the play position, copy the
@@ -116,9 +111,8 @@ static void st_boot(uint8_t m) {
 static void st_vbl_dma(bool skip) {
   st_vbl++;
   if (skip) return;
-  slice_report = (int)(st_vbl % CART_AUDIO_SLICES);
-  uint32_t p = (chip_q16 >> 16) & MASK & ~(CART_AUDIO_DMA_POS_UNIT - 1u);
-  dma_report = (int)(p / CART_AUDIO_DMA_POS_UNIT);
+  uint32_t p = (chip_q16 >> 16) & MASK & ~(CART_AUDIO_POS_UNIT - 1u);
+  dma_report = (int)(p / CART_AUDIO_POS_UNIT);
   uint32_t e = (p + PROFILE_DMA_LEAD) & MASK;
   uint32_t f = st_front;
   uint32_t n = (e - f) & MASK;
@@ -339,7 +333,7 @@ static void test_ym_source_on_dma(void) {
   CHECK(rose);
 }
 
-/* PCM on the YM: the slices hold the table's pairs for the samples' upper
+/* PCM on the YM: the ring holds the table's pairs for the samples' upper
  * 6 bits, in order (the YM's own rate: no resampling). */
 static void pattern_ym_rate_source(void) {
   audio_play_pcm_loop(pattern, PATTERN, PROFILE_YM_RATE_HZ);
@@ -350,18 +344,26 @@ static void test_pcm_source_on_ym(void) {
   CHECK_EQ(audioOutput, 1);
   CHECK(!audio_uses_dma());
   const uint8_t *buf = cart_buffer();
+  /* The ST's cursor: a VBL of samples a VBL, reported by 16 bytes. */
+  uint32_t cursor = 0;
   for (int i = 0; i < 40; i++) {
     st_vbl++;
-    slice_report = (int)(st_vbl % CART_AUDIO_SLICES);
+    cursor = (cursor + PROFILE_YM_SAMPLES_PER_VBL * PROFILE_YM_SAMPLE_BYTES) %
+             CART_AUDIO_YM_RING_BYTES;
+    dma_report = (int)(cursor / CART_AUDIO_POS_UNIT);
     for (int j = 0; j < WRITER_RUNS_PER_VBL; j++) {
       now_us += VBL_US / WRITER_RUNS_PER_VBL;
       writer->callback(writer);
       if (j == 2) audio_render_frame();
     }
   }
-  /* The slice written ahead: 112 pairs for 112 samples of the pattern in a
-   * row. Find where it starts. */
-  const uint8_t *slice = buf + ((st_vbl + 1u) % CART_AUDIO_SLICES) * CART_AUDIO_SLICE_BYTES;
+  /* Written ahead of the cursor: the pattern's samples in a row, as pairs,
+   * or at 50 fps four bytes each (the pair with the YM's register numbers,
+   * profile.h). Find where it starts, half a VBL on (the spill mirrors the
+   * ring's start, so a run can be read straight through the end). */
+  const uint8_t *slice = buf + cursor + PROFILE_YM_SAMPLES_PER_VBL / 2u * PROFILE_YM_SAMPLE_BYTES;
+  const uint32_t stride = PROFILE_YM_MOVEP ? 4u : 2u;
+  const uint32_t b_at = PROFILE_YM_MOVEP ? 2u : 1u;
   static const uint8_t k_lut_a[64] = {0, 0, 1, 2, 2, 1, 2, 2, 0, 2, 3, 4, 2, 4, 5, 2,
                                       3, 4, 5, 2, 3, 4, 5, 6, 7, 3, 4, 5, 6, 7, 0, 1,
                                       2, 4, 5, 6, 7, 8, 8, 9, 9, 0, 1, 2, 3, 4, 5, 6,
@@ -376,7 +378,8 @@ static void test_pcm_source_on_ym(void) {
     bool ok = true;
     for (uint32_t i = 0; i < 112u && ok; i++) {
       uint32_t index = (uint32_t)(pattern[(k + i) % PATTERN] + 128) >> 2;
-      ok = slice[2u * i] == k_lut_a[index] && slice[2u * i + 1u] == k_lut_b[index];
+      ok = slice[stride * i] == k_lut_a[index] &&
+           slice[stride * i + b_at] == k_lut_b[index];
     }
     found = ok;
   }

@@ -38,7 +38,10 @@ BIN = BOOT.BIN
 # _DEBUG: 1 to enable debug, 0 to disable them
 # To disable debug, make target DEBUG_MODE=0
 DEBUG_MODE = 1
-VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac -D_DEBUG=$(DEBUG_MODE) -DGEMDOS_DATE=$(GEMDOS_DATE_FORMATTED) -DGEMDOS_TIME=$(GEMDOS_TIME_FORMATTED) -DVERSION_MAJOR=\"$(VERSION_MAJOR)\" -DVERSION_MINOR=\"$(VERSION_MINOR)\" -DVERSION_PATCH=\"$(VERSION_PATCH)\"
+# PROFILE_25FPS: 1 assembles the image for the 25 fps profile (Timer-D plays
+# the YM samples), 0 for 50 fps (the copy plays them): rp/src/include/profile.h.
+PROFILE_25FPS = 0
+VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac -D_DEBUG=$(DEBUG_MODE) -DPROFILE_25FPS_BUILD=$(PROFILE_25FPS) -DGEMDOS_DATE=$(GEMDOS_DATE_FORMATTED) -DGEMDOS_TIME=$(GEMDOS_TIME_FORMATTED) -DVERSION_MAJOR=\"$(VERSION_MAJOR)\" -DVERSION_MINOR=\"$(VERSION_MINOR)\" -DVERSION_PATCH=\"$(VERSION_PATCH)\"
 VASM = vasm
 VLINK =  vlink
 LINKER_SCRIPT = $(SOURCES_DIR)/userfw.ld

@@ -6,7 +6,6 @@
  *              tests. Same names, same results.
  */
 #include <stdint.h>
-#include <string.h>
 
 /* Pixels [src, src_end) to planar words at dst: per 16 pixels, one word per
  * plane (0..3), the leftmost pixel in bit 15. */
@@ -19,14 +18,6 @@ void fb_c2p_half(uint16_t *dst, const uint8_t *src, const uint8_t *src_end) {
       }
       dst[plane] = word;
     }
-  }
-}
-
-/* count 48-byte chunks to dst, in order, from src_last backwards. */
-void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
-                             uint32_t count) {
-  for (uint32_t k = 0; k < count; k++) {
-    memcpy(dst + 48u * k, src_last - 48u * k, 48u);
   }
 }
 

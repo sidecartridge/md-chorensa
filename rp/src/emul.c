@@ -32,12 +32,19 @@
 #include "memfunc.h"
 #include "palette.h"
 #include "pico/stdlib.h"
+#include "profile.h"
 #include "reset.h"
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
 #include "st_session.h"
 #include "target_firmware.h"
+
+/* The cartridge image plays the YM samples one way per profile (userfw.s,
+ * "Samples by the copy"): it must have been assembled for this build's. */
+_Static_assert(TARGET_FIRMWARE_PROFILE_25FPS == (APP_PROFILE == PROFILE_25FPS),
+               "target_firmware.h was built for the other profile: run "
+               "target/atarist/build.sh with this APP_PROFILE");
 
 /* No sleep -- tight loop. The dirty-frame handshake means
  * the m68k only blits cart->ST when fb_publish() actually advances
@@ -104,7 +111,7 @@ void emul_start() {
   // black (0xFF -> palette index 15 on the default TOS palette), and
   // renders the boot pattern. The m68k VBL loop in userfw.s blits
   // this to an off-screen ST page each frame and flips the video base.
-  if (fb_init(&fb_mode_320x200) < 0) {
+  if (fb_init(&fb_mode_256x256) < 0) {
     panic("fb_init failed");
   }
 

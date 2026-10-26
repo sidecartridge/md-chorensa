@@ -4,8 +4,9 @@
  *              framebuffer the m68k reads each VBL.
  *
  * Single-FB design: there is exactly one framebuffer in
- * the shared region (`$FA8300`, 32 KB, 320x200x4bpp). Double-buffering
- * happens on the ST side; the RP just writes into this one buffer.
+ * the shared region (`$FA8000`, 32 KB, 256x256x4bpp, laid out for the ST's
+ * copier: cart_shared.h). Double-buffering happens on the ST side; the RP
+ * just writes into this one buffer.
  *
  * This header is introduced alongside fb_font.* and
  * fb_draw.* so the ported font/draw modules have a stable target
@@ -42,8 +43,9 @@ struct FB_SCREEN {
 
 extern struct FB_SCREEN fb_screen;
 
-/* Built-in 320x200 4 bpp Atari ST low-res mode. Defined in fb.c. */
-extern const struct FB_MODE fb_mode_320x200;
+/* The 256 x 256, 4 bpp mode the ST shows in its overscan screen. Defined in
+ * fb.c. */
+extern const struct FB_MODE fb_mode_256x256;
 
 /**
  * @brief Populate `fb_screen` from a mode descriptor, build the pixel
@@ -100,15 +102,29 @@ void fb_pump_rom3(void);
 
 /** @brief Who copies each frame to the ST's screen, from its next VBL on:
  *         CART_BLIT_MODE_AUTO (the default: the blitter when the sound goes
- *         through the DMA chip, the CPU when Timer-B plays it on the YM),
+ *         through the DMA chip, the CPU when it plays on the YM),
  *         CART_BLIT_MODE_CPU (the 68000's MOVEM loop) or
  *         CART_BLIT_MODE_BLITTER (the blitter on any sound path: about
  *         1.4 ms of the ST's VBL back, but on the YM it breaks the sound;
- *         for an app without any). The blitter owns the bus `piece` chunks
- *         of 48 bytes at a time (0: the ST's default of 40, about 1 ms). An
+ *         for an app without any). The blitter owns the bus `piece` lines
+ *         at a time (0: the ST's default, CART_BLIT_PIECE_DEFAULT, 16 lines,
+ *         about 1 ms); the ST also ends a piece before a border switch. An
  *         ST without a blitter copies with the CPU whatever the mode.
  *         Survives an ST reset. */
 void fb_set_copy_mode(uint8_t mode, uint8_t piece);
+
+/** @brief The lines the ST copies of each frame, from its top, from the
+ *         next frame on: CART_FB_LINES (all, the default) or
+ *         CART_FB_LINES_SHORT (240: the frame's bottom 16 lines are never
+ *         shown and that part of the screen stays black). A plain ST or a
+ *         Mega ST playing sampled sound through the YM has the time for 240
+ *         at 50 fps, not for 256; an STE's or a Mega STE's blitter copies
+ *         256 with time to spare. The frame is published whole either way.
+ *         Survives an ST reset. */
+void fb_set_copy_lines(uint16_t lines);
+
+/** @brief The lines the ST copies, as set by fb_set_copy_lines(). */
+uint16_t fb_copy_lines(void);
 
 /** @brief Microseconds the most recent fb_publish() spent in the
  *         chunky-to-planar conversion (dual-core c2p + chunk-reversed

@@ -155,13 +155,13 @@ PAIRS = [
      lambda rp: rp["CART_AUDIO_BUFFER_OFFSET"]),
     ("audio buffer size", lambda st: st["AUDIO_BUFFER_SIZE"],
      lambda rp: rp["CART_AUDIO_BUFFER_SIZE"]),
-    ("audio slices", lambda st: st["AUDIO_SLICES"], lambda rp: rp["CART_AUDIO_SLICES"]),
-    ("audio slice size", lambda st: st["AUDIO_SLICE_BYTES"],
-     lambda rp: rp["CART_AUDIO_SLICE_BYTES"]),
+    ("YM ring", lambda st: st["AUDIO_YM_RING_BYTES"], lambda rp: rp["CART_AUDIO_YM_RING_BYTES"]),
+    ("YM spill", lambda st: st["AUDIO_YM_SPILL_BYTES"],
+     lambda rp: rp["CART_AUDIO_YM_SPILL_BYTES"]),
     ("DMA ring", lambda st: st["AUDIO_DMA_RING_BYTES"],
      lambda rp: rp["CART_AUDIO_DMA_RING_BYTES"]),
-    ("DMA position unit", lambda st: st["AUDIO_DMA_POS_UNIT"],
-     lambda rp: rp["CART_AUDIO_DMA_POS_UNIT"]),
+    ("position unit", lambda st: st["AUDIO_POS_UNIT"],
+     lambda rp: rp["CART_AUDIO_POS_UNIT"]),
     # The profiles: the word, and what each one sets on the ST.
     ("profile word", lambda st: window(st, "PROFILE_ADDR"), lambda rp: rp["CART_PROFILE_OFFSET"]),
     *[(f"profile {p}: {what}", lambda st, k=f"PROFILE_{p}_{name}": st[k],
@@ -169,18 +169,31 @@ PAIRS = [
       for p in ("50FPS", "25FPS")
       for what, name in (("VBLs a frame", "VBLS"), ("Timer-B count", "TIMERB_COUNT"),
                          ("DMA mode", "DMA_MODE"), ("DMA lead", "DMA_LEAD"))],
+    ("profile 50FPS: samples a VBL", lambda st: st["PROFILE_50FPS_YM_SAMPLES_A_VBL"],
+     lambda rp: rp["CART_PROFILE_50FPS_YM_SAMPLES"]),
+    ("YM register: A's volume", lambda st: st["YM_REG_CHA_VOL"], lambda rp: rp["CART_YM_REG_VOL_A"]),
+    ("YM register: B's volume", lambda st: st["YM_REG_CHB_VOL"], lambda rp: rp["CART_YM_REG_VOL_B"]),
     ("profile: 50 fps", lambda st: st["PROFILE_50FPS"], lambda rp: rp["CART_PROFILE_50FPS"]),
     ("profile: 25 fps", lambda st: st["PROFILE_25FPS"], lambda rp: rp["CART_PROFILE_25FPS"]),
     ("audio output word", lambda st: window(st, "AUDIO_OUT_ADDR"),
      lambda rp: rp["CART_AUDIO_OUT_OFFSET"]),
     ("audio output: auto", lambda st: st["AUDIO_OUT_AUTO"], lambda rp: rp["CART_AUDIO_OUT_AUTO"]),
     ("audio output: YM", lambda st: st["AUDIO_OUT_YM"], lambda rp: rp["CART_AUDIO_OUT_YM"]),
+    ("audio output: none", lambda st: st["AUDIO_OUT_NONE"], lambda rp: rp["CART_AUDIO_OUT_NONE"]),
     ("copy mode word", lambda st: window(st, "BLIT_MODE_ADDR"),
      lambda rp: rp["CART_BLIT_MODE_OFFSET"]),
     ("copy mode: auto", lambda st: st["BLIT_MODE_AUTO"], lambda rp: rp["CART_BLIT_MODE_AUTO"]),
     ("copy mode: CPU", lambda st: st["BLIT_MODE_CPU"], lambda rp: rp["CART_BLIT_MODE_CPU"]),
+    ("blitter piece default", lambda st: st["BLIT_PIECE_DEFAULT"],
+     lambda rp: rp["CART_BLIT_PIECE_DEFAULT"]),
+    ("blitter destination line step", lambda st: st["BLT_DST_Y_INC"],
+     lambda rp: rp["CART_FB_BLITTER_DST_Y_INC"]),
     ("copy mode: blitter", lambda st: st["BLIT_MODE_BLITTER"],
      lambda rp: rp["CART_BLIT_MODE_BLITTER"]),
+    ("copy lines word", lambda st: window(st, "COPY_LINES_ADDR"),
+     lambda rp: rp["CART_COPY_LINES_OFFSET"]),
+    ("copy lines: short", lambda st: st["FB_COPY_LINES_SHORT"],
+     lambda rp: rp["CART_FB_LINES_SHORT"]),
     # The boot block the ST reads in pre_auto.
     ("boot status", lambda st: window(st, "BOOT_STATUS_ADDR"),
      lambda rp: rp["CART_BOOT_STATUS_OFFSET"]),
@@ -195,13 +208,14 @@ PAIRS = [
      lambda rp: rp["CART_FRAMEBUFFER_OFFSET"]),
     ("framebuffer size", lambda st: st["FRAMEBUFFER_SIZE"],
      lambda rp: rp["CART_FRAMEBUFFER_SIZE"]),
-    ("lines the blit copies", lambda st: st["FB_COPY_LINES"],
-     lambda rp: rp["CART_FB_BLIT_LINES"]),
-    ("bytes the blit copies", lambda st: st["FBDRV_TOTAL_BYTES"],
-     lambda rp: rp["CART_FB_BLIT_BYTES"]),
+    ("lines the copy copies", lambda st: st["FB_COPY_LINES"],
+     lambda rp: rp["CART_FB_LINES"]),
+    ("bytes of a framebuffer line", lambda st: st["FB_LINE_BYTES"],
+     lambda rp: rp["CART_FB_LINE_BYTES"]),
     ("MOVEM chunk", lambda st: st["FBDRV_ITER_BYTES"], lambda rp: rp["CART_FB_CHUNK_BYTES"]),
-    ("MOVEM chunks", lambda st: st["FBDRV_MAIN_ITERS"], lambda rp: rp["CART_FB_CHUNK_COUNT"]),
-    ("MOVEM tail", lambda st: st["FBDRV_TAIL_BYTES"], lambda rp: rp["CART_FB_CHUNK_TAIL"]),
+    ("MOVEM chunks a line", lambda st: st["FBDRV_LINE_CHUNKS"],
+     lambda rp: rp["CART_FB_CHUNKS_A_LINE"]),
+    ("MOVEM tail of a line", lambda st: st["FBDRV_LINE_TAIL"], lambda rp: rp["CART_FB_LINE_TAIL"]),
     # The ROM3 signalling windows the RP's ring filters on.
     ("IKBD byte window", lambda st: rom3(st, "IKBD_WINDOW_BASE"),
      lambda rp: rp["IKBD_WINDOW_LO16"]),
@@ -209,8 +223,6 @@ PAIRS = [
      lambda rp: rp["FB_VBLSYNC_HIBYTE"]),
     ("blit-done window (cart_shared.h)", lambda st: rom3(st, "VBLSYNC_ADDR"),
      lambda rp: rp["CART_ROM3_BLIT_DONE_WINDOW"]),
-    ("audio slice window", lambda st: rom3(st, "AUDIO_SLICE_WINDOW"),
-     lambda rp: rp["CART_ROM3_AUDIO_SLICE_WINDOW"]),
     ("ACIA overrun window", lambda st: rom3(st, "IKBD_OVERRUN_ADDR"),
      lambda rp: rp["CART_ROM3_IKBD_OVERRUN_WINDOW"]),
     ("IKBD byte count window", lambda st: rom3(st, "IKBD_COUNT_WINDOW"),
@@ -229,20 +241,24 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_STUDY_HI_WINDOW"]),
     ("stopwatch ticks low window", lambda st: rom3(st, "STUDY_LO_WINDOW"),
      lambda rp: rp["CART_ROM3_STUDY_LO_WINDOW"]),
-    ("DMA position window", lambda st: rom3(st, "DMA_POS_WINDOW"),
-     lambda rp: rp["CART_ROM3_DMA_POS_WINDOW"]),
+    ("position window", lambda st: rom3(st, "AUDIO_POS_WINDOW"),
+     lambda rp: rp["CART_ROM3_AUDIO_POS_WINDOW"]),
     ("ST features window", lambda st: rom3(st, "ST_FEATURES_WINDOW"),
      lambda rp: rp["CART_ROM3_ST_FEATURES_WINDOW"]),
     ("ST feature: blitter", lambda st: st["ST_FEATURE_BLITTER"],
      lambda rp: rp["CART_ST_FEATURE_BLITTER"]),
+    ("border window", lambda st: rom3(st, "BORDER_WINDOW"),
+     lambda rp: rp["CART_ROM3_BORDER_WINDOW"]),
+    ("border: top", lambda st: st["BORDER_TOP"], lambda rp: rp["CART_BORDER_TOP"]),
+    ("border: bottom", lambda st: st["BORDER_BOTTOM"], lambda rp: rp["CART_BORDER_BOTTOM"]),
     # The stopwatch: Timer-A's tick, in nanoseconds (fb.c converts).
     ("stopwatch tick (ns)", lambda st: round(
         MFP_PRESCALER[st["TIMERA_STUDY_DIV10"]] * 1e9 / MFP_CLOCK_HZ),
      lambda rp: rp["FB_STOPWATCH_TICK_NS"]),
-    # The sample rates: Timer-B plays what the RP converts at its rate, the
+    # The sample rates: Timer-D plays what the RP converts at its rate, the
     # DMA chip what it converts at the chip's.
     *[(f"profile {p}: YM rate (Hz)", lambda st, p=p: round(
-        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st[f"PROFILE_{p}_TIMERB_COUNT"])),
+        MFP_CLOCK_HZ / (MFP_PRESCALER[st["YM_TIMER_PRESCALER"]] * st[f"PROFILE_{p}_TIMERB_COUNT"])),
        lambda rp, p=p: rp[f"CART_PROFILE_{p}_YM_RATE_HZ"]) for p in ("50FPS", "25FPS")],
     *[(f"profile {p}: DMA rate (Hz)", lambda st, p=p: DMA_RATES[st[f"PROFILE_{p}_DMA_MODE"] & 3],
        lambda rp, p=p: rp[f"CART_PROFILE_{p}_DMA_RATE_HZ"]) for p in ("50FPS", "25FPS")],
@@ -263,15 +279,21 @@ class Layout(unittest.TestCase):
                                  f"{what}: the ST side and the RP side differ")
 
     def test_audio_bytes_per_frame(self):
-        """In each profile the RP refills what the ST plays in one frame: two
-        bytes per Timer-B interrupt, within one sample; and a DMA FIFO slot
-        holds a VBL of the chip's samples."""
+        """In each profile the RP refills what the ST plays in one frame: at
+        25 fps two bytes per Timer-D interrupt, within one sample; at 50 fps
+        the samples the copy, the handlers and the idle loop write, four
+        bytes each in the ring; and a DMA FIFO slot holds a VBL of the chip's
+        samples."""
         st, rp = st_names(), rp_names()
         for p in PROFILES:
             with self.subTest(p):
-                rate = MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] *
-                                       st[f"PROFILE_{p}_TIMERB_COUNT"])
-                samples = rate * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
+                if p == "50FPS":
+                    samples = st["PROFILE_50FPS_YM_SAMPLES_A_VBL"]
+                    self.assertEqual(rp["CART_PROFILE_50FPS_YM_SAMPLE_BYTES"], 4)
+                else:
+                    rate = MFP_CLOCK_HZ / (MFP_PRESCALER[st["YM_TIMER_PRESCALER"]] *
+                                           st[f"PROFILE_{p}_TIMERB_COUNT"])
+                    samples = rate * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
                 ym = rp[f"CART_PROFILE_{p}_YM_BYTES"]
                 self.assertLess(abs(ym / 2 - samples), 1,
                                 f"{ym} bytes per frame for {samples:.1f} samples")
@@ -279,28 +301,29 @@ class Layout(unittest.TestCase):
                 dma = rp[f"CART_PROFILE_{p}_DMA_RATE_HZ"] * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
                 self.assertGreaterEqual(rp[f"CART_PROFILE_{p}_DMA_BYTES"], dma)
 
-    def test_audio_slices(self):
-        """The slices fit in the audio buffer, a VBL of samples fits in one in
-        each profile, and the ST's shift is the slice size."""
+    def test_audio_ym_ring(self):
+        """The YM ring and its spill fill the audio buffer; the spill holds a
+        VBL of samples in each profile (the cursor reads on into it until
+        the VBL brings it back); the cursor's report fits a byte."""
         st, rp = st_names(), rp_names()
-        self.assertLessEqual(rp["CART_AUDIO_SLICES"] * rp["CART_AUDIO_SLICE_BYTES"],
-                             rp["CART_AUDIO_BUFFER_SIZE"])
+        ring, spill = rp["CART_AUDIO_YM_RING_BYTES"], rp["CART_AUDIO_YM_SPILL_BYTES"]
+        self.assertEqual(ring + spill, rp["CART_AUDIO_BUFFER_SIZE"])
         for p in PROFILES:
-            self.assertLessEqual(rp[f"CART_PROFILE_{p}_YM_BYTES"], rp["CART_AUDIO_SLICE_BYTES"])
-        self.assertEqual(1 << st["AUDIO_SLICE_SHIFT"], st["AUDIO_SLICE_BYTES"])
-        slices = rp["CART_AUDIO_SLICES"]
-        self.assertEqual(slices & (slices - 1), 0, "the ST masks the slice number")
+            a_vbl = rp[f"CART_PROFILE_{p}_YM_SAMPLES"] * rp[f"CART_PROFILE_{p}_YM_SAMPLE_BYTES"]
+            self.assertLess(a_vbl * 11 // 10, spill, p)
+            self.assertEqual(ring % rp[f"CART_PROFILE_{p}_YM_SAMPLE_BYTES"], 0, p)
+        self.assertLessEqual(ring // rp["CART_AUDIO_POS_UNIT"], 256)
 
     def test_dma_ring(self):
         """The DMA ring masks as a power of two and its position report fits
         a byte; in each profile the lead goes by the report's unit, covers
         three VBLs and stays under half a ring, and the chip plays mono."""
         st, rp = st_names(), rp_names()
-        ring, unit = rp["CART_AUDIO_DMA_RING_BYTES"], rp["CART_AUDIO_DMA_POS_UNIT"]
+        ring, unit = rp["CART_AUDIO_DMA_RING_BYTES"], rp["CART_AUDIO_POS_UNIT"]
         self.assertEqual(ring & (ring - 1), 0)
         self.assertEqual(ring // unit, 256, "the ST reports the position in one byte")
         self.assertEqual(st["UFW_DMA_RING"] % ring, 0, "the ST masks ring offsets")
-        self.assertEqual(1 << 4, st["AUDIO_DMA_POS_UNIT"], "the ST shifts by 4")
+        self.assertEqual(1 << 4, st["AUDIO_POS_UNIT"], "the ST shifts by 4")
         for p in PROFILES:
             with self.subTest(p):
                 lead = rp[f"CART_PROFILE_{p}_DMA_LEAD"]

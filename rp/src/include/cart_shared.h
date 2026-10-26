@@ -46,13 +46,14 @@
  *                                        app-free, but for slots 2..5:
  *                                        commands for the IKBD, slot 6:
  *                                        the audio output, 7: the copy
- *                                        mode, 8: the profile, and
- *                                        slots 12..19: the palette).
+ *                                        mode, 8: the profile, 9: the
+ *                                        lines copied, and slots
+ *                                        12..19: the palette).
  *   $FA4100  AUDIO_BUFFER       4096 B (YM volume pairs, or DMA samples)
  *   $FA5100  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
  *   $FA5102  BOOT_MESSAGE     126 B  (why the RP refused to start)
- *   $FA5180  APP_FREE          ~12.4 KB free arena, ends at FRAMEBUFFER
- *   $FA8300  FRAMEBUFFER          32 KB (320x200 4 bpp low-res)
+ *   $FA5180  APP_FREE          ~11.6 KB free arena, ends at FRAMEBUFFER
+ *   $FA8000  FRAMEBUFFER          32 KB (256 lines of 256 px, 4 bpp)
  *   $FAFFFF  end of region
  */
 #define CART_CARTRIDGE_CODE_SIZE         0x4000  /* 16 KB cart-image budget */
@@ -80,23 +81,40 @@
 /* Which way the ST plays the sound, as the RP asks: a word in slot 6 of
  * SHARED_VARIABLES, read once per ST boot. CART_AUDIO_OUT_AUTO (0, what
  * the window's erase leaves) takes the DMA sound chip on an STE or a Mega
- * STE and the YM elsewhere; CART_AUDIO_OUT_YM keeps to the YM (audio.c). */
+ * STE and the YM elsewhere; CART_AUDIO_OUT_YM keeps to the YM;
+ * CART_AUDIO_OUT_NONE plays nothing at all (audio.c). */
 #define CART_AUDIO_OUT_OFFSET                                                 \
   (CART_SHARED_VARIABLES_OFFSET + (6 * 4))       /* $4028 */
 #define CART_AUDIO_OUT_AUTO              0u
 #define CART_AUDIO_OUT_YM                1u
+#define CART_AUDIO_OUT_NONE              2u
 
 /* Who copies the cart framebuffer to the ST's screen page, as the RP asks
  * (fb_set_copy_mode()): a word in slot 7 of SHARED_VARIABLES, read every
- * VBL. The low byte is the mode, the high byte the chunks of 48 bytes the
- * blitter copies at a time (0: the ST's default). CART_BLIT_MODE_AUTO (0,
- * what the window's erase leaves) takes the blitter on the DMA sound path
- * and the CPU elsewhere. Without a blitter the CPU copies. */
+ * frame (fb_publish() writes it just before the frame counter, so a frame
+ * and the layout it was published in agree). The low byte is the mode, the
+ * high byte the lines the blitter copies at a time (0: the ST's default,
+ * CART_BLIT_PIECE_DEFAULT). CART_BLIT_MODE_AUTO (0, what the window's erase
+ * leaves) takes the blitter on the DMA sound path and the CPU elsewhere.
+ * Without a blitter the CPU copies. The two copiers read the framebuffer in
+ * different layouts: see "Framebuffer layout" below. */
 #define CART_BLIT_MODE_OFFSET                                                 \
   (CART_SHARED_VARIABLES_OFFSET + (7 * 4))       /* $402C */
 #define CART_BLIT_MODE_AUTO              0u
 #define CART_BLIT_MODE_CPU               1u
 #define CART_BLIT_MODE_BLITTER           2u
+#define CART_BLIT_PIECE_DEFAULT          16u /* lines: 1.0 ms, an IKBD byte waits less than its 1.28 ms */
+
+/* The lines the ST copies of each frame, from its top, as the RP asks
+ * (fb_set_copy_lines()): a word in slot 9 of SHARED_VARIABLES, read every
+ * frame (fb_publish() writes it just before the frame counter). 0 (what the
+ * window's erase leaves) or CART_FB_LINES: all of them; CART_FB_LINES_SHORT:
+ * the top 240, the bottom 16 of the frame never shown (that screen's lines
+ * stay black), what a plain ST's or a Mega ST's frame holds with sampled
+ * sound. Both copiers take it; the frame is published whole either way. */
+#define CART_COPY_LINES_OFFSET                                                \
+  (CART_SHARED_VARIABLES_OFFSET + (9 * 4))       /* $4034 */
+#define CART_FB_LINES_SHORT              240u
 
 /* The app's profile (profile.h), chosen at compile time: how often the ST
  * takes a new frame and how fast it plays the sound. The RP writes it at
@@ -113,7 +131,18 @@
 #define CART_PROFILE_50FPS_VBLS          1
 #define CART_PROFILE_50FPS_TIMERB_COUNT  110
 #define CART_PROFILE_50FPS_YM_RATE_HZ    5585u
-#define CART_PROFILE_50FPS_YM_BYTES      224u
+/* At 50 fps the ST's copy loop plays the samples itself, one every 7.2
+ * MOVEM pairs, each border handler one, and an idle loop at the same pace
+ * between copies: about CART_PROFILE_50FPS_YM_SAMPLES a VBL, the rate
+ * above, each written to the ring as four bytes, in the ST's order
+ * (register 8, A's volume, register 9, B's volume), which the ST writes to
+ * the YM with one movep.l (userfw.s, "Samples by the copy"). At 25 fps
+ * Timer-D plays two-byte pairs. */
+#define CART_PROFILE_50FPS_YM_SAMPLES    112u
+#define CART_PROFILE_50FPS_YM_BYTES      (2u * CART_PROFILE_50FPS_YM_SAMPLES)
+#define CART_PROFILE_50FPS_YM_SAMPLE_BYTES 4u  /* in the ring: four bytes a sample */
+#define CART_YM_REG_VOL_A                8u
+#define CART_YM_REG_VOL_B                9u
 #define CART_PROFILE_50FPS_DMA_MODE      0x81   /* mono, 12,517 Hz */
 #define CART_PROFILE_50FPS_DMA_RATE_HZ   12517u
 #define CART_PROFILE_50FPS_DMA_BYTES     256u
@@ -122,6 +151,8 @@
 #define CART_PROFILE_25FPS_TIMERB_COUNT  28
 #define CART_PROFILE_25FPS_YM_RATE_HZ    21943u
 #define CART_PROFILE_25FPS_YM_BYTES      878u
+#define CART_PROFILE_25FPS_YM_SAMPLES    439u
+#define CART_PROFILE_25FPS_YM_SAMPLE_BYTES 2u  /* in the ring: the pair as it is */
 #define CART_PROFILE_25FPS_DMA_MODE      0x82   /* mono, 25,033 Hz */
 #define CART_PROFILE_25FPS_DMA_RATE_HZ   25033u
 #define CART_PROFILE_25FPS_DMA_BYTES     512u
@@ -145,30 +176,32 @@
 #define CART_PALETTE_SIZE                (CART_PALETTE_ENTRIES * 2)  /* 32 B */
 
 /* Audio sample buffer, used one of two ways (audio.c):
- *   - the YM: (vA, vB) YM2149 volume pairs, two bytes per sample for
- *     channels A and B. The m68k Timer-B IRQ handler fires at the profile's
- *     rate and reads one pair per fire; its VBL handler points the read
- *     cursor at the start of the next slice every VBL (below), so a frame
- *     reads the first 224 (or 878) bytes of one slice;
+ *   - the YM: a ring of CART_AUDIO_YM_RING_BYTES of samples the ST's cursor
+ *     (A0) runs through: at 50 fps four bytes a sample (A's volume, 8, B's
+ *     volume, 9, in the RP's order: the ST writes them to the YM's select
+ *     and data registers with one movep.l), at 25 fps the (vA, vB) pair.
+ *     The cursor runs on past the ring's end, into the spill
+ *     (CART_AUDIO_YM_SPILL_BYTES, which the RP keeps a mirror of the ring's
+ *     start: a VBL's samples at most), and the ST's VBL handler brings it
+ *     back by the ring's size and reports it (CART_ROM3_AUDIO_POS_WINDOW,
+ *     by CART_AUDIO_POS_UNIT bytes). The RP writes ahead of it, and
+ *     resamples the app's sound to the rate the ST achieves, which the
+ *     reports measure: no sample is skipped or held, whatever interrupts
+ *     fall in a VBL;
  *   - the DMA sound chip of an STE or a Mega STE: the whole buffer mirrors
  *     the ring of 8-bit signed samples the chip plays from ST RAM at the
  *     profile's rate. Every VBL the ST reports where the chip plays
- *     (CART_ROM3_DMA_POS_WINDOW, by CART_AUDIO_DMA_POS_UNIT bytes) and
- *     copies the mirror up to the profile's lead ahead of it; the RP writes
- *     further ahead. Byte i of the ring is byte i ^ 1 of the RP's buffer
- *     (the cart bus swaps the bytes of each word). */
+ *     (the same window and unit) and copies the mirror up to the profile's
+ *     lead ahead of it; the RP writes further ahead. Byte i of the ring is
+ *     byte i ^ 1 of the RP's buffer (the cart bus swaps the bytes of each
+ *     word). */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 #define CART_AUDIO_BUFFER_SIZE           4096
 #define CART_AUDIO_DMA_RING_BYTES        CART_AUDIO_BUFFER_SIZE
-#define CART_AUDIO_DMA_POS_UNIT          16
-/* The buffer is CART_AUDIO_SLICES slices of one VBL each. The ST's VBL
- * handler moves Timer-B to the next slice and reports which one through
- * CART_ROM3_AUDIO_SLICE_WINDOW; the RP writes only the slices after it
- * (audio.c). A VBL plays 224 bytes of a slice's 1024 at 5,585 Hz, 878 at
- * 21,943 Hz. */
-#define CART_AUDIO_SLICES                4
-#define CART_AUDIO_SLICE_BYTES           1024
+#define CART_AUDIO_POS_UNIT              16
+#define CART_AUDIO_YM_RING_BYTES         3072  /* 6.9 VBLs at 50 fps, 3.5 at 25 */
+#define CART_AUDIO_YM_SPILL_BYTES        1024  /* over a VBL's samples in both profiles */
 
 /* Boot block, after the audio buffer. The ST reads the status word once
  * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which
@@ -186,77 +219,62 @@
 #define CART_APP_FREE_OFFSET                                                  \
   (CART_BOOT_MESSAGE_OFFSET + CART_BOOT_MESSAGE_SIZE)
 
-/* Framebuffer sized for low-res 4 bpp (320 x 200 = 32000 bytes). Sits
- * flush against the top of the 64 KB region: end = $FB0000 exactly,
- * start = $FB0000 - 32000 = $FA8300. APP_FREE's upper bound is
- * implicitly the framebuffer base. */
-#define CART_FRAMEBUFFER_SIZE         32000
+/* The framebuffer: 256 lines of 256 pixels, ST low-resolution planes (4
+ * bitplanes, 128 bytes a line), flush against the top of the 64 KB region:
+ * $FA8000..$FAFFFF. APP_FREE's upper bound is the framebuffer's base. */
+#define CART_FRAMEBUFFER_SIZE         32768
 #define CART_FRAMEBUFFER_OFFSET       (0x10000 - CART_FRAMEBUFFER_SIZE)
 #define CART_REGION_END               0x10000  /* 64 KB shared region top */
 
 /* ---------------------------------------------------------------------
- * Framebuffer chunk layout for the m68k MOVEM blit
+ * Framebuffer layout for the m68k's copy
  *
- * The m68k FBDRV_INLINE macro copies the cart framebuffer into a
- * hidden ST screen page using a fully unrolled
+ * The ST shows the 256 lines in an overscan screen (both borders opened,
+ * 160 bytes a line in its RAM), the image in the first 128 bytes of each
+ * line. userfw's FBDRV_INLINE copies the cartridge framebuffer into the
+ * hidden screen page from its last line to its first, three predecrementing
+ * MOVEMs a line (A0, A4 and A7 are not in their lists: A0 is the audio
+ * cursor, A4 the YM's address and A7 the SP, so samples can be written and
+ * interrupts fire during the copy):
  *
- *     movem.l (a6)+, d0-d7/a1-a4        ; read 48 bytes
- *     movem.l d0-d7/a1-a4, -(a5)        ; predec store, reverse-order
+ *     movem.l (a6)+, d0-d7/a1-a3        ; 44 bytes
+ *     movem.l d0-d7/a1-a3, -(a5)        ;   to line bytes 84..127
+ *     movem.l (a6)+, d0-d7/a1-a3        ; 44 bytes
+ *     movem.l d0-d7/a1-a3, -(a5)        ;   to line bytes 40..83
+ *     movem.l (a6)+, d0-d7/a1-a2        ; 40 bytes
+ *     movem.l d0-d7/a1-a2, -(a5)        ;   to line bytes 0..39
+ *     lea     -32(a5), a5               ; the line above, at its byte 128
  *
- * pair per iteration (A0 and A7 omitted from the list: A0 is the
- * dedicated Timer-B audio buffer pointer, A7 keeps the supervisor
- * SP valid so IRQs may fire during the macro). The predec store
- * mode is 4 cycles per iter faster than `d16(a5)` displacement mode
- * (8+8n vs 12+8n on 68000), but it writes each 12-longword group in
- * REVERSE memory order relative to the source -- chunks land in the
- * destination screen page from the END (page+31968) down to the
- * START (page+0).
+ * The predecrement store is 4 cycles faster than a d16(a5) one (8+8n
+ * against 12+8n). So the cartridge framebuffer holds the lines from the
+ * last (255) to the first (0), each as its bytes 84..127, then 40..83,
+ * then 0..39, in natural order within each piece:
  *
- * For the screen to display the correct image, the cart-FB at
- * $FA8300 must therefore be laid out with the image's 48-byte chunks
- * already pre-reversed:
- *
- *     cart-FB chunk K (bytes K*48 .. K*48+47)
- *       holds image chunk (665-K)
- *
- *   i.e.:
- *     cart-FB bytes      0 ..    47   <-- image bytes 31920 .. 31967
- *     cart-FB bytes     48 ..    95   <-- image bytes 31872 .. 31919
+ *     cart bytes       0 ..   43   <-- line 255, bytes 84..127
+ *     cart bytes      44 ..   87   <-- line 255, bytes 40..83
+ *     cart bytes      88 ..  127   <-- line 255, bytes  0..39
+ *     cart bytes     128 ..  171   <-- line 254, bytes 84..127
  *     ...
- *     cart-FB bytes  31920 .. 31967   <-- image bytes     0 ..    47
- *     cart-FB bytes  31968 .. 31999   <-- natural-order 32-byte tail
+ *     cart bytes   32728 .. 32767  <-- line 0, bytes 0..39
  *
- * Within each 48-byte chunk the bytes are in natural order; only the
- * chunk-level sequence is reversed.
+ * The RP's chunky-to-planar conversion writes natural row-major planes to
+ * RP RAM and fb_planar_publish() copies them here in this order.
  *
- * The 32-byte tail at image bytes 31968..31999 (= last 64 pixels of
- * scanline 199) is handled by a separate small `d16(a5)` MOVEM
- * after the main predec unroll, so the RP leaves those bytes in
- * NATURAL (non-reversed) order at cart-FB[31968..31999].
- *
- * Chunks DO NOT align with scanlines (LCM(48, 160) = 480), so this
- * is not a simple row reversal -- each m68k chunk covers exactly
- * scanline (112 pixels at 4 bpp) and may span row boundaries. The
- * RP-side c2p (rp/src/fb_chunked_asm.S + fb_chunked.c) is responsible
- * for emitting the reversed layout. The simplest implementation is
- * to keep c2p's natural row-major output going to a 32 KB scratch
- * buffer in RP RAM, then do a chunk-reversed memcpy from scratch to
- * the cart FB once both cores finish (~120 us / frame, well under
- * fb_render_frame's main-loop budget). Per-byte address arithmetic
- * inside the c2p hot path is also possible but more invasive.
- *
- * Cost / benefit:
- *   - m68k saves ~4 cyc/iter * 571 iters = ~2284 cyc / VBL (~285 us)
- *   - m68k boot adds one `lea (FB_CHUNK_COVERED)(a5), a5` per VBL (~12 cyc)
- *   - RP adds ~120 us / frame for the scratch->cart-FB reverse memcpy
- *   - Net: ~285 us VBL slack reclaimed on the m68k side
+ * The blitter (an STE, a Mega STE, a Mega ST fitted with one), when it
+ * copies instead, reads the lines in natural order, line 0 first and each
+ * line's 128 bytes forward, and writes each to its screen line, its Y
+ * increment (CART_FB_BLITTER_DST_Y_INC) skipping the 32 bytes right of the
+ * image. For it the RP publishes the planes as they are: the natural
+ * layout. Which layout a frame is in follows from who copies it (the copy
+ * mode word above, the ST's blitter, the sound path), by the same rule on
+ * both sides (fb.c, userfw.s).
  */
-#define CART_FB_CHUNK_BYTES           48   /* size of one m68k MOVEM-burst group (12 longwords; A0 and A7 omitted -- A0 is the dedicated Timer-B audio pointer, A7 is the SP) */
-#define CART_FB_BLIT_LINES            200  /* must match FB_COPY_LINES in target/atarist/src/inc/sidecart_layout.s */
-#define CART_FB_BLIT_BYTES            (CART_FB_BLIT_LINES * 160)  /* total bytes the m68k blits per VBL (160 = ST 4bpp scanline) */
-#define CART_FB_CHUNK_COUNT           (CART_FB_BLIT_BYTES / CART_FB_CHUNK_BYTES)  /* iterations of the unrolled MOVEM-pair */
-#define CART_FB_CHUNK_COVERED         (CART_FB_CHUNK_BYTES * CART_FB_CHUNK_COUNT)
-#define CART_FB_CHUNK_TAIL            (CART_FB_BLIT_BYTES - CART_FB_CHUNK_COVERED)  /* bytes copied by the m68k via d16(a5) MOVEM after the main predec unroll */
+#define CART_FB_BLITTER_DST_Y_INC     (160 - CART_FB_LINE_BYTES + 2)
+#define CART_FB_LINES                 256  /* must match FB_COPY_LINES in target/atarist/src/inc/sidecart_layout.s */
+#define CART_FB_LINE_BYTES            128  /* 256 px * 4 bpp / 8 */
+#define CART_FB_CHUNK_BYTES           44   /* one MOVEM of 11 longwords: D0-D7, A1-A3 */
+#define CART_FB_CHUNKS_A_LINE         2
+#define CART_FB_LINE_TAIL             (CART_FB_LINE_BYTES - CART_FB_CHUNKS_A_LINE * CART_FB_CHUNK_BYTES)  /* 40: one MOVEM of D0-D7, A1-A2 */
 
 /* RP→m68k command sentinel values. The m68k polls the longword at
  * CART_CMD_SENTINEL_OFFSET; non-zero values steer it out of the
@@ -277,7 +295,6 @@
  *   $FB83xx  VBL: the ST has read xx IKBD bytes so far, mod 256 (ikbd.c)
  *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
  *   $FB8500  the keyboard ACIA overran: IKBD bytes were lost (ikbd.c)
- *   $FB86xx  VBL: Timer-B plays audio slice xx from now on (audio.c)
  *   $FB87xx  the ST sent the IKBD commands of generation xx (low byte)
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
@@ -285,14 +302,16 @@
  *   $FB8Bxx  the stopwatch (userfw.s TIME_STUDY): point xx of the ST's loop,
  *   $FB8Cxx  then its ticks, high byte, and
  *   $FB8Fxx  low byte (fb.c)
- *   $FB8Dxx  VBL: the DMA sound chip plays byte xx * CART_AUDIO_DMA_POS_UNIT
- *            of its ring (audio.c)
- *   $FB8Exx  the ST's features (CART_ST_FEATURE_*), after the hello */
+ *   $FB8Dxx  VBL: where the ST plays, by CART_AUDIO_POS_UNIT bytes: the YM
+ *            path's cursor in the cart ring, the DMA chip's position in
+ *            its ring (audio.c)
+ *   $FB8Exx  the ST's features (CART_ST_FEATURE_*), after the hello
+ *   $FB90xx  VBL: which borders the frame before had open (CART_BORDER_*,
+ *            fb.c) */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
 #define CART_ROM3_IKBD_COUNT_WINDOW  0x8300u
 #define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
 #define CART_ROM3_IKBD_OVERRUN_WINDOW 0x8500u
-#define CART_ROM3_AUDIO_SLICE_WINDOW 0x8600u
 #define CART_ROM3_IKBD_OUT_WINDOW    0x8700u
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
@@ -300,9 +319,12 @@
 #define CART_ROM3_STUDY_POINT_WINDOW 0x8B00u
 #define CART_ROM3_STUDY_HI_WINDOW    0x8C00u
 #define CART_ROM3_STUDY_LO_WINDOW    0x8F00u
-#define CART_ROM3_DMA_POS_WINDOW     0x8D00u
+#define CART_ROM3_AUDIO_POS_WINDOW   0x8D00u
 #define CART_ROM3_ST_FEATURES_WINDOW 0x8E00u
 #define CART_ST_FEATURE_BLITTER      0x01u
+#define CART_ROM3_BORDER_WINDOW      0x9000u
+#define CART_BORDER_TOP              0x01u
+#define CART_BORDER_BOTTOM           0x02u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.

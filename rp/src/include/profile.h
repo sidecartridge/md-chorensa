@@ -13,9 +13,10 @@
  *
  * Choose it with APP_PROFILE: `APP_PROFILE=PROFILE_25FPS ./build.sh ...`
  * (rp/src/CMakeLists.txt passes it on), or a define before this header.
- * The ST's image is the same for both: the RP writes the profile into the
- * cartridge window (CART_PROFILE_OFFSET) before the ST boots, and userfw
- * reads it once. fb_publish() then paces the app at the profile's frame
+ * The ST's image is assembled per profile (target/atarist/build.sh passes
+ * it on, and the RP build refuses an image of the other): the RP also writes
+ * it into the cartridge window (CART_PROFILE_OFFSET) before the ST boots, and
+ * userfw reads it once. fb_publish() then paces the app at the profile's frame
  * rate. Sound sources keep their own rates: the RP resamples them.
  */
 
@@ -40,6 +41,9 @@
 #define PROFILE_DMA_RATE_HZ CART_PROFILE_25FPS_DMA_RATE_HZ
 #define PROFILE_DMA_BYTES_PER_VBL CART_PROFILE_25FPS_DMA_BYTES
 #define PROFILE_DMA_LEAD CART_PROFILE_25FPS_DMA_LEAD
+#define PROFILE_YM_SAMPLES_PER_VBL CART_PROFILE_25FPS_YM_SAMPLES
+#define PROFILE_YM_SAMPLE_BYTES CART_PROFILE_25FPS_YM_SAMPLE_BYTES
+#define PROFILE_YM_MOVEP 0 /* the ring holds two-byte pairs for Timer-D */
 #elif APP_PROFILE == PROFILE_50FPS
 #define PROFILE_ID CART_PROFILE_50FPS
 #define PROFILE_NAME "50 fps"
@@ -49,6 +53,9 @@
 #define PROFILE_DMA_RATE_HZ CART_PROFILE_50FPS_DMA_RATE_HZ
 #define PROFILE_DMA_BYTES_PER_VBL CART_PROFILE_50FPS_DMA_BYTES
 #define PROFILE_DMA_LEAD CART_PROFILE_50FPS_DMA_LEAD
+#define PROFILE_YM_SAMPLES_PER_VBL CART_PROFILE_50FPS_YM_SAMPLES
+#define PROFILE_YM_SAMPLE_BYTES CART_PROFILE_50FPS_YM_SAMPLE_BYTES
+#define PROFILE_YM_MOVEP 1 /* four bytes a sample, for the copy's movep.l */
 #else
 #error "APP_PROFILE must be PROFILE_50FPS or PROFILE_25FPS"
 #endif

@@ -1,21 +1,22 @@
 // units: rp/src/fb_chunked.c emu/fb_workers.c
-/* The framebuffer's chunk layout, end to end: what the app draws in the
- * chunky buffer is what the ST shows.
+/* The framebuffer's layouts, end to end: what the app draws in the chunky
+ * buffer is what the ST shows.
  *
- * fb_chunky_to_planar() transposes the chunky buffer to the ST's planes on
- * both cores (core 1 is a thread here) and publishes it to the cartridge
- * framebuffer with the 48-byte chunks in reverse order, because the m68k's
- * blit stores each chunk with a predecrementing MOVEM: chunk k read from the
- * cartridge lands at CART_FB_CHUNK_COVERED - 48 (k + 1) in the screen page,
- * and the tail is copied as it is (cart_shared.h, "Framebuffer chunk layout",
- * and FBDRV_INLINE in userfw.s). The ST's blitter, when it copies instead,
- * must put every chunk where that MOVEM would. This test runs the RP's side,
- * models both copies from the constants of cart_shared.h, decodes the ST's
- * planes and compares every pixel with what was drawn.
+ * fb_transpose() turns the chunky buffer into the ST's planes on both cores
+ * (core 1 is a thread here) and fb_planar_publish() copies them to the
+ * cartridge framebuffer in the copier's layout (cart_shared.h, "Framebuffer
+ * layout for the m68k's copy"): for the MOVEM copy the lines from the last
+ * to the first, each as its bytes 80..127, 32..79 and 0..31, because
+ * FBDRV_INLINE stores them with predecrementing MOVEMs into a screen page of
+ * 160-byte lines; for the blitter the planes as they are, which it copies a
+ * line at a time, its Y increment skipping the bytes right of the image.
+ * This test runs the RP's side, models both copies from the constants of
+ * cart_shared.h (the blitter in one run and in pieces), decodes the ST's
+ * planes and compares every pixel with what was drawn; the 32 bytes right of
+ * the image in each line stay untouched.
  *
- * The two workers are Thumb assembly on the RP (fb_chunked_asm.S); here they
- * are the C they stand for (emu/fb_workers.c): the ST's low-resolution planar
- * format, and a chunk-reversed copy. */
+ * The c2p worker is Thumb assembly on the RP (fb_chunked_asm.S); here it is
+ * the C it stands for (emu/fb_workers.c). */
 #include <stdbool.h>
 #include <string.h>
 
@@ -27,26 +28,76 @@
 #define H FB_CHUNKED_H
 
 /* The cartridge framebuffer, as 16-bit words (the ST reads the RP's words
- * with their bytes swapped, which leaves their values as they are). */
+ * with their bytes swapped, which leaves their values as they are), and a
+ * screen page of CART_FB_LINES lines of the ST's 160 bytes. */
+#define ST_LINE_BYTES 160
 static uint16_t cart[CART_FRAMEBUFFER_SIZE / 2];
-static uint16_t screen[CART_FRAMEBUFFER_SIZE / 2];
+static uint16_t screen[CART_FB_LINES * ST_LINE_BYTES / 2];
 
-/* FBDRV_INLINE: CART_FB_CHUNK_COUNT MOVEM pairs, each reading one chunk
- * forward and storing it below the previous one, then the tail in place. */
-static void m68k_blit(void) {
-  const unsigned chunk = CART_FB_CHUNK_BYTES / 2;
-  for (unsigned k = 0; k < CART_FB_CHUNK_COUNT; k++) {
-    unsigned to = (CART_FB_CHUNK_COVERED / 2) - chunk * (k + 1);
-    memcpy(&screen[to], &cart[chunk * k], CART_FB_CHUNK_BYTES);
+/* FBDRV_INLINE: from the page's last line to its first, a predecrementing
+ * MOVEM of 48 bytes to the line's bytes 80..127, one to 32..79, one of 32
+ * bytes to 0..31, each read forward from the cartridge. */
+static void m68k_copy_lines(uint32_t lines) {
+  /* The top `lines` only: the framebuffer holds the lines from the last to
+   * the first, so the copy starts past the bottom ones (fbdrv_short). */
+  const uint16_t *src = cart + (CART_FB_LINES - lines) * CART_FB_LINE_BYTES / 2;
+  for (int y = (int)lines - 1; y >= 0; y--) {
+    uint16_t *end = &screen[(y * ST_LINE_BYTES + CART_FB_LINE_BYTES) / 2];
+    end -= CART_FB_CHUNK_BYTES / 2;
+    memcpy(end, src, CART_FB_CHUNK_BYTES);
+    src += CART_FB_CHUNK_BYTES / 2;
+    end -= CART_FB_CHUNK_BYTES / 2;
+    memcpy(end, src, CART_FB_CHUNK_BYTES);
+    src += CART_FB_CHUNK_BYTES / 2;
+    end -= CART_FB_LINE_TAIL / 2;
+    memcpy(end, src, CART_FB_LINE_TAIL);
+    src += CART_FB_LINE_TAIL / 2;
   }
-  memcpy(&screen[CART_FB_CHUNK_COVERED / 2], &cart[CART_FB_CHUNK_COVERED / 2],
-         CART_FB_CHUNK_TAIL);
+}
+
+static void m68k_copy(void) { m68k_copy_lines(CART_FB_LINES); }
+
+static uint8_t st_pixel(int x, int y) {
+  const uint16_t *group = &screen[y * (ST_LINE_BYTES / 2) + (x / 16) * 4];
+  int bit = 15 - (x % 16);
+  return (uint8_t)(((group[0] >> bit) & 1) | (((group[1] >> bit) & 1) << 1) |
+                   (((group[2] >> bit) & 1) << 2) |
+                   (((group[3] >> bit) & 1) << 3));
+}
+
+static int shows_what_was_drawn_to(int lines) {
+  for (int y = 0; y < lines; y++) {
+    for (int x = 0; x < W; x++) {
+      if (st_pixel(x, y) != (fb_chunked_buffer[y * W + x] & 0x0Fu)) {
+        fprintf(stderr, "pixel (%d, %d): ST shows %u, drawn %u\n", x, y,
+                st_pixel(x, y), fb_chunked_buffer[y * W + x] & 0x0Fu);
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+static int shows_what_was_drawn(void) { return shows_what_was_drawn_to(H); }
+
+/* The screen's lines from `from` down hold `fill`: a short copy left them. */
+static int lines_untouched(int from, uint8_t fill) {
+  const uint8_t *bytes = (const uint8_t *)screen;
+  for (int y = from; y < CART_FB_LINES; y++) {
+    for (int b = 0; b < CART_FB_LINE_BYTES; b++) {
+      if (bytes[y * ST_LINE_BYTES + b] != fill) {
+        fprintf(stderr, "line %d byte %d written by a copy of %d lines\n", y, b, from);
+        return 0;
+      }
+    }
+  }
+  return 1;
 }
 
 /* The blitter as userfw drives it (HOP source, OP source, all endmasks
  * set): word by word, adding the X increment after each word of a line but
  * the last and the Y increment after the last; its addresses carry on from
- * one start to the next. Addresses are byte offsets into the cartridge
+ * one piece to the next. Addresses are byte offsets into the cartridge
  * framebuffer and the screen page. */
 typedef struct {
   int32_t src, dst;
@@ -65,43 +116,33 @@ static void blitter_run(blitter_t *b, uint32_t y_count) {
   }
 }
 
-/* userfw's blitter copy: a chunk per line, the destination back a chunk per
- * line from the last one (BLT_DST_Y_INC), started again every `piece` lines,
- * then the tail in place. */
-static void blitter_blit(uint32_t piece) {
+/* userfw's blitter copy: a line at a time from the image's first line,
+ * `piece` lines per start. */
+static void blitter_copy_lines(uint32_t piece, uint32_t lines) {
   blitter_t b = {
       .src = 0,
-      .dst = CART_FB_CHUNK_COVERED - CART_FB_CHUNK_BYTES,
+      .dst = 0,
       .src_x_inc = 2,
       .src_y_inc = 2,
       .dst_x_inc = 2,
-      .dst_y_inc = -(2 * CART_FB_CHUNK_BYTES - 2),
-      .x_count = CART_FB_CHUNK_BYTES / 2,
+      .dst_y_inc = CART_FB_BLITTER_DST_Y_INC,
+      .x_count = CART_FB_LINE_BYTES / 2,
   };
-  for (uint32_t left = CART_FB_CHUNK_COUNT; left > 0;) {
+  for (uint32_t left = lines; left > 0;) {
     uint32_t n = left < piece ? left : piece;
     blitter_run(&b, n);
     left -= n;
   }
-  b.dst = CART_FB_CHUNK_COVERED;
-  b.x_count = CART_FB_CHUNK_TAIL / 2;
-  blitter_run(&b, 1);
 }
 
-static uint8_t st_pixel(int x, int y) {
-  const uint16_t *group = &screen[y * 80 + (x / 16) * 4];
-  int bit = 15 - (x % 16);
-  return (uint8_t)(((group[0] >> bit) & 1) | (((group[1] >> bit) & 1) << 1) |
-                   (((group[2] >> bit) & 1) << 2) |
-                   (((group[3] >> bit) & 1) << 3));
-}
+static void blitter_copy(uint32_t piece) { blitter_copy_lines(piece, CART_FB_LINES); }
 
-static int shows_what_was_drawn(void) {
-  for (int y = 0; y < H; y++) {
-    for (int x = 0; x < W; x++) {
-      if (st_pixel(x, y) != (fb_chunked_buffer[y * W + x] & 0x0Fu)) {
-        fprintf(stderr, "pixel (%d, %d): ST shows %u, drawn %u\n", x, y,
-                st_pixel(x, y), fb_chunked_buffer[y * W + x] & 0x0Fu);
+static int screen_right_of_image_untouched(uint8_t fill) {
+  const uint8_t *bytes = (const uint8_t *)screen;
+  for (int y = 0; y < CART_FB_LINES; y++) {
+    for (int b = CART_FB_LINE_BYTES; b < ST_LINE_BYTES; b++) {
+      if (bytes[y * ST_LINE_BYTES + b] != fill) {
+        fprintf(stderr, "line %d byte %d written\n", y, b);
         return 0;
       }
     }
@@ -109,44 +150,76 @@ static int shows_what_was_drawn(void) {
   return 1;
 }
 
-/* Every copy of the frame in `cart` shows it: the MOVEM loop, and the
- * blitter in one run and in pieces of the ST's default, of one chunk, of an
- * odd size and of the largest the RP can ask for. The screen starts as
- * garbage each time: every byte must be copied. */
+/* Every copy of the drawn frame shows it and leaves the bytes right of the
+ * image as they were: the MOVEM copy of its layout, and the blitter's of the
+ * natural one, in one run and in pieces of the ST's default, of one line, of
+ * an odd size and of the largest the RP can ask for. The screen starts as
+ * garbage each time: every byte of the image must be copied. */
 static int every_copy_shows_what_was_drawn(void) {
-  static const uint32_t pieces[] = {CART_FB_CHUNK_COUNT, 40, 1, 7, 255};
+  static const uint32_t pieces[] = {CART_FB_LINES, CART_BLIT_PIECE_DEFAULT, 1,
+                                    7, 255};
+  fb_transpose();
+  fb_planar_publish(cart, false);
   memset(screen, 0x5A, sizeof(screen));
-  m68k_blit();
-  if (!shows_what_was_drawn()) return 0;
+  m68k_copy();
+  if (!shows_what_was_drawn() || !screen_right_of_image_untouched(0x5A)) {
+    fprintf(stderr, "the MOVEM copy\n");
+    return 0;
+  }
+  fb_planar_publish(cart, true);
   for (size_t i = 0; i < sizeof(pieces) / sizeof(pieces[0]); i++) {
     memset(screen, 0xA5, sizeof(screen));
-    blitter_blit(pieces[i]);
-    if (!shows_what_was_drawn()) {
-      fprintf(stderr, "blitter, pieces of %u chunks\n", (unsigned)pieces[i]);
+    blitter_copy(pieces[i]);
+    if (!shows_what_was_drawn() || !screen_right_of_image_untouched(0xA5)) {
+      fprintf(stderr, "the blitter, pieces of %u lines\n", (unsigned)pieces[i]);
       return 0;
     }
   }
   return 1;
 }
 
+/* A copy of the frame's top CART_FB_LINES_SHORT lines, by either copier,
+ * shows them and leaves the screen's lines below as they were. */
+static int short_copy_shows_the_top_lines(void) {
+  fb_transpose();
+  fb_planar_publish(cart, false);
+  memset(screen, 0x5A, sizeof(screen));
+  m68k_copy_lines(CART_FB_LINES_SHORT);
+  if (!shows_what_was_drawn_to(CART_FB_LINES_SHORT) ||
+      !lines_untouched(CART_FB_LINES_SHORT, 0x5A)) {
+    fprintf(stderr, "the short MOVEM copy\n");
+    return 0;
+  }
+  fb_planar_publish(cart, true);
+  memset(screen, 0xA5, sizeof(screen));
+  blitter_copy_lines(CART_BLIT_PIECE_DEFAULT, CART_FB_LINES_SHORT);
+  if (!shows_what_was_drawn_to(CART_FB_LINES_SHORT) ||
+      !lines_untouched(CART_FB_LINES_SHORT, 0xA5)) {
+    fprintf(stderr, "the short blitter copy\n");
+    return 0;
+  }
+  return 1;
+}
+
 int main(void) {
-  /* The blit covers the whole framebuffer, as userfw's FBDRV_INLINE does
-   * with FB_COPY_LINES = 200 (tests/host/test_layout.py checks the two
-   * agree). */
-  CHECK_EQ(CART_FB_BLIT_BYTES, CART_FRAMEBUFFER_SIZE);
-  CHECK_EQ(CART_FB_CHUNK_COVERED + CART_FB_CHUNK_TAIL, CART_FB_BLIT_BYTES);
+  /* The copy covers the whole framebuffer, as userfw's FBDRV_INLINE does
+   * (tests/host/test_layout.py checks the two sides agree). */
+  CHECK_EQ(CART_FB_LINES * CART_FB_LINE_BYTES, CART_FRAMEBUFFER_SIZE);
+  CHECK_EQ(CART_FB_CHUNKS_A_LINE * CART_FB_CHUNK_BYTES + CART_FB_LINE_TAIL,
+           CART_FB_LINE_BYTES);
+  CHECK_EQ(CART_FB_BLITTER_DST_Y_INC, ST_LINE_BYTES - CART_FB_LINE_BYTES + 2);
 
   fb_chunked_init(); /* core 1 */
 
   /* A pattern with every colour in every position, a gradient, a single
-   * pixel at each corner, and the last line, which is the tail. */
+   * pixel at each corner, and the last line. */
   for (int y = 0; y < H; y++) {
     for (int x = 0; x < W; x++) {
       fb_chunked_buffer[y * W + x] = (uint8_t)((x * 7 + y * 3) & 0x0F);
     }
   }
-  fb_chunky_to_planar(cart);
   CHECK(every_copy_shows_what_was_drawn());
+  CHECK(short_copy_shows_the_top_lines());
 
   fb_chunked_clear(0);
   fb_chunked_buffer[0] = 1;
@@ -154,13 +227,11 @@ int main(void) {
   fb_chunked_buffer[(H - 1) * W] = 3;
   fb_chunked_buffer[H * W - 1] = 4;
   for (int x = 0; x < W; x++) fb_chunked_buffer[(H - 1) * W + x] = (uint8_t)(x & 15);
-  fb_chunky_to_planar(cart);
   CHECK(every_copy_shows_what_was_drawn());
 
   /* The high nibble of a chunky byte is not a colour: the ST sees only the
    * palette index in the low nibble. */
   for (int i = 0; i < W * H; i++) fb_chunked_buffer[i] = (uint8_t)(0xA0 | (i % 11));
-  fb_chunky_to_planar(cart);
   CHECK(every_copy_shows_what_was_drawn());
 
   TEST_END();

@@ -8,9 +8,8 @@
  * the chunked buffer into a contiguous slice of the planar destination.
  *
  * fb_chunky_to_planar() splits the work across both RP2040 cores:
- * Core 0 handles the top 100 rows (pixels 0..15999 of the chunked
- * buffer -> first 8000 uint16_t of planar), Core 1 handles the bottom
- * 100 rows. Sync is a one-word push/pop on the inter-core FIFO.
+ * Core 0 handles the top half of the rows, Core 1 the bottom half. Sync is
+ * a one-word push/pop on the inter-core FIFO.
  *
  * Core 1 runs a perpetual loop in `fb_c2p_core1_loop` waiting for
  * each frame's dispatch. `fb_chunked_init()` launches it once at
@@ -19,16 +18,12 @@
  * Output staging: both cores write their natural row-major planar
  * output into `fb_planar_scratch` in RP RAM. Once both halves are
  * complete, fb_chunky_to_planar copies the planar bytes into the
- * caller's `planar` (the cart framebuffer at $FA8300) with the
- * 48-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
- * macro uses `movem.l list, -(a5)` predec stores, which land each
- * chunk in the destination ST page in reverse memory order. See the
- * "Framebuffer chunk layout for the m68k MOVEM blit" comment in
- * cart_shared.h for the full spec.
- *
- * Expected wallclock: ~1.0-1.3 ms per frame for the dual-core c2p
- * + the chunk-reversed copy (666 * 48-byte chunks via the ldmia/stmia
- * asm worker fb_chunk_reverse_copy48).
+ * caller's `planar` (the cart framebuffer at $FA8000) in the order the
+ * m68k's copy reads them: the lines from the last to the first, each as
+ * its last two 44-byte chunks and then its first 40 bytes, because
+ * FBDRV_INLINE stores with predecrementing MOVEMs (or, for the blitter,
+ * the planes as they are). See "Framebuffer layout
+ * for the m68k's copy" in cart_shared.h.
  */
 
 #include "fb_chunked.h"
@@ -53,12 +48,12 @@ extern void fb_c2p_half(uint16_t *dst,
                         const uint8_t *src,
                         const uint8_t *src_end);
 
-#define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32000 */
-#define FB_C2P_HALF_DST_WORDS (FB_C2P_HALF_SRC_BYTES / 4) /* 8000 uint16_t */
+#define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32768 */
+#define FB_C2P_HALF_DST_WORDS (FB_C2P_HALF_SRC_BYTES / 4) /* 8192 uint16_t */
 
 /* Planar scratch buffer: c2p outputs natural row-major planar bytes
- * here; fb_chunky_to_planar then copies them to the caller's `planar`
- * (the cart FB at $FA8300) with the m68k MOVEM chunks pre-reversed.
+ * here; fb_planar_publish then copies them to the caller's `planar`
+ * (the cart FB at $FA8000) in the copier's layout.
  * 32 KB on the RP's 128 KB SRAM, 4-byte aligned for uint32 stores. */
 static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
     __attribute__((aligned(4)));
@@ -152,39 +147,40 @@ void __not_in_flash_func(fb_transpose)(void) {
   fb_core1_wait();
 }
 
-/* Thumb asm (fb_chunked_asm.S): the chunk-reversed copy via ldmia/stmia.
- * Replaces a per-chunk memcpy() loop -- GCC at -O3 can't prove the
- * uint8_t* pointers are word-aligned and emitted a `bl memcpy` per chunk
- * (666/frame); the cart FB + scratch are in fact 4-byte aligned. */
-extern void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
-                                    uint32_t count);
-_Static_assert(CART_FB_CHUNK_BYTES == 48,
-               "fb_chunk_reverse_copy48 hard-codes 48-byte (12-word) chunks");
+_Static_assert(CART_FB_LINES * CART_FB_LINE_BYTES == CART_FRAMEBUFFER_SIZE,
+               "the framebuffer is CART_FB_LINES lines");
+_Static_assert(FB_CHUNKED_W / 2 == CART_FB_LINE_BYTES &&
+                   FB_CHUNKED_H == CART_FB_LINES,
+               "the chunky buffer is the framebuffer's size");
 
-void __not_in_flash_func(fb_planar_publish)(uint16_t *planar) {
-  /* Chunk-reversed publish from scratch -> cart FB. cart-FB chunk K
-   * is filled with scratch chunk (last-1-k), so the m68k's predec
-   * MOVEM blit lands each chunk at its natural image position. This is
-   * the ONLY cart-FB write -- it must run in the m68k's post-blit slack
-   * (gated by fb_publish's VBL wait), and it's fast so it fits. The slow
-   * transpose above runs unsynchronized (RP scratch RAM) and overlaps
-   * the m68k blit. */
-  const uint8_t *scratch_bytes = (const uint8_t *)fb_planar_scratch;
-  uint8_t *cart_bytes = (uint8_t *)planar;
-
-  /* src_last points at the final scratch chunk; the asm walks it back one
-   * chunk per iteration, copying each 48-byte chunk forward. */
-  fb_chunk_reverse_copy48(cart_bytes,
-                          scratch_bytes + (CART_FB_CHUNK_COUNT - 1u) *
-                                              (uint32_t)CART_FB_CHUNK_BYTES,
-                          CART_FB_CHUNK_COUNT);
-
-  /* Tail: the final CART_FB_CHUNK_TAIL bytes (bottom-right pixels)
-   * don't fit a MOVEM chunk; the m68k copies them with a d16(a5) MOVEM
-   * in NATURAL order, so copy them straight from scratch. */
-  memcpy(cart_bytes + CART_FB_CHUNK_COVERED,
-         scratch_bytes + CART_FB_CHUNK_COVERED,
-         CART_FB_CHUNK_TAIL);
+void __not_in_flash_func(fb_planar_publish)(uint16_t *planar, bool natural) {
+  /* Scratch -> cart FB in the order the copier reads it (cart_shared.h,
+   * "Framebuffer layout for the m68k's copy"): for the blitter the planes as
+   * they are; for the MOVEM copy the lines from the last to the first, each
+   * as its two 44-byte chunks from the right, then its first bytes. This is
+   * the ONLY cart-FB write -- it must run in the m68k's post-copy slack
+   * (gated by fb_publish's wait for the ST's ack), and it's fast so it fits.
+   * The slow transpose above runs unsynchronized (RP scratch RAM) and
+   * overlaps the m68k's copy. Every piece is a multiple of 4 bytes at a
+   * 4-byte aligned offset. */
+  if (natural) {
+    memcpy(planar, fb_planar_scratch, CART_FRAMEBUFFER_SIZE);
+    return;
+  }
+  /* Word loops, not memcpy: three calls a line for 44, 44 and 40 bytes cost
+   * about 350 us a frame against 110 for the loops, out of the ST's slack
+   * after its copy. */
+  const uint32_t *line = (const uint32_t *)fb_planar_scratch +
+                         (CART_FB_LINES - 1u) * (CART_FB_LINE_BYTES / 4u);
+  uint32_t *cart = (uint32_t *)planar;
+  for (uint32_t y = 0; y < CART_FB_LINES; y++) {
+    const uint32_t *a = line + (CART_FB_LINE_TAIL + CART_FB_CHUNK_BYTES) / 4u;
+    const uint32_t *b = line + CART_FB_LINE_TAIL / 4u;
+    for (uint32_t i = 0; i < CART_FB_CHUNK_BYTES / 4u; i++) *cart++ = a[i];
+    for (uint32_t i = 0; i < CART_FB_CHUNK_BYTES / 4u; i++) *cart++ = b[i];
+    for (uint32_t i = 0; i < CART_FB_LINE_TAIL / 4u; i++) *cart++ = line[i];
+    line -= CART_FB_LINE_BYTES / 4u;
+  }
 }
 
 void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
@@ -192,5 +188,5 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
    * sync). fb.c's fb_publish() calls the two halves separately so the
    * transpose can overlap the m68k blit and only the publish waits. */
   fb_transpose();
-  fb_planar_publish(planar);
+  fb_planar_publish(planar, false);
 }

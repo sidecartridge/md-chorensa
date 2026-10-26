@@ -27,6 +27,15 @@ make_args=("$build_type")
 if [ -n "$debug_mode" ]; then
     make_args+=("DEBUG_MODE=$debug_mode")
 fi
+# The image is assembled for the RP's profile (APP_PROFILE, as rp/build.sh
+# reads it): the 50 fps image plays the YM samples from its copy loop, the
+# 25 fps one from Timer-D. The header records which, and the RP's build
+# refuses the other one (emul.c).
+profile_25fps=0
+if [ "${APP_PROFILE:-}" = "PROFILE_25FPS" ]; then
+    profile_25fps=1
+fi
+make_args+=("PROFILE_25FPS=$profile_25fps")
 
 # (fbdrv.s used to be regenerated here by gen_fbdrv.py before the
 # m68k make. That step is gone: the cart->ST copy is now the
@@ -122,6 +131,9 @@ echo "Creating the firmware.h file."
 rm -f "$target_firmware"
 python_bin=$(command -v python3 || command -v python)
 "$python_bin" firmware.py --input=dist/FIRMWARE.IMG --output=$target_firmware --array_name=target_firmware
+if [ -f "$target_firmware" ]; then
+    printf '\n/* The profile this image was assembled for (target/atarist/Makefile). */\n#define TARGET_FIRMWARE_PROFILE_25FPS %s\n' "$profile_25fps" >> "$target_firmware"
+fi
 if [ ! -s "$target_firmware" ]; then
     echo "ERROR: firmware.py did not produce $target_firmware"
     exit 6
