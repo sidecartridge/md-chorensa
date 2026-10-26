@@ -1,0 +1,8 @@
+# The bench: boots to its idle screen, then ESC to GEM.
+expect hello ST hello #1: machine
+expect bench bench: new ST session
+sleep 3
+shot bench
+key esc
+sleep 3
+shot gem
