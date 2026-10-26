@@ -8,6 +8,7 @@
  * runs it.
  *
  * usage: xl_host DATA_DIR FRAMES OUT_DIR [--screens N] [--snapshot F] [--resume FILE]
+ *                [--entries 1]
  *   DATA_DIR  the game's data (the *_DAT folders) and sincos.dat; the program
  *             opens its files relative to it, and writes into it
  *   FRAMES    the frames to play (the oracle: 6,000)
@@ -18,6 +19,8 @@
  *             resume.txt (the entries a resumed run returns into, for
  *             xlat.py --resume)
  *   --resume FILE  start from a snapshot instead of the program's entry
+ *   --entries 1  beside each screen, entries_NNNNN.bin: each pixel's palette
+ *             entry and the palettes (write_entries)
  */
 #include <errno.h>
 #include <setjmp.h>
@@ -718,7 +721,12 @@ void xl_linef(uint32_t word, uint32_t pc) {
 #define SPRITE_PALETTE 0xE82200u
 #define VC_R1 0xE82500u
 
-static uint32_t s_render[RENDER_LINES][RENDER_STRIDE]; /* 0xRRGGBB */
+/* What each pixel shows: an entry of the X68000's palettes, 1..255 the
+ * graphics palette's, ENTRY_SPRITE + n the sprite and text palette's (its
+ * entry 0 the backdrop); the colour follows from the entry. */
+#define ENTRY_SPRITE 256u
+#define ENTRIES 512u
+static uint16_t s_render[RENDER_LINES][RENDER_STRIDE];
 
 /* GRB555 + intensity (ignored); each component 5 to 8 bits as the port. */
 static uint32_t colour_rgb(uint32_t word) {
@@ -729,18 +737,22 @@ static uint32_t colour_rgb(uint32_t word) {
   return (r << 16) | (g << 8) | b;
 }
 
+static uint32_t entry_rgb(uint32_t entry) {
+  return colour_rgb(rd16(entry < ENTRY_SPRITE ? GRAPHICS_PALETTE + entry * 2u
+                                              : SPRITE_PALETTE + (entry - ENTRY_SPRITE) * 2u));
+}
+
 static void render_graphics(void) {
-  uint32_t backdrop = colour_rgb(rd16(SPRITE_PALETTE));
   uint32_t x0 = rd16(CRTC + 0x18), y0 = rd16(CRTC + 0x1A);
   uint32_t x1 = rd16(CRTC + 0x20), y1 = rd16(CRTC + 0x22);
   for (uint32_t y = 0; y < SCREEN_LINES; y++) {
-    uint32_t *out = &s_render[GUARD + y][GUARD];
+    uint16_t *out = &s_render[GUARD + y][GUARD];
     uint32_t line0 = GVRAM + ((y0 + y) & 511u) * 1024u;
     uint32_t line1 = GVRAM + GVRAM_PAGE + ((y1 + y) & 511u) * 1024u;
     for (uint32_t x = 0; x < SCREEN_WIDTH; x++) {
       uint32_t index = rd8(line0 + ((x0 + x) & 511u) * 2u + 1u);
       if (index == 0) index = rd8(line1 + ((x1 + x) & 511u) * 2u + 1u);
-      out[x] = index ? colour_rgb(rd16(GRAPHICS_PALETTE + index * 2u)) : backdrop;
+      out[x] = (uint16_t)(index ? index : ENTRY_SPRITE);
     }
   }
 }
@@ -751,7 +763,7 @@ static void render_text(void) {
   uint32_t column = rd16(CRTC + 0x14) >> 3, top = rd16(CRTC + 0x16);
   for (uint32_t y = 0; y < SCREEN_LINES; y++) {
     uint32_t line = TEXT_VRAM + ((top + y) & 1023u) * 128u;
-    uint32_t *out = &s_render[GUARD + y][GUARD];
+    uint16_t *out = &s_render[GUARD + y][GUARD];
     for (uint32_t b = 0; b < SCREEN_WIDTH / 8; b++) {
       uint32_t at = line + ((column + b) & 127u);
       uint32_t p0 = rd8(at), p1 = rd8(at + TEXT_PLANE), p2 = rd8(at + 2 * TEXT_PLANE),
@@ -761,7 +773,7 @@ static void render_text(void) {
         uint32_t bit = 7u - k;
         uint32_t c = (((p3 >> bit) & 1u) << 3) | (((p2 >> bit) & 1u) << 2) |
                      (((p1 >> bit) & 1u) << 1) | ((p0 >> bit) & 1u);
-        if (c) out[b * 8u + k] = colour_rgb(rd16(SPRITE_PALETTE + c * 2u));
+        if (c) out[b * 8u + k] = (uint16_t)(ENTRY_SPRITE + c);
       }
     }
   }
@@ -782,18 +794,47 @@ static void render_sprites(void) {
       if ((attr & 31u) != bucket) continue;
       if (pattern >= PCG_PATTERNS || x > RENDER_STRIDE - 16 || y > RENDER_LINES - 16) continue;
       uint32_t data = patterns + pattern * 128u;
-      uint32_t palette = SPRITE_PALETTE + ((attr >> 8) & 15u) * 32u;
+      uint32_t block = ENTRY_SPRITE + ((attr >> 8) & 15u) * 16u;
       for (uint32_t r = 0; r < 16; r++) {
         uint32_t row = (attr & 0x8000u) ? 15u - r : r;
         uint32_t left = rd32(data + row * 4u), right = rd32(data + 64u + row * 4u);
-        uint32_t *out = &s_render[y + r][x];
+        uint16_t *out = &s_render[y + r][x];
         for (uint32_t k = 0; k < 16; k++) {
           uint32_t c = k < 8 ? (left >> (28u - 4u * k)) & 15u : (right >> (28u - 4u * (k - 8u))) & 15u;
-          if (c) out[(attr & 0x4000u) ? 15u - k : k] = colour_rgb(rd16(palette + c * 2u));
+          if (c) out[(attr & 0x4000u) ? 15u - k : k] = (uint16_t)(block + c);
         }
       }
     }
   }
+}
+
+/* entries_NNNNN.bin (--entries): 'CRSE', the two palettes as the program
+ * holds them (512 big-endian words: the graphics palette's 256, then the
+ * sprite and text palette's), then each pixel's entry (s_render's
+ * numbering), 256 x 256 little-endian words. What the RP's palette scheme
+ * is fitted on (tools/xlat/palette_fit.py). */
+static int s_entry_dumps;
+
+static void write_entries(uint32_t frame) {
+  char path[1024];
+  snprintf(path, sizeof path, "%s/entries_%05u.bin", s_out_dir, frame);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) {
+    perror(path);
+    return;
+  }
+  fwrite("CRSE", 1, 4, f);
+  fwrite(xl_mem + GRAPHICS_PALETTE, 1, 2u * ENTRIES, f);
+  for (uint32_t y = 0; y < SCREEN_LINES; y++) {
+    uint8_t line[2 * SCREEN_WIDTH];
+    for (uint32_t x = 0; x < SCREEN_WIDTH; x++) {
+      uint16_t e = s_render[GUARD + y][GUARD + x];
+      line[2 * x] = (uint8_t)e;
+      line[2 * x + 1] = (uint8_t)(e >> 8);
+    }
+    fwrite(line, 1, sizeof line, f);
+  }
+  fclose(f);
 }
 
 static void write_screen(uint32_t frame) {
@@ -816,14 +857,17 @@ static void write_screen(uint32_t frame) {
     render_sprites();
   }
 
-  MEMMAP_PAUSE(0);
+  if (s_entry_dumps) write_entries(frame);
 
   static uint8_t pixels[SCREEN_WIDTH * SCREEN_LINES];
   uint32_t palette[256];
   uint32_t colours = 0, overflow = 0;
+  uint32_t rgb_of[ENTRIES];
+  for (uint32_t e = 0; e < ENTRIES; e++) rgb_of[e] = entry_rgb(e);
+  MEMMAP_PAUSE(0);
   for (uint32_t y = 0; y < SCREEN_LINES; y++) {
     for (uint32_t x = 0; x < SCREEN_WIDTH; x++) {
-      uint32_t rgb = s_render[GUARD + y][GUARD + x], k = 0;
+      uint32_t rgb = rgb_of[s_render[GUARD + y][GUARD + x]], k = 0;
       while (k < colours && palette[k] != rgb) k++;
       if (k == colours) {
         if (colours < 256) {
@@ -1022,6 +1066,7 @@ int main(int argc, char **argv) {
   for (int k = 4; k + 1 < argc; k++) {
     if (strcmp(argv[k], "--screens") == 0) s_screen_interval = (uint32_t)strtoul(argv[k + 1], NULL, 10);
     if (strcmp(argv[k], "--snapshot") == 0) s_snapshot_frame = (uint32_t)strtoul(argv[k + 1], NULL, 10);
+    if (strcmp(argv[k], "--entries") == 0) s_entry_dumps = atoi(argv[k + 1]);
     if (strcmp(argv[k], "--resume") == 0) resume_path = argv[k + 1];
   }
   xl_mem = calloc(XL_MEMORY, 1);

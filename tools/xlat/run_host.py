@@ -122,6 +122,8 @@ def main():
     ap.add_argument("--screen-reference", help="a folder of the port's screen_NNNNN.bin")
     ap.add_argument("--snapshot", type=int, help="write a snapshot at this frame")
     ap.add_argument("--resume", metavar="RUN", help="start from the snapshot of an earlier run")
+    ap.add_argument("--entries", action="store_true",
+                    help="beside each screen, each pixel's palette entry (entries_NNNNN.bin)")
     args = ap.parse_args()
     cfg = recfg.load()
     original, runs = recfg.need(cfg, "ORIGINAL", "RUNS")
@@ -146,6 +148,8 @@ def main():
         command += ["--snapshot", str(args.snapshot)]
     if resume:
         command += ["--resume", os.path.join(resume, "snapshot.bin")]
+    if args.entries:
+        command += ["--entries", "1"]
     with open(os.path.join(run, "command.txt"), "w") as f:
         f.write(" ".join(command) + "\n")
     with open(os.path.join(run, "output.txt"), "w") as out:
