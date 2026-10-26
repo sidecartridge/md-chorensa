@@ -18,8 +18,17 @@
 #define XL_STORE_STAGE 0x100C0000u       /* the stage being played */
 #define XL_STORE_STAGE_SIZE 0x60000u     /* 384 KB, up to the Booster's area */
 
+/* The game's memory on the RP: pages of 256 bytes (xl.h's XL_PAGE_BITS),
+ * the ones it writes in RAM, the others in the stage's image. The RAM pages
+ * fill the firmware's array (xl_rp_ram) first, then the cartridge window's
+ * free arena (APP_FREE, which neither the ST nor the firmware uses). */
+#define XL_STORE_PAGE_BITS 8u
+#define XL_STORE_RAM_BYTES 0xA000u            /* 40 KB: 160 pages */
+#define XL_STORE_WINDOW_FREE 0x5180u          /* CART_APP_FREE_OFFSET */
+#define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
+
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 1u
+#define XL_STORE_VERSION 2u          /* 2: pages of 256 bytes */
 #define XL_STORE_KIND_COMMON 0u      /* else the stage's number */
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
 
@@ -61,8 +70,8 @@ typedef struct {
   const uint32_t *state;              /* the runtime's state words */
   const uint8_t *sprites;             /* the sprite list */
   const uint8_t *ram_init;            /* the written pages' contents */
-  uint32_t ram_pages;                 /* how many (1 KB each) */
-  uint8_t *const *const *regions;     /* 256 rows of 64 page pointers */
+  uint32_t ram_pages;                 /* how many (XL_STORE_PAGE_BITS) */
+  uint8_t *const *const *regions;     /* 256 rows of 256 page pointers */
   const uint8_t *checkpoints;         /* the host's, 32 bytes each */
   uint32_t checkpoint_count;
   uint32_t layout[XL_LAYOUT_WORDS]; /* the common image's: XL_LAYOUT_* */

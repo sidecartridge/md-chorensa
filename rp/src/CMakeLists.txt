@@ -290,7 +290,13 @@ add_definitions(-DPICO_FLASH_ASSUME_CORE0_SAFE=1)
 # too small for the settings store and FatFs. Measured on the device: the boot
 # grows the heap to 13.2 KB (newlib's malloc grows it in 4 KB steps), and with
 # 9 KB the first settings allocation failed and the app jumped to Booster.
-target_compile_definitions(${PROJECT_NAME} PRIVATE PICO_HEAP_SIZE=0x8000)
+# A store build guarantees 16 KB: the game's 48 KB of RAM leave about 17 KB,
+# above the boot's peak; the build stops if they leave less.
+if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICO_HEAP_SIZE=0x4000)
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICO_HEAP_SIZE=0x8000)
+endif()
 
 # Core 0's stack takes all of SCRATCH_Y (4 KB) instead of the SDK's 2 KB, and
 # a guard at its bottom turns an overflow into a HardFault instead of a silent
@@ -341,15 +347,14 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 # comes as images on the SD card (made by tools/xlat/rp_store.py from the
 # user's copy of the game, linked against this firmware's ELF), which the
 # run copies into the flash store after the firmware's 384 KB (store.c,
-# tools/xlat/xl_store.h). Its RAM pages are the chunky framebuffer's, lent
-# while the run lasts; the scene is left out (its assets need the flash).
+# tools/xlat/xl_store.h). The game's RAM pages are a 48 KB array; the scene
+# is left out (its assets need the flash).
 # Without XLAT_STORE the bench has no logic run and builds the scene.
 if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
     target_sources(${PROJECT_NAME} PRIVATE store.c)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
     target_compile_definitions(${PROJECT_NAME} PRIVATE XL_STORE=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
-    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=xl_rp_ram=fb_chunked_buffer"
-        "-Wl,--undefined=xl_runtime")
+    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=xl_runtime")
     # The firmware in 384 KB, so that the store's regions follow it.
     file(READ ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld MEMMAP)
     string(REPLACE "FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 1024k"

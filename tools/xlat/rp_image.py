@@ -2,9 +2,9 @@
 """A stage's memory for the RP's flash store, from a host snapshot and the
 memory map of a run resumed from it: 1 KB pages, the ones the run writes in
 RAM (their contents at the snapshot copied in when the run starts), the ones
-it only reads inside the stage's image, every 16-bit word in the RP's byte
+it only reads inside the stage's image (pages of 256 bytes), every 16-bit word in the RP's byte
 order (xl.h's XL_PAGED accessors), and the page table as constants of the
-image (xl_stage_regions: 256 regions of 64 KB, each a row of its pages; the
+image (xl_stage_regions: 256 regions of 64 KB, each a row of its 256 pages; the
 firmware copies the regions into RAM). Pages the run never touches point at
 a spare RAM page. With it: the runtime's state at the snapshot, its sprite
 list and the checkpoints the host recorded, which the RP checks its own
@@ -24,7 +24,17 @@ import re
 import struct
 import sys
 
-PAGE_BITS = 10
+def _store_values():
+    text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "xl_store.h")).read()
+    return {m.group(1): int(m.group(2), 16) for m in
+            re.finditer(r"#define (XL_STORE_\w+) 0x([0-9A-Fa-f]+)u", text)}
+
+
+_STORE = _store_values()
+PAGE_BITS = 8                 # xl_store.h's XL_STORE_PAGE_BITS
+POOL_RAM = _STORE["XL_STORE_RAM_BYTES"] >> PAGE_BITS
+POOL_WINDOW = _STORE["XL_STORE_WINDOW_FREE_BYTES"] >> PAGE_BITS
+WINDOW_FREE = _STORE["XL_STORE_WINDOW_FREE"]
 PAGE = 1 << PAGE_BITS
 PAGES = 1 << (24 - PAGE_BITS)
 STATE_WORDS = 32
@@ -66,7 +76,7 @@ def main():
     ap.add_argument("--checkpoints", required=True)
     ap.add_argument("--layout", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--ram-pages", type=int, default=64, help="the RAM the bench lends, in pages")
+
     args = ap.parse_args()
 
     snap = open(args.snapshot, "rb").read()
@@ -100,8 +110,9 @@ def main():
             ram.append(p)
         elif flags:
             flash.append(p)
-    if len(ram) + 1 > args.ram_pages:
-        sys.exit(f"{len(ram)} pages written, {args.ram_pages - 1} RAM pages to hold them")
+    pool = POOL_RAM + POOL_WINDOW
+    if len(ram) + 1 > pool:
+        sys.exit(f"{len(ram)} pages written and a spare page, {pool} RAM pages to hold them")
     spare = len(ram)
 
     data = open(args.checkpoints, "rb").read()
@@ -117,7 +128,8 @@ def main():
         h.write(f"#define XL_RP_FLASH_PAGES {len(flash)}u\n")
         h.write(f"#define XL_RP_STATE_WORDS {STATE_WORDS}u\n#define XL_RP_SPRITE_BYTES {SPRITE_BYTES}u\n")
         h.write(f"#define XL_RP_CHECKPOINTS {count}u\n")
-        h.write("extern uint8_t xl_rp_ram[];  /* the RAM the bench lends (its link defines it) */\n")
+        h.write("extern uint8_t xl_rp_ram[];  /* the firmware's RAM for the pages */\n")
+        h.write("extern uint8_t __rom_in_ram_start__[];  /* the cartridge window */\n")
         h.write("extern const uint8_t xl_rp_ram_init[];\n")
         h.write("extern const uint32_t xl_rp_state[];\nextern const uint8_t xl_rp_sprites[];\n")
         h.write("extern const uint8_t xl_rp_checkpoints[];\n")
@@ -130,9 +142,14 @@ def main():
         c.write(f"const uint8_t xl_rp_ram_init[{len(init)}] __attribute__((aligned(4))) = {{\n{c_bytes(init)}\n}};\n\n")
         pages = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in flash))
         c.write(f"static const uint8_t k_flash[{max(len(pages), 1)}] __attribute__((aligned(4))) = {{\n{c_bytes(pages) or '  0,'}\n}};\n\n")
+        def pool_page(k):  # the firmware's array first, then the window's arena
+            if k < POOL_RAM:
+                return f"xl_rp_ram + 0x{k * PAGE:X}"
+            return f"__rom_in_ram_start__ + 0x{WINDOW_FREE + (k - POOL_RAM) * PAGE:X}"
+
         where = {}
         for k, p in enumerate(ram):
-            where[p] = f"xl_rp_ram + 0x{k * PAGE:X}"
+            where[p] = pool_page(k)
         for k, p in enumerate(flash):
             where[p] = f"(uint8_t *)k_flash + 0x{k * PAGE:X}"
         # The table in RAM, in two levels: 256 regions of 64 KB, each a row of
@@ -140,7 +157,7 @@ def main():
         # spare page.
         per_region = 1 << (16 - PAGE_BITS)
         regions = sorted({p // per_region for p in where})
-        void = f"xl_rp_ram + 0x{spare * PAGE:X}"
+        void = pool_page(spare)
         # Both levels are constants of the stage's image; the firmware's RAM
         # table (xl_regions) is copied from them.
         c.write(f"static uint8_t *const k_rows[{len(regions) + 1}][{per_region}] = {{\n")
@@ -158,7 +175,8 @@ def main():
         c.write(f"const uint8_t xl_rp_checkpoints[{max(len(checkpoints), 1)}] = {{\n"
                 f"{c_bytes(checkpoints) or '  0,'}\n}};\n")
     print(f"{len(regions)} regions of 64 KB touched ({(len(regions) + 1) * per_region * 4 + 1024} "
-          f"bytes of table), {len(ram)} pages in RAM ({len(ram)} KB), {len(flash)} in flash ({len(flash)} KB), "
+          f"bytes of table), {len(ram)} pages in RAM ({len(ram) * PAGE // 1024} KB), "
+          f"{len(flash)} in flash ({len(flash) * PAGE // 1024} KB), "
           f"resume at frame {state[24]}, {count} checkpoints")
 
 

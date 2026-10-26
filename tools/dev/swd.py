@@ -820,6 +820,7 @@ LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl
 LOAD_STATES = ("copied", "already in the store", "no file", "not an image", "card error",
                "bad CRC")  # store.h's STORE_*
 LOGIC_STATES = ("idle", "done", "error", "no translation")
+LOGIC_BIN_US = 32  # bench_logic.c's histogram
 
 
 def logic_profile(elf: str, samples: int) -> None:
@@ -852,7 +853,7 @@ def cmd_logic(args: argparse.Namespace) -> int:
     VBL handler's, and the checkpoints against the host's. --out FILE: the
     frames' times, one a line. Any build with a translation (XLAT_RP_DIR)."""
     elf = matching_elf(args.elf)
-    sym = elf_symbols(elf, "benchLogicResult", "benchLogicRequest", "benchLogicUs",
+    sym = elf_symbols(elf, "benchLogicResult", "benchLogicRequest", "benchLogicHistogram",
                       "benchLogicMismatch")
     if "benchLogicResult" not in sym:
         raise SwdError(f"{os.path.basename(elf)} has no logic run")
@@ -882,28 +883,35 @@ def cmd_logic(args: argparse.Namespace) -> int:
     frames = r["frames"]
     if not frames:
         return 1
-    times = []
-    if "benchLogicUs" in sym:
-        count = min(frames, sym["benchLogicUs"][1] // 2)
-        times = list(struct.unpack(f"<{count}H", read_memory(sym["benchLogicUs"][0], 2 * count)))
+    bins = []
+    if "benchLogicHistogram" in sym:
+        size = sym["benchLogicHistogram"][1]
+        bins = list(struct.unpack(f"<{size // 4}I", read_memory(sym["benchLogicHistogram"][0], size)))
     print(f"frames {frames} from frame {r['first_frame']}, {r['total_us'] / 1e6:.1f} s in all")
-    if times:
-        ordered = sorted(times)
-        pick = lambda q: ordered[min(len(ordered) - 1, int(q * len(ordered)))]
-        print(f"logic us a frame: mean {sum(times) / len(times):.0f}, p50 {pick(0.5)}, "
-              f"p95 {pick(0.95)}, p99 {pick(0.99)}, max {r['logic_max']}")
+    if bins:
+        def pick(q):  # the bin's top, in us (32 us a bin)
+            want, seen = q * sum(bins), 0
+            for k, n in enumerate(bins):
+                seen += n
+                if seen >= want:
+                    return (k + 1) * LOGIC_BIN_US
+            return len(bins) * LOGIC_BIN_US
+        print(f"logic us a frame: mean {r['logic_sum'] / frames:.0f}, p50 {pick(0.5)}, "
+              f"p95 {pick(0.95)}, p99 {pick(0.99)}, max {r['logic_max']} "
+              f"(percentiles to {LOGIC_BIN_US} us)")
     print(f"VBL handler us a frame: mean {r['vbl_sum'] / frames:.0f}, max {r['vbl_max']}")
     print(f"checkpoints {r['checkpoints']}, {r['mismatches']} differ"
           + (f" (first at frame {r['first_mismatch']})" if r["mismatches"] else ""))
     if r["mismatches"] and "benchLogicMismatch" in sym:
         m = read_memory(sym["benchLogicMismatch"][0], 64)
         print(f"  RP   {m[:32].hex()}\n  host {m[32:].hex()}")
-    if args.out and times:
+    if args.out and bins:
         with open(args.out, "w") as f:
-            f.write("# frame logic-us\n")
-            for k, t in enumerate(times):
-                f.write(f"{r['first_frame'] + k + 1} {t}\n")
-        print(f"times in {args.out}")
+            f.write(f"# logic-us-from frames ({LOGIC_BIN_US} us a bin)\n")
+            for k, n in enumerate(bins):
+                if n:
+                    f.write(f"{k * LOGIC_BIN_US} {n}\n")
+        print(f"histogram in {args.out}")
     return 0 if state == "done" and not r["mismatches"] else 1
 
 
@@ -1736,7 +1744,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lg = sub.add_parser("logic", help="the bench's logic run: start it and read its times")
     lg.add_argument("--read", action="store_true", help="only read the last run")
-    lg.add_argument("--out", help="write the frames' times to this file")
+    lg.add_argument("--out", help="write the histogram of the logic times to this file")
     lg.add_argument("--profile", type=int, default=0, metavar="N",
                     help="sample core 0's PC N times during the run (slows it)")
     lg.add_argument("--timeout", type=float, default=900.0)

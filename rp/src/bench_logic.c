@@ -25,6 +25,8 @@
 #include <setjmp.h>
 
 #include "aconfig.h"
+#include "cart_shared.h"
+#include "constants.h"
 #include "fb.h"
 #include "fb_chunked.h"
 #include "ikbd.h"
@@ -33,7 +35,8 @@
 #include "xl.h"
 
 #define LAST_FRAME 6000u
-#define MAX_FRAMES 5400u
+#define HISTOGRAM_BINS 256u /* the logic times, 32 us a bin: up to 8 ms */
+#define HISTOGRAM_SHIFT 5u
 #define CHECKPOINT_INTERVAL 60u
 #define CHECKPOINT_BYTES 32u
 #define MAXIMUM_SPRITES 512u
@@ -41,7 +44,15 @@
 #define PATH_BYTES 96u
 
 extern const char release_build_id[]; /* build_id.c */
-extern uint8_t xl_rp_ram[];           /* the chunky framebuffer, lent (the link) */
+/* The pages the game writes: this array, then the cartridge window's free
+ * arena (rp_image.py points the stage's page table at both, by these
+ * symbols; xl_store.h). */
+uint8_t xl_rp_ram[XL_STORE_RAM_BYTES] __attribute__((aligned(4)));
+#define POOL_RAM_PAGES (XL_STORE_RAM_BYTES >> XL_PAGE_BITS)
+#define POOL_PAGES (POOL_RAM_PAGES + (XL_STORE_WINDOW_FREE_BYTES >> XL_PAGE_BITS))
+_Static_assert(XL_STORE_WINDOW_FREE == CART_APP_FREE_OFFSET &&
+                   XL_STORE_WINDOW_FREE + XL_STORE_WINDOW_FREE_BYTES <= CART_FRAMEBUFFER_OFFSET,
+               "the game's pages in the window stay inside its free arena");
 
 xl_cpu_t xl;
 uint8_t *xl_mem;             /* the host's flat memory: unused (XL_PAGED) */
@@ -58,8 +69,9 @@ static uint32_t s_frame_end_us; /* when the last frame wait ended */
 /* The game's variables the runtime uses, from the common image's header. */
 #define GAME(name) (s_common->layout[XL_LAYOUT_##name])
 
-/* The logic time of every frame, readable over SWD (tools/dev/swd.py logic). */
-uint16_t benchLogicUs[MAX_FRAMES];
+/* The frames by their logic time, 32 us a bin (the last one: 8 ms or more),
+ * readable over SWD (tools/dev/swd.py logic). */
+uint32_t benchLogicHistogram[HISTOGRAM_BINS];
 /* The first checkpoint that differed: the RP's, then the host's. */
 uint8_t benchLogicMismatch[2 * CHECKPOINT_BYTES];
 
@@ -215,7 +227,8 @@ void xl_patch_xsp_vsync(void) {
   uint32_t start = time_us_32();
   uint32_t logic = start - s_frame_end_us;
   uint32_t played = benchLogicResult.frames;
-  if (played < MAX_FRAMES) benchLogicUs[played] = (uint16_t)(logic > 0xFFFFu ? 0xFFFFu : logic);
+  uint32_t bin = logic >> HISTOGRAM_SHIFT;
+  benchLogicHistogram[bin < HISTOGRAM_BINS ? bin : HISTOGRAM_BINS - 1u]++;
   benchLogicResult.frames = played + 1u;
   benchLogicResult.logic_sum += logic;
   if (logic > benchLogicResult.logic_max) benchLogicResult.logic_max = logic;
@@ -356,10 +369,19 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
   return h;
 }
 
+/* The pool's page k, in rp_image.py's order. */
+static uint8_t *pool_page(uint32_t k) {
+  if (k < POOL_RAM_PAGES) return xl_rp_ram + (k << XL_PAGE_BITS);
+  return (uint8_t *)__rom_in_ram_start__ + XL_STORE_WINDOW_FREE +
+         ((k - POOL_RAM_PAGES) << XL_PAGE_BITS);
+}
+
 static void restore(void) {
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
-  memcpy(xl_rp_ram, s_stage->ram_init, s_stage->ram_pages << XL_PAGE_BITS);
-  memset(xl_rp_ram + (s_stage->ram_pages << XL_PAGE_BITS), 0, 1u << XL_PAGE_BITS);
+  for (uint32_t k = 0; k < s_stage->ram_pages; k++) {
+    memcpy(pool_page(k), s_stage->ram_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
+  }
+  memset(pool_page(s_stage->ram_pages), 0, 1u << XL_PAGE_BITS); /* the spare */
   const uint32_t *w = s_stage->state + 2;
   for (int k = 0; k < 8; k++) xl.d[k] = *w++;
   for (int k = 0; k < 8; k++) xl.a[k] = *w++;
@@ -382,6 +404,7 @@ bool bench_logic_available(void) { return true; }
 
 void bench_logic_run(void) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
+  memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
   /* Called from the main loop, which joins every core 1 job before it goes
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
@@ -389,8 +412,8 @@ void bench_logic_run(void) {
   const char *problem = NULL;
   if (s_common == NULL || s_stage == NULL || s_stage->state == NULL) {
     problem = "no images for this firmware";
-  } else if (((s_stage->ram_pages + 1u) << XL_PAGE_BITS) > FB_CHUNKED_SIZE) {
-    problem = "the RAM pages do not fit the framebuffer";
+  } else if (s_stage->ram_pages + 1u > POOL_PAGES) {
+    problem = "the RAM pages do not fit";
   }
   if (problem) {
     benchLogicResult.state = BENCH_LOGIC_ERROR;

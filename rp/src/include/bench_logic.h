@@ -10,13 +10,13 @@
  * by tools/xlat/rp_store.py from the user's copy of the game) into the flash
  * store (store.h) unless the store holds them already, timing it, and runs
  * from there. Other builds report that they have no translation. The
- * game's memory is the snapshot's, in 1 KB pages (xl.h's XL_PAGED
- * accessors): the pages the game writes in RAM borrowed from the
- * framebuffer while the run lasts (the ST shows its last frame), the others
- * read from the stage's image.
+ * game's memory is the snapshot's, in pages of 256 bytes (xl.h's XL_PAGED
+ * accessors): the pages the game writes in a RAM array of the firmware's
+ * (xl_rp_ram), the others read from the stage's image. The ST shows its
+ * last frame while the run lasts.
  *
- * Every game frame (one XSP_VSYNC) records the game's logic time and the time
- * of its VBL handler; every 60 frames the game's state is compared with what
+ * Every game frame (one XSP_VSYNC) counts the game's logic time in a histogram
+ * (benchLogicHistogram, 32 us a bin) and times its VBL handler; every 60 frames the game's state is compared with what
  * the host recorded at that frame. Started by INSERT on the ST, or over SWD
  * in any build by writing 1 to benchLogicRequest (tools/dev/swd.py logic,
  * which reads the times and the checkpoints back). Blocks the main loop for

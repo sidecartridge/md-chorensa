@@ -32,12 +32,13 @@ void xl_memmap_access(uint32_t a, int size, int write);
 #endif
 
 /* Where an address's byte is. The host: one flat big-endian array. The RP
- * (XL_PAGED): 1 KB pages, each in RAM or in flash, through a table in RAM of
- * 256 regions of 64 KB, each a row of its pages (tools/xlat/rp_image.py
- * builds it from a snapshot and a memory map). A long that straddles two
- * pages is read and written as two words. */
+ * (XL_PAGED): pages of 256 bytes, each in RAM or in flash, through a table
+ * of 256 regions of 64 KB, each a row of its pages (tools/xlat/rp_image.py
+ * builds it from a snapshot and a memory map; xl_store.h's
+ * XL_STORE_PAGE_BITS). A long that straddles two pages is read and written
+ * as two words. */
 #ifdef XL_PAGED
-#define XL_PAGE_BITS 10
+#define XL_PAGE_BITS 8
 #define XL_PAGE_MASK ((1u << XL_PAGE_BITS) - 1u)
 extern uint8_t **xl_regions[256];
 /* At -Os the compiler calls the accessors instead of inlining them: less
