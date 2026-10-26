@@ -1,4 +1,4 @@
-// units: rp/src/fb_chunked.c
+// units: rp/src/fb_chunked.c emu/fb_workers.c
 /* The framebuffer's chunk layout, end to end: what the app draws in the
  * chunky buffer is what the ST shows.
  *
@@ -14,8 +14,8 @@
  * planes and compares every pixel with what was drawn.
  *
  * The two workers are Thumb assembly on the RP (fb_chunked_asm.S); here they
- * are the C they stand for: the ST's low-resolution planar format, and a
- * chunk-reversed copy. */
+ * are the C they stand for (emu/fb_workers.c): the ST's low-resolution planar
+ * format, and a chunk-reversed copy. */
 #include <stdbool.h>
 #include <string.h>
 
@@ -25,28 +25,6 @@
 
 #define W FB_CHUNKED_W
 #define H FB_CHUNKED_H
-
-/* Pixels [src, src_end) to planar words at dst: per 16 pixels, one word per
- * plane (0..3), the leftmost pixel in bit 15. */
-void fb_c2p_half(uint16_t *dst, const uint8_t *src, const uint8_t *src_end) {
-  for (; src < src_end; src += 16, dst += 4) {
-    for (int plane = 0; plane < 4; plane++) {
-      uint16_t word = 0;
-      for (int i = 0; i < 16; i++) {
-        word |= (uint16_t)(((src[i] >> plane) & 1u) << (15 - i));
-      }
-      dst[plane] = word;
-    }
-  }
-}
-
-/* count 48-byte chunks to dst, in order, from src_last backwards. */
-void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
-                             uint32_t count) {
-  for (uint32_t k = 0; k < count; k++) {
-    memcpy(dst + 48u * k, src_last - 48u * k, 48u);
-  }
-}
 
 /* The cartridge framebuffer, as 16-bit words (the ST reads the RP's words
  * with their bytes swapped, which leaves their values as they are). */

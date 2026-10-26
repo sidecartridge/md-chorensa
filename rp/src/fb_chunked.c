@@ -75,19 +75,41 @@ static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
  * SELECT press erases the global settings -- as long as no job is
  * running. Jobs are always joined (fb_core1_wait) before the main loop
  * goes on, so Core 1 is parked whenever the main loop runs. */
+#ifdef EMUMD
+/* The firmware built for the host (EmuMD, emu/): a host's pointers do not fit
+ * the 32-bit FIFO, so the job waits in a slot and the FIFO only signals; and
+ * its SDK has no inline FIFO calls. */
+static fb_core1_job_t fb_core1_slot_job;
+static void *fb_core1_slot_arg;
+#define multicore_fifo_pop_blocking_inline multicore_fifo_pop_blocking
+#define multicore_fifo_push_blocking_inline multicore_fifo_push_blocking
+#endif
+
 static void __not_in_flash_func(fb_core1_loop)(void) {
   for (;;) {
+#ifdef EMUMD
+    (void)multicore_fifo_pop_blocking_inline();
+    fb_core1_job_t job = fb_core1_slot_job;
+    void *arg = fb_core1_slot_arg;
+#else
     fb_core1_job_t job =
         (fb_core1_job_t)(uintptr_t)multicore_fifo_pop_blocking_inline();
     void *arg = (void *)(uintptr_t)multicore_fifo_pop_blocking_inline();
+#endif
     job(arg);
     multicore_fifo_push_blocking_inline(0); /* done */
   }
 }
 
 void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg) {
+#ifdef EMUMD
+  fb_core1_slot_job = job;
+  fb_core1_slot_arg = arg;
+  multicore_fifo_push_blocking(0);
+#else
   multicore_fifo_push_blocking((uint32_t)(uintptr_t)job);
   multicore_fifo_push_blocking((uint32_t)(uintptr_t)arg);
+#endif
 }
 
 void __not_in_flash_func(fb_core1_wait)(void) {

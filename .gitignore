@@ -77,3 +77,7 @@ tests/host/build/
 tools/re/re.cfg
 tools/re/logs/
 !tools/re/scripts/*.exp
+
+# EmuMD: the .mdfw build and the emulated card
+emu/sd/
+emu/tos/

@@ -1,9 +1,9 @@
-// units: rp/src/fb_blit.c
+// units: rp/src/fb_blit.c emu/fb_workers.c
 /* fb_fill_rect, fb_blit, fb_blit_key and their band variants against a
  * pixel-by-pixel reference: inside, across each edge and corner, fully
  * outside, larger than the screen, and clipped to bands. The keyed row
  * routine is Thumb assembly on the RP (fb_blit_asm.S); here it is the C it
- * stands for. The sanitizers catch any write outside the buffer. */
+ * stands for (emu/fb_workers.c). The sanitizers catch any write outside the buffer. */
 #include <string.h>
 
 #include "fb_blit.h"
@@ -17,13 +17,6 @@
 
 uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
 static uint8_t expect[FB_CHUNKED_SIZE];
-
-void fb_blit_key_row(uint8_t *dst, const uint8_t *src, uint32_t cw,
-                     uint8_t key) {
-  for (uint32_t i = 0; i < cw; i++) {
-    if (src[i] != key) dst[i] = src[i];
-  }
-}
 
 static void reset(void) {
   memset(fb_chunked_buffer, BG, sizeof fb_chunked_buffer);
