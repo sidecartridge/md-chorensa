@@ -73,6 +73,11 @@ static int s_playing;
 static xl_render_frame_t s_frame;
 static uint16_t s_palette[PALETTE_ENTRIES];
 volatile uint32_t benchPlay = 1;  /* the host writes 0: back to the bench */
+/* The host's hold: the play stops once it has shown the frame the host's
+ * screens number benchPlayHoldAt (their frame wait starts at that count),
+ * says so in benchPlayHeld, and goes on when the host clears the hold. */
+volatile uint32_t benchPlayHoldAt;
+volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
 
 /* The game's variables the runtime uses, from the common image's header. */
@@ -260,6 +265,15 @@ static void present(uint32_t game_us) {
   ikbd_key_event_t key;
   while (ikbd_pop_key(&key)) {
   }
+  if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
+    benchPlayHeld = benchPlayHoldAt;
+    while (benchPlayHoldAt == benchPlayHeld && benchPlay) {
+      fb_pump_rom3();
+      ikbd_pump();
+      select_poll();
+    }
+    benchPlayHeld = 0;
+  }
   benchPlayStats.frames++;
   note(&benchPlayStats.game_sum, &benchPlayStats.game_max, game_us);
   note(&benchPlayStats.draw_sum, &benchPlayStats.draw_max, t1 - t0);
@@ -407,7 +421,7 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
   char path[PATH_BYTES];
   card_path(path, name);
   uint32_t t0 = time_us_32();
-  int status = store_load(path, base, size, pump);
+  int status = store_load(path, base, size, release_build_id, pump);
   benchLogicResult.load_status[k] = (uint32_t)status;
   benchLogicResult.load_us[k] = time_us_32() - t0;
   DPRINTF("logic: %s %d in %lu us\n", path, status, (unsigned long)benchLogicResult.load_us[k]);
@@ -462,8 +476,10 @@ static void run(int drawn) {
   memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
   /* Called from the main loop, which joins every core 1 job before it goes
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
+  benchLogicResult.state = BENCH_LOGIC_LOADING;
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
   s_stage = load(1, "STAGE1.IMG", XL_STORE_STAGE, XL_STORE_STAGE_SIZE);
+  benchLogicResult.state = BENCH_LOGIC_IDLE;
   const char *problem = NULL;
   if (s_common == NULL || s_stage == NULL || s_stage->state == NULL) {
     problem = "no images for this firmware";

@@ -53,6 +53,10 @@ RUNTIME_RANGES = {
     "VBL_VWAIT_COUNTER": 2,
 }
 VBL_VECTOR = 0x118
+# What the RP's renderer reads beside the game (rp/src/xl_render.c): the
+# CRTC's scroll registers, both palettes and R1, read every frame; a page the
+# game itself leaves alone after the snapshot would otherwise be missing.
+RENDER_READS = ((0xE80000, 0x30), (0xE82000, 0x400), (0xE82500, 2))
 
 
 def swapped(data):
@@ -100,6 +104,9 @@ def main():
             touched[a] |= 3   # read and written by the runtime
     for a in range(VBL_VECTOR, VBL_VECTOR + 4):
         touched[a] |= 1
+    for start, size in RENDER_READS:
+        for a in range(start, start + size):
+            touched[a] |= 1
 
     ram, flash = [], []
     for p in range(PAGES):

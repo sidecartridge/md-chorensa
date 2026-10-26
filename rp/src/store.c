@@ -59,7 +59,8 @@ static void program(uint32_t offset, const uint8_t *data, uint32_t size) {
   restore_interrupts(ints);
 }
 
-int store_load(const char *path, uint32_t base, uint32_t max, store_progress_fn progress) {
+int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
+               store_progress_fn progress) {
   if (f_open(&s_file, path, FA_READ) != FR_OK) return STORE_NO_FILE;
   UINT got = 0;
   xl_store_header_t header;
@@ -68,6 +69,10 @@ int store_load(const char *path, uint32_t base, uint32_t max, store_progress_fn 
       header.size < sizeof header || header.size > max || header.size != f_size(&s_file)) {
     f_close(&s_file);
     return STORE_BAD_FILE;
+  }
+  if (strncmp(header.firmware, firmware, XL_STORE_FIRMWARE_ID - 1u) != 0) {
+    f_close(&s_file);
+    return STORE_OTHER_FIRMWARE;
   }
   const xl_store_header_t *held = store_header(base);
   if (held && memcmp(held, &header, sizeof header) == 0) {

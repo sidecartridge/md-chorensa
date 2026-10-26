@@ -28,6 +28,7 @@ enum {
   STORE_BAD_FILE,    /* not an image, or too big for its region */
   STORE_READ_ERROR,  /* the card failed mid-copy */
   STORE_BAD_CRC,     /* the store's copy does not match its CRC */
+  STORE_OTHER_FIRMWARE, /* made for another firmware build: not copied */
 };
 
 typedef void (*store_progress_fn)(void);
@@ -36,8 +37,10 @@ typedef void (*store_progress_fn)(void);
 const xl_store_header_t *store_header(uint32_t base);
 
 /* Copy the image in the card's file `path` into the region at `base`
- * (`max` bytes). STORE_COPIED or STORE_SKIPPED, or an error. */
-int store_load(const char *path, uint32_t base, uint32_t max, store_progress_fn progress);
+ * (`max` bytes) if it was made for the firmware `firmware` (a build ID).
+ * STORE_COPIED or STORE_SKIPPED, or an error. */
+int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
+               store_progress_fn progress);
 
 /* Write `length` bytes from RAM at `offset` of the card's file `path`
  * (offset 0 creates or truncates it). The bytes written, or -1. */

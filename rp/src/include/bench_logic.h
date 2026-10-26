@@ -66,6 +66,8 @@ enum {
   BENCH_LOGIC_DONE,
   BENCH_LOGIC_ERROR,
   BENCH_LOGIC_NO_TRANSLATION,
+  BENCH_LOGIC_LOADING, /* copying images into the store: nothing may read the
+                          flash over SWD (the RP locks up) */
 };
 
 /* Whether this build can run the translation. */

@@ -818,8 +818,9 @@ LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl
                 "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us",
                 "load_common", "load_stage", "load_common_us", "load_stage_us")
 LOAD_STATES = ("copied", "already in the store", "no file", "not an image", "card error",
-               "bad CRC")  # store.h's STORE_*
-LOGIC_STATES = ("idle", "done", "error", "no translation")
+               "bad CRC", "made for another firmware")  # store.h's STORE_*
+LOGIC_STATES = ("idle", "done", "error", "no translation", "loading")
+LOGIC_LOADING = 4  # bench_logic.h: copying into the store, the flash not to be read
 LOGIC_BIN_US = 32  # bench_logic.c's histogram
 
 
@@ -866,7 +867,7 @@ def cmd_logic(args: argparse.Namespace) -> int:
             logic_profile(elf, args.profile)
         while True:
             time.sleep(2.0)
-            if read_words([base])[0] != 0:
+            if read_words([base])[0] not in (0, LOGIC_LOADING):
                 break
             if time.time() - started > args.timeout:
                 raise SwdError(f"the run did not end within {args.timeout} s")
@@ -919,6 +920,68 @@ PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
                "publish_sum", "publish_max")
 
 
+def image_numbers(image: list[int], width: int = 256, height: int = 256) -> bytes:
+    """The colour number of every pixel of a planar image (image_rows')."""
+    out = bytearray()
+    line_words = width // 4
+    for y in range(height):
+        for g in range(width // 16):
+            p0, p1, p2, p3 = image[y * line_words + g * 4:y * line_words + g * 4 + 4]
+            for bit in range(15, -1, -1):
+                out.append(((p0 >> bit) & 1) | (((p1 >> bit) & 1) << 1) |
+                           (((p2 >> bit) & 1) << 2) | (((p3 >> bit) & 1) << 3))
+    return bytes(out)
+
+
+def play_hold(elf: str, args: argparse.Namespace) -> int:
+    """Hold the play on the host's frame N, grab what the ST shows, compare it
+    with the host's rpscreen_N.bin (--compare), and let it go on."""
+    sym = elf_symbols(elf, "benchPlayHoldAt", "benchPlayHeld", "fbLayoutNatural")
+    defs = header_defines(CART_SHARED_H)
+    openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlayHoldAt'][0]:08x} {args.hold}")
+    try:
+        started = time.time()
+        while read_words([sym["benchPlayHeld"][0]])[0] != args.hold:
+            if time.time() - started > args.timeout:
+                raise SwdError(f"frame {args.hold} not reached within {args.timeout:.0f} s")
+            time.sleep(0.5)
+        natural = read_word(sym["fbLayoutNatural"][0]) != 0
+        _frame, fb, pal = grab_frames(elf, 1, True)[0]
+    finally:
+        openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlayHoldAt'][0]:08x} 0")
+    image = st_words(fb) if natural else image_from_cart_fb(defs, fb)
+    words = st_words(pal)
+    numbers = image_numbers(image, 256, defs["CART_FB_LINES"])
+    if args.out:
+        write_png_rgb(args.out, 256, defs["CART_FB_LINES"],
+                      image_rows(image, palette_rgb(words), 1, 256, defs["CART_FB_LINES"]))
+    print(f"held frame {args.hold}" + (f", the ST's in {args.out}" if args.out else ""))
+    if not args.compare:
+        return 0
+    data = open(args.compare, "rb").read()
+    host_pixels = data[12 + 768:12 + 768 + 256 * 256]
+    host_levels = [tuple(round(v * 7 / 255) for v in data[12 + 3 * k:15 + 3 * k]) for k in range(16)]
+    st_levels = [((w >> 8) & 7, (w >> 4) & 7, w & 7) for w in words]
+    lines = defs["CART_FB_LINES"]
+    differ = [k for k in range(256 * lines) if numbers[k] != host_pixels[k]]
+    palette_differ = [k for k in range(16) if st_levels[k] != host_levels[k]]
+    print(f"against {os.path.basename(args.compare)}: {len(differ)} of {256 * lines} pixels differ, "
+          f"palette entries differing {palette_differ or 'none'}")
+    return 0 if not differ and not palette_differ else 1
+
+
+def wait_not_loading(elf: str, seconds: float = 60.0) -> None:
+    """Until the bench has copied its images into the store (it says so in
+    RAM): reading the flash over SWD while it is written locks the RP up."""
+    state = elf_symbols(elf, "benchLogicResult")["benchLogicResult"][0]
+    time.sleep(0.5)
+    started = time.time()
+    while read_words([state])[0] == LOGIC_LOADING:
+        if time.time() - started > seconds:
+            raise SwdError(f"still copying into the store after {seconds:.0f} s")
+        time.sleep(0.5)
+
+
 def cmd_play(args: argparse.Namespace) -> int:
     """The bench's play mode (bench_logic.h): the frames shown and what each
     cost on the RP (the game, the picture, the c2p and the wait for the
@@ -927,9 +990,13 @@ def cmd_play(args: argparse.Namespace) -> int:
     sym = elf_symbols(elf, "benchPlay", "benchPlayStats")
     if len(sym) < 2:
         raise SwdError(f"{os.path.basename(elf)} has no play mode (a store build?)")
+    if args.hold is not None:
+        return play_hold(elf, args)
     if args.stop or args.start:
         openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlay'][0]:08x} {1 if args.start else 0}")
         print("play " + ("started" if args.start else "stopped"))
+        if args.start:
+            wait_not_loading(elf)
         return 0
     base, size = sym["benchPlayStats"]
 
@@ -1775,6 +1842,11 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--seconds", type=float, default=5.0)
     pl.add_argument("--stop", action="store_true", help="back to the bench's test card")
     pl.add_argument("--start", action="store_true", help="play again")
+    pl.add_argument("--hold", type=int, metavar="N",
+                    help="hold on the host's frame N, grab it (--out PNG) and --compare it")
+    pl.add_argument("--compare", metavar="RPSCREEN", help="the host's rpscreen_N.bin")
+    pl.add_argument("--out", help="the held frame as a PNG")
+    pl.add_argument("--timeout", type=float, default=150.0)
     pl.add_argument("--elf")
     pl.set_defaults(func=cmd_play)
 
