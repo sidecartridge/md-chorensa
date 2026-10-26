@@ -1,0 +1,31 @@
+# tools/re/re.cfg: local paths for the tools that study the original. Copy this
+# file to re.cfg (gitignored) and adjust. KEY=VALUE, '#' starts a comment.
+
+# The user's own copy of the game, never inside the repository: a checkout of
+# https://github.com/apolkosnik/chorensha (the Amiga port, which carries the
+# original X68000 disk, the game's data and the port's own checkpoints).
+ORIGINAL=/path/to/chorensa/upstream
+# The original program, rebuilt from that checkout's hex dump:
+#   xxd -r binaries/x68000/sz2.hex SZ2.X
+SZ2X=/path/to/chorensa/SZ2.X
+
+# Run folders (screen dumps and checkpoints hold the game: keep them outside
+# the repository).
+RUNS=/path/to/chorensa/runs
+
+# FS-UAE runs the Amiga port: an A1200 with Kickstart 3.1 (40.068, the A1200's)
+# and a Workbench 3.1 disk 2 ("Workbench"), from which amiga_system.py builds a
+# small system drive in AMIGA_SYSTEM.
+FSUAE=/Applications/FS-UAE.app/Contents/MacOS/fs-uae
+KICKSTART_A1200=/path/to/Kickstart v3.1 r40.068 (1993-12)(Commodore)(A1200)[!].rom
+WORKBENCH_ADF=/path/to/Workbench v3.1 rev 40.42 (1994)(Commodore)(M10)(Disk 2 of 6)(Workbench)[!].adf
+AMIGA_SYSTEM=/path/to/chorensa/amiga-system
+# amitools' xdftool (pip install amitools), to read the Workbench disk.
+XDFTOOL=/path/to/venv/bin/xdftool
+
+# Hatari runs the app through EmuMD (emu/emumd builds its own Hatari); a real
+# TOS is optional, EmuTOS is the default.
+# EmuMD builds its Hatari into ~/.cache/emumd/hatari-fork (mdfw hatari).
+HATARI=~/.cache/emumd/hatari-fork/build/src/hatari
+TOS_ST=/path/to/TOS 1.04 - English UK - 50Hz.img
+TOS_STE=/path/to/TOS 1.62 - English-UK - 50Hz

@@ -71,3 +71,9 @@ tools/dev/builds/
 
 # Host tests: build output
 tests/host/build/
+
+# Tools for studying the original: local paths and logs (the game's files and
+# everything made from them live outside the repository)
+tools/re/re.cfg
+tools/re/logs/
+!tools/re/scripts/*.exp
