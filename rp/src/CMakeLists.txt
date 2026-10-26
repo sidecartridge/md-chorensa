@@ -317,16 +317,10 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
 # Release carries that type and a 25 fps build (APP_PROFILE) +25fps, so builds
 # of one tree cannot be taken for each other on the device.
 set(BUILD_ID_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/build_id)
-# A build with the translated logic (XLAT_RP_DIR) is marked too, with a tag
-# of its XLAT_RP_CFLAGS when it has any.
+# A store build (XLAT_STORE) is marked too.
 set(LOGIC_TAG "")
-if (DEFINED ENV{XLAT_RP_DIR})
-    set(LOGIC_TAG "logic")
-    if (DEFINED ENV{XLAT_RP_CFLAGS} AND NOT "$ENV{XLAT_RP_CFLAGS}" STREQUAL "")
-        string(MD5 XLAT_CFLAGS_HASH "$ENV{XLAT_RP_CFLAGS}")
-        string(SUBSTRING "${XLAT_CFLAGS_HASH}" 0 4 XLAT_CFLAGS_HASH)
-        set(LOGIC_TAG "logic-${XLAT_CFLAGS_HASH}")
-    endif()
+if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
+    set(LOGIC_TAG "store")
 endif()
 add_custom_target(build_id
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_LIST_DIR}
@@ -342,30 +336,31 @@ set_source_files_properties(${BUILD_ID_DIR}/build_id.c PROPERTIES GENERATED TRUE
 target_include_directories(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR})
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 
-# The bench's logic run (bench_logic.c): the game's code translated by
-# tools/xlat, in a folder XLAT_RP_DIR names (made by tools/xlat/rp_build.py
-# from the user's copy of the game, outside the repository; never in git).
-# Its RAM pages are the chunky framebuffer's, lent while the run lasts; the
-# scene is left out (both do not fit the flash). Without XLAT_RP_DIR the
-# bench has no logic run and builds the scene.
-if (DEFINED ENV{XLAT_RP_DIR})
-    set(XLAT_RP_DIR $ENV{XLAT_RP_DIR})
-    file(GLOB XLAT_SOURCES ${XLAT_RP_DIR}/xl_*.c)
-    target_sources(${PROJECT_NAME} PRIVATE ${XLAT_SOURCES})
-    # XLAT_RP_CFLAGS: other options for the translated files, to measure them
-    # (-O2, or -DXL_FORCE_INLINE: the memory accessors inlined everywhere).
-    set(XLAT_OPTIONS "-Os;-w")
-    if (DEFINED ENV{XLAT_RP_CFLAGS})
-        separate_arguments(XLAT_EXTRA UNIX_COMMAND "$ENV{XLAT_RP_CFLAGS}")
-        list(APPEND XLAT_OPTIONS ${XLAT_EXTRA})
+# The bench's logic run (bench_logic.c) in a store build (XLAT_STORE=1): the
+# firmware carries no game code. The game's code translated by tools/xlat
+# comes as images on the SD card (made by tools/xlat/rp_store.py from the
+# user's copy of the game, linked against this firmware's ELF), which the
+# run copies into the flash store after the firmware's 384 KB (store.c,
+# tools/xlat/xl_store.h). Its RAM pages are the chunky framebuffer's, lent
+# while the run lasts; the scene is left out (its assets need the flash).
+# Without XLAT_STORE the bench has no logic run and builds the scene.
+if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
+    target_sources(${PROJECT_NAME} PRIVATE store.c)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE XL_STORE=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
+    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=xl_rp_ram=fb_chunked_buffer"
+        "-Wl,--undefined=xl_runtime")
+    # The firmware in 384 KB, so that the store's regions follow it.
+    file(READ ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld MEMMAP)
+    string(REPLACE "FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 1024k"
+                   "FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 384k" MEMMAP "${MEMMAP}")
+    if (NOT MEMMAP MATCHES "LENGTH = 384k")
+        message(FATAL_ERROR "memmap_rp.ld: no FLASH line to shorten for the store")
     endif()
-    set_source_files_properties(${XLAT_SOURCES} PROPERTIES
-        COMPILE_OPTIONS "${XLAT_OPTIONS}" SKIP_LINTING ON)
-    target_include_directories(${PROJECT_NAME} PRIVATE ${XLAT_RP_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE XL_RP=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
-    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=xl_rp_ram=fb_chunked_buffer")
-    message(STATUS "The translated logic from ${XLAT_RP_DIR}")
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/memmap_store.ld "${MEMMAP}")
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/memmap_store.ld)
+    message(STATUS "A store build: the translated game from the SD card")
 else()
 # The bench's synthetic scene (bench_scene.c): background pages and sprite
 # patterns made from a fixed seed by tools/gen_scene.py, nothing of the game.

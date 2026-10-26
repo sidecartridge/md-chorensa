@@ -145,6 +145,9 @@ void xl_patch_samples_loaded(void);
 /* Enter the code at a 68000 address: the translated function that starts
  * there; returns the address its RTS (or RTE) popped. Unknown: fatal. */
 uint32_t xl_call(uint32_t address);
+/* The same, for a function of the stage in the store's slot (the common
+ * image's stubs: tools/xlat/xl_store.h). */
+uint32_t xl_call_stage(uint32_t address);
 void xl_fatal(const char *what, uint32_t address);
 void xl_divide_by_zero(uint32_t pc);
 

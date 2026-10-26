@@ -231,6 +231,7 @@ void bench_frame(void) {
   char line[48];
 
   bench_logic_poll();
+  if (bench_logic_holds_screen()) return; /* the framebuffer is the card's buffer */
   bench_scene_poll();
   if (bench_scene_active()) {
     bench_scene_frame();

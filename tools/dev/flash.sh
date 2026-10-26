@@ -65,12 +65,10 @@ fi
 if [ "${APP_PROFILE:-}" = "PROFILE_25FPS" ]; then
   NAME="$NAME-25fps"
 fi
-# So does a build with the game's translated logic (XLAT_RP_DIR, rp/src/CMakeLists.txt).
-if [ -n "${XLAT_RP_DIR:-}" ]; then
-  NAME="$NAME-logic"
-  if [ -n "${XLAT_RP_CFLAGS:-}" ]; then
-    NAME="$NAME-$(printf '%s' "$XLAT_RP_CFLAGS" | tr -c 'A-Za-z0-9' '_')"
-  fi
+# So does a store build (XLAT_STORE=1, rp/src/CMakeLists.txt): the translated
+# game from the SD card.
+if [ -n "${XLAT_STORE:-}" ] && [ "${XLAT_STORE}" != 0 ]; then
+  NAME="$NAME-store"
 fi
 # A source outside the repo gets its own build folder, keyed by its path: two
 # checkouts are both called rp/src, and sharing a folder confuses CMake's cache.

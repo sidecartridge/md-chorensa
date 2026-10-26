@@ -7,25 +7,30 @@
  * calls after its stage load: the frame wait (XSP_VSYNC) runs the game's VBL
  * handler and records the checkpoints, XSP_OUT takes the sprite list, and
  * the IOCS calls the attract demo makes answer as the host answers them. Any
- * other call stops the run with its name and address.
+ * other call stops the run with its name and address. The translated code,
+ * its tables and the game's addresses come from the store's images
+ * (tools/xlat/xl_store.h).
  */
 
 #include "bench_logic.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "debug.h"
 #include "pico/time.h"
 
-#ifdef XL_RP
+#ifdef XL_STORE
 
 #include <setjmp.h>
 
+#include "aconfig.h"
+#include "fb.h"
 #include "fb_chunked.h"
+#include "ikbd.h"
+#include "select.h"
+#include "store.h"
 #include "xl.h"
-#include "xl_functions.h"
-#include "xl_layout.h"
-#include "xl_rp_image.h"
 
 #define LAST_FRAME 6000u
 #define MAX_FRAMES 5400u
@@ -33,20 +38,16 @@
 #define CHECKPOINT_BYTES 32u
 #define MAXIMUM_SPRITES 512u
 #define FRAME_TIMER_HZ100 5546u
+#define PATH_BYTES 96u
 
-_Static_assert(XL_RP_RAM_PAGES * (1u << XL_PAGE_BITS) <= FB_CHUNKED_SIZE,
-               "the game's RAM pages do not fit the borrowed framebuffer");
+extern const char release_build_id[]; /* build_id.c */
+extern uint8_t xl_rp_ram[];           /* the chunky framebuffer, lent (the link) */
 
 xl_cpu_t xl;
-uint8_t *xl_mem; /* the host's flat memory: unused (XL_PAGED) */
+uint8_t *xl_mem;             /* the host's flat memory: unused (XL_PAGED) */
+uint8_t **xl_regions[256];   /* the page table, from the stage's image */
 
-typedef uint32_t (*xl_fn_t)(void);
-extern const struct {
-  uint32_t address;
-  xl_fn_t fn;
-} xl_entries[];
-extern const uint32_t xl_entry_count;
-
+static const xl_store_header_t *s_common, *s_stage;
 static jmp_buf s_exit;
 static uint32_t s_frame_count, s_total_vbl, s_frame_sprite_count, s_last_sprite_count;
 static uint32_t s_effect_end_tick;
@@ -54,16 +55,30 @@ static int s_samples_decoded;
 static uint32_t s_sprite_list_count;
 static uint32_t s_frame_end_us; /* when the last frame wait ended */
 
+/* The game's variables the runtime uses, from the common image's header. */
+#define GAME(name) (s_common->layout[XL_LAYOUT_##name])
+
 /* The logic time of every frame, readable over SWD (tools/dev/swd.py logic). */
 uint16_t benchLogicUs[MAX_FRAMES];
 /* The first checkpoint that differed: the RP's, then the host's. */
 uint8_t benchLogicMismatch[2 * CHECKPOINT_BYTES];
+
+/* The host's writes to the card (bench_logic.h). */
+typedef struct {
+  volatile uint32_t hold;    /* the host: the bench stops drawing */
+  volatile uint32_t held;    /* the bench: it has */
+  volatile uint32_t command; /* the host: 1 writes the chunk; the bench clears it */
+  uint32_t offset, length;
+  int32_t status;
+  char path[PATH_BYTES];     /* in the app's folder */
+} bench_sd_t;
+bench_sd_t benchSd;
 #endif
 
 bench_logic_result_t benchLogicResult;
 volatile uint32_t benchLogicRequest; /* the host writes 1: a run */
 
-#ifdef XL_RP
+#ifdef XL_STORE
 
 static void stop(int state, const char *what, uint32_t address) {
   benchLogicResult.state = (uint32_t)state;
@@ -79,21 +94,31 @@ void xl_stop(uint32_t sr, uint32_t pc) {
   xl_fatal("STOP", pc);
 }
 
-uint32_t xl_call(uint32_t address) {
-  address &= 0xFFFFFFu;
-  uint32_t lo = 0, hi = xl_entry_count;
+static const xl_store_entry_t *find(const xl_store_header_t *h, uint32_t address) {
+  uint32_t lo = 0, hi = h->entry_count;
   while (lo < hi) {
     uint32_t mid = (lo + hi) / 2u;
-    if (xl_entries[mid].address < address) {
+    if (h->entries[mid].address < address) {
       lo = mid + 1u;
     } else {
       hi = mid;
     }
   }
-  if (lo >= xl_entry_count || xl_entries[lo].address != address) {
-    xl_fatal("no translated code", address);
-  }
-  return xl_entries[lo].fn();
+  return lo < h->entry_count && h->entries[lo].address == address ? &h->entries[lo] : NULL;
+}
+
+uint32_t xl_call(uint32_t address) {
+  address &= 0xFFFFFFu;
+  const xl_store_entry_t *e = find(s_common, address);
+  if (e == NULL) e = find(s_stage, address);
+  if (e == NULL) xl_fatal("no translated code", address);
+  return e->fn();
+}
+
+uint32_t xl_call_stage(uint32_t address) {
+  const xl_store_entry_t *e = find(s_stage, address);
+  if (e == NULL) xl_fatal("not in the stage's image", address);
+  return e->fn();
 }
 
 uint32_t xl_get_sr(void) {
@@ -123,6 +148,22 @@ void xl_hw_wr(uint32_t a, uint32_t v, int size) {
   }
 }
 
+/* The runtime the store's images call, kept in the link: nothing in the
+ * firmware calls most of it, and the images resolve it by this firmware's
+ * symbols (rp_store.py links them against its ELF). */
+const void *const xl_runtime[] __attribute__((used)) = {
+    (const void *)xl_call,          (const void *)xl_call_stage,
+    (const void *)xl_fatal,         (const void *)xl_divide_by_zero,
+    (const void *)xl_stop,          (const void *)xl_get_sr,
+    (const void *)xl_set_sr,        (const void *)xl_hw_rd,
+    (const void *)xl_hw_wr,         (const void *)xl_trap,
+    (const void *)xl_linef,         (const void *)xl_patch_xsp_vsync,
+    (const void *)xl_patch_xsp_out, (const void *)xl_patch_clear_text_planes,
+    (const void *)xl_patch_wait_vbl, (const void *)xl_patch_sincos,
+    (const void *)xl_patch_samples_loaded, (const void *)&xl,
+    (const void *)xl_regions,       (const void *)&xl_mem,
+};
+
 /* --- Frames --------------------------------------------------------------- */
 
 static void run_vbl(void) {
@@ -149,16 +190,16 @@ static void checkpoint(void) {
   c[1] = (uint8_t)(s_frame_count >> 16);
   c[2] = (uint8_t)(s_frame_count >> 8);
   c[3] = (uint8_t)s_frame_count;
-  read_bytes(c + 4, XL_PLAYER_SCORE, 4);
-  read_bytes(c + 8, XL_WORD_00088E6C, 2);
-  read_bytes(c + 10, XL_BACKGROUND_SCROLL_COUNTER, 2);
+  read_bytes(c + 4, GAME(PLAYER_SCORE), 4);
+  read_bytes(c + 8, GAME(WORD_00088E6C), 2);
+  read_bytes(c + 10, GAME(BACKGROUND_SCROLL_COUNTER), 2);
   c[12] = (uint8_t)(s_last_sprite_count >> 8);
   c[13] = (uint8_t)s_last_sprite_count;
-  read_bytes(c + 16, XL_PLAYER_INFO_STRUCT, 14);
+  read_bytes(c + 16, GAME(PLAYER_INFO_STRUCT), 14);
   uint32_t k = s_frame_count / CHECKPOINT_INTERVAL - 1u;
   benchLogicResult.checkpoints++;
-  if (k >= XL_RP_CHECKPOINTS) return;
-  const uint8_t *expected = xl_rp_checkpoints + k * CHECKPOINT_BYTES;
+  if (k >= s_stage->checkpoint_count) return;
+  const uint8_t *expected = s_stage->checkpoints + k * CHECKPOINT_BYTES;
   if (memcmp(c, expected, CHECKPOINT_BYTES) != 0) {
     if (benchLogicResult.mismatches++ == 0) {
       benchLogicResult.first_mismatch = s_frame_count;
@@ -184,9 +225,9 @@ void xl_patch_xsp_vsync(void) {
   s_frame_sprite_count = 0;
   for (uint32_t k = 0; k < vbls; k++) run_vbl();
   s_frame_count++;
-  uint32_t counter = rd16(XL_VBL_VWAIT_COUNTER);
+  uint32_t counter = rd16(GAME(VBL_VWAIT_COUNTER));
   D(0) = (D(0) & 0xFFFF0000u) | counter;
-  wr16(XL_VBL_VWAIT_COUNTER, 0);
+  wr16(GAME(VBL_VWAIT_COUNTER), 0);
   xl.n = 0;
   xl.z = 1;
   xl.v = 0;
@@ -215,11 +256,11 @@ void xl_patch_wait_vbl(void) {
 }
 
 void xl_patch_xsp_out(void) {
-  uint32_t count = (rd32(XL_CURRENT_SPRITE_DATA_ENTRY) - XL_SPRITE_DATA_TABLE) / 8u;
+  uint32_t count = (rd32(GAME(CURRENT_SPRITE_DATA_ENTRY)) - GAME(SPRITE_DATA_TABLE)) / 8u;
   if (count > MAXIMUM_SPRITES) count = MAXIMUM_SPRITES;
   s_frame_sprite_count = count;
   s_sprite_list_count = count;
-  wr32(XL_CURRENT_SPRITE_DATA_ENTRY, XL_SPRITE_DATA_TABLE);
+  wr32(GAME(CURRENT_SPRITE_DATA_ENTRY), GAME(SPRITE_DATA_TABLE));
   D(0) = 0;
   xl.n = 0;
   xl.z = 1;
@@ -231,7 +272,7 @@ void xl_patch_clear_text_planes(void) {
   for (uint32_t a = 0xE00000u; a < 0xE80000u; a += 4) wr32(a, 0);
 }
 
-void xl_patch_sincos(void) { xl_fatal("the sine tables load", XL_SIN_COS_TABLES_START); }
+void xl_patch_sincos(void) { xl_fatal("the sine tables load", GAME(SIN_COS_TABLES_START)); }
 void xl_patch_samples_loaded(void) { xl_fatal("the samples load", 0); }
 
 /* --- IOCS, as the host answers the attract demo ---------------------------- */
@@ -288,10 +329,38 @@ void xl_linef(uint32_t word, uint32_t pc) {
 
 /* --- The run --------------------------------------------------------------- */
 
+/* The app's folder on the card, and a file in it. */
+static void card_path(char *out, const char *name) {
+  SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
+  snprintf(out, PATH_BYTES, "%s/%s", folder ? folder->value : "", name);
+}
+
+/* Between flash operations: the bus, the IKBD and SELECT keep going. */
+static void pump(void) {
+  fb_pump_rom3();
+  ikbd_pump();
+  select_poll();
+}
+
+static const xl_store_header_t *load(int k, const char *name, uint32_t base, uint32_t size) {
+  char path[PATH_BYTES];
+  card_path(path, name);
+  uint32_t t0 = time_us_32();
+  int status = store_load(path, base, size, pump);
+  benchLogicResult.load_status[k] = (uint32_t)status;
+  benchLogicResult.load_us[k] = time_us_32() - t0;
+  DPRINTF("logic: %s %d in %lu us\n", path, status, (unsigned long)benchLogicResult.load_us[k]);
+  if (status != STORE_COPIED && status != STORE_SKIPPED) return NULL;
+  const xl_store_header_t *h = store_header(base);
+  if (h && strncmp(h->firmware, release_build_id, XL_STORE_FIRMWARE_ID - 1u) != 0) return NULL;
+  return h;
+}
+
 static void restore(void) {
-  memcpy(xl_rp_ram, xl_rp_ram_init, XL_RP_WRITTEN_PAGES << XL_PAGE_BITS);
-  memset(xl_rp_ram + (XL_RP_WRITTEN_PAGES << XL_PAGE_BITS), 0, 1u << XL_PAGE_BITS);
-  const uint32_t *w = xl_rp_state + 2;
+  for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
+  memcpy(xl_rp_ram, s_stage->ram_init, s_stage->ram_pages << XL_PAGE_BITS);
+  memset(xl_rp_ram + (s_stage->ram_pages << XL_PAGE_BITS), 0, 1u << XL_PAGE_BITS);
+  const uint32_t *w = s_stage->state + 2;
   for (int k = 0; k < 8; k++) xl.d[k] = *w++;
   for (int k = 0; k < 8; k++) xl.a[k] = *w++;
   xl.n = *w++;
@@ -313,13 +382,28 @@ bool bench_logic_available(void) { return true; }
 
 void bench_logic_run(void) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
+  /* Called from the main loop, which joins every core 1 job before it goes
+   * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
+  s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
+  s_stage = load(1, "STAGE1.IMG", XL_STORE_STAGE, XL_STORE_STAGE_SIZE);
+  const char *problem = NULL;
+  if (s_common == NULL || s_stage == NULL || s_stage->state == NULL) {
+    problem = "no images for this firmware";
+  } else if (((s_stage->ram_pages + 1u) << XL_PAGE_BITS) > FB_CHUNKED_SIZE) {
+    problem = "the RAM pages do not fit the framebuffer";
+  }
+  if (problem) {
+    benchLogicResult.state = BENCH_LOGIC_ERROR;
+    strncpy(benchLogicResult.error, problem, sizeof benchLogicResult.error - 1u);
+    return;
+  }
   restore();
   benchLogicResult.first_frame = s_frame_count;
   DPRINTF("logic: from frame %lu\n", (unsigned long)s_frame_count);
   uint32_t begin = time_us_32();
   s_frame_end_us = begin;
   if (setjmp(s_exit) == 0) {
-    uint32_t r = xl_call(xl_rp_state[1]);
+    uint32_t r = xl_call(s_stage->resume);
     for (;;) r = xl_call(r);
   }
   benchLogicResult.total_us = time_us_32() - begin;
@@ -332,9 +416,29 @@ void bench_logic_run(void) {
           (unsigned long)benchLogicResult.checkpoints, benchLogicResult.error);
 }
 
+/* The host's writes to the card, between frames. */
+static void serve_card(void) {
+  if (!benchSd.hold) {
+    benchSd.held = 0;
+    return;
+  }
+  benchSd.held = 1;
+  if (!benchSd.command) return;
+  char path[PATH_BYTES];
+  benchSd.path[PATH_BYTES - 1u] = '\0';
+  card_path(path, benchSd.path);
+  uint32_t length = benchSd.length <= FB_CHUNKED_SIZE ? benchSd.length : 0;
+  benchSd.status = store_put(path, benchSd.offset, fb_chunked_buffer, length);
+  benchSd.command = 0;
+}
+
+bool bench_logic_holds_screen(void) { return benchSd.held != 0; }
+
 #else /* no translation in this build */
 
 bool bench_logic_available(void) { return false; }
+bool bench_logic_holds_screen(void) { return false; }
+static void serve_card(void) {}
 
 void bench_logic_run(void) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
@@ -344,6 +448,7 @@ void bench_logic_run(void) {
 #endif
 
 void bench_logic_poll(void) {
+  serve_card();
   if (benchLogicRequest) {
     benchLogicRequest = 0;
     bench_logic_run();

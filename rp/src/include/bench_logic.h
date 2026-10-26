@@ -5,19 +5,29 @@
  *              took after the attract demo's stage load, and timed frame by
  *              frame.
  *
- * Built in only when the build is given a translation (XLAT_RP_DIR, made by
- * tools/xlat/rp_build.py from the user's copy of the game, outside the
- * repository); otherwise the run reports that it has none. Its memory is the
- * snapshot's, in 1 KB pages (xl.h's XL_PAGED accessors): the pages the game
- * writes in RAM borrowed from the framebuffer while the run lasts (the ST
- * shows its last frame), the others read from flash.
+ * A store build (XLAT_STORE=1) carries no game code: the run copies the
+ * images on the SD card (COMMON.IMG and STAGE1.IMG in the app's folder, made
+ * by tools/xlat/rp_store.py from the user's copy of the game) into the flash
+ * store (store.h) unless the store holds them already, timing it, and runs
+ * from there. Other builds report that they have no translation. The
+ * game's memory is the snapshot's, in 1 KB pages (xl.h's XL_PAGED
+ * accessors): the pages the game writes in RAM borrowed from the
+ * framebuffer while the run lasts (the ST shows its last frame), the others
+ * read from the stage's image.
  *
  * Every game frame (one XSP_VSYNC) records the game's logic time and the time
  * of its VBL handler; every 60 frames the game's state is compared with what
  * the host recorded at that frame. Started by INSERT on the ST, or over SWD
  * in any build by writing 1 to benchLogicRequest (tools/dev/swd.py logic,
  * which reads the times and the checkpoints back). Blocks the main loop for
- * the run (about a minute); the cartridge keeps serving the ST.
+ * the run (about ten seconds); the cartridge keeps serving the ST.
+ *
+ * The host puts the images on the card over SWD (tools/dev/swd.py sd-put),
+ * through benchSd: it sets `hold`, waits for `held` (the bench stops drawing,
+ * and the chunky framebuffer is the transfer's buffer), then for each chunk
+ * writes the bytes, the path, offset and length, and sets `command`; the
+ * bench writes them to the card and clears `command`, `status` the bytes
+ * written or -1.
  */
 
 #ifndef BENCH_LOGIC_H
@@ -38,6 +48,8 @@ typedef struct {
   uint32_t first_mismatch;  /* its frame, or 0 */
   uint32_t error_address;   /* where the run stopped on an error */
   uint32_t total_us;
+  uint32_t load_status[2];  /* the common and stage images: store.h's STORE_* */
+  uint32_t load_us[2];      /* how long each copy took (or its check) */
   char error[48];
 } bench_logic_result_t;
 
@@ -48,10 +60,13 @@ enum {
   BENCH_LOGIC_NO_TRANSLATION,
 };
 
-/* Whether this build carries a translation. */
+/* Whether this build can run the translation. */
 bool bench_logic_available(void);
-/* Called every bench frame: runs the logic if the host asked for it. */
+/* Called every bench frame: runs the logic if the host asked for it, and
+ * serves the host's writes to the card. */
 void bench_logic_poll(void);
+/* While the host writes to the card: the bench draws nothing. */
+bool bench_logic_holds_screen(void);
 /* Run it now (blocks until it is done). */
 void bench_logic_run(void);
 const bench_logic_result_t *bench_logic_result(void);

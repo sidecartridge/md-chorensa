@@ -815,7 +815,10 @@ def cmd_scene(args: argparse.Namespace) -> int:
 
 
 LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl_sum", "vbl_max",
-                "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us")
+                "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us",
+                "load_common", "load_stage", "load_common_us", "load_stage_us")
+LOAD_STATES = ("copied", "already in the store", "no file", "not an image", "card error",
+               "bad CRC")  # store.h's STORE_*
 LOGIC_STATES = ("idle", "done", "error", "no translation")
 
 
@@ -872,6 +875,10 @@ def cmd_logic(args: argparse.Namespace) -> int:
     error = data[4 * len(LOGIC_FIELDS):].split(b"\0")[0].decode("latin-1")
     state = LOGIC_STATES[r["state"]] if r["state"] < len(LOGIC_STATES) else str(r["state"])
     print(f"state {state}" + (f": {error} at {r['error_address']:06X}" if error else ""))
+    for name in ("common", "stage"):
+        status = r[f"load_{name}"]
+        label = LOAD_STATES[status] if status < len(LOAD_STATES) else str(status)
+        print(f"{name} image: {label}, {r[f'load_{name}_us'] / 1000:.0f} ms")
     frames = r["frames"]
     if not frames:
         return 1
@@ -898,6 +905,60 @@ def cmd_logic(args: argparse.Namespace) -> int:
                 f.write(f"{r['first_frame'] + k + 1} {t}\n")
         print(f"times in {args.out}")
     return 0 if state == "done" and not r["mismatches"] else 1
+
+
+SD_CHUNK = 65536  # the chunky framebuffer, the bench's buffer for the card
+
+
+def cmd_sd_put(args: argparse.Namespace) -> int:
+    """Files onto the SD card through the running bench (bench_logic.h's
+    benchSd), into the app's folder: it stops drawing, and each chunk goes
+    over SWD into the chunky framebuffer, then to the card. The cartridge
+    keeps serving the ST; nothing is flashed."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "benchSd", "fb_chunked_buffer")
+    if len(sym) < 2:
+        raise SwdError(f"{os.path.basename(elf)} cannot write to the card (a store build?)")
+    sd, buf = sym["benchSd"][0], sym["fb_chunked_buffer"][0]
+    hold, held, command, offset, length, status, path = (sd + 4 * k for k in range(7))
+
+    def wait(address, value, what, seconds=20.0):
+        started = time.time()
+        while read_words([address])[0] != value:
+            if time.time() - started > seconds:
+                raise SwdError(f"the bench did not {what} within {seconds:.0f} s")
+            time.sleep(0.2)
+
+    openocd(f"targets {CORES[0]}", f"mww 0x{hold:08x} 1")
+    try:
+        wait(held, 1, "stop drawing")
+        for local in args.files:
+            name = os.path.basename(local).encode() + b"\0"
+            data = open(local, "rb").read()
+            started = time.time()
+            with tempfile.TemporaryDirectory() as tmp:
+                name_file = os.path.join(tmp, "name.bin")
+                with open(name_file, "wb") as f:
+                    f.write(name.ljust((len(name) + 3) // 4 * 4, b"\0"))
+                for at in range(0, len(data), SD_CHUNK):
+                    chunk = data[at:at + SD_CHUNK]
+                    chunk_file = os.path.join(tmp, "chunk.bin")
+                    with open(chunk_file, "wb") as f:
+                        f.write(chunk)
+                    openocd(f"targets {CORES[0]}", f"load_image {chunk_file} 0x{buf:08x} bin",
+                            f"load_image {name_file} 0x{path:08x} bin",
+                            f"mww 0x{offset:08x} {at}", f"mww 0x{length:08x} {len(chunk)}",
+                            f"mww 0x{command:08x} 1")
+                    wait(command, 0, "write the chunk")
+                    wrote = read_words([status])[0]
+                    if wrote != len(chunk):
+                        raise SwdError(f"{name.decode()[:-1]}: the card took {wrote:#x} of "
+                                       f"{len(chunk)} bytes at {at}")
+            print(f"{os.path.basename(local)}: {len(data)} bytes on the card "
+                  f"({time.time() - started:.0f} s)")
+    finally:
+        openocd(f"targets {CORES[0]}", f"mww 0x{hold:08x} 0")
+    return 0
 
 
 def cmd_still(args: argparse.Namespace) -> int:
@@ -1666,6 +1727,11 @@ def build_parser() -> argparse.ArgumentParser:
     he.add_argument("elf")
     he.add_argument("--timeout", type=float, default=30.0)
     he.set_defaults(func=cmd_hello)
+
+    sp = sub.add_parser("sd-put", help="put files on the SD card, in the app's folder (the bench)")
+    sp.add_argument("files", nargs="+")
+    sp.add_argument("--elf")
+    sp.set_defaults(func=cmd_sd_put)
 
     lg = sub.add_parser("logic", help="the bench's logic run: start it and read its times")
     lg.add_argument("--read", action="store_true", help="only read the last run")
