@@ -2,7 +2,13 @@
 # Build the RP firmware out of tree, flash it, and confirm the RP runs it.
 #
 #   tools/dev/flash.sh <release|debug> [--src DIR] [--build-only] [--probe]
-#                      [--timeout S]
+#                      [--reset-st] [--timeout S]
+#
+# --reset-st (with the Debug Probe): once the build is done, asks the ST for a
+# cold reset through the running image's sentinel, flashes at once (the ST
+# waits a couple of seconds before it resets), and checks that the ST says
+# hello to the new image. Without it the ST keeps running across the flash,
+# whose stopped bus it does not survive cleanly: reset it by hand.
 #
 # Builds into tools/dev/builds/<type> (incremental; never touches rp/build-* or
 # the submodules) with the settings of the pico_w-<type> preset in
@@ -37,12 +43,14 @@ shift
 SRC="$REPO/rp/src"
 BUILD_ONLY=0
 USE_PROBE=0
+RESET_ST=0
 TIMEOUT=30
 while [ $# -gt 0 ]; do
   case "$1" in
     --src) SRC="$(cd "$2" && pwd)"; shift 2 ;;
     --build-only) BUILD_ONLY=1; shift ;;
     --probe) USE_PROBE=1; shift ;;
+    --reset-st) RESET_ST=1; USE_PROBE=1; shift ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     *) usage ;;
   esac
@@ -56,6 +64,13 @@ if [ -n "${RP_CMAKE_BUILD_TYPE:-}" ]; then
 fi
 if [ "${APP_PROFILE:-}" = "PROFILE_25FPS" ]; then
   NAME="$NAME-25fps"
+fi
+# So does a build with the game's translated logic (XLAT_RP_DIR, rp/src/CMakeLists.txt).
+if [ -n "${XLAT_RP_DIR:-}" ]; then
+  NAME="$NAME-logic"
+  if [ -n "${XLAT_RP_CFLAGS:-}" ]; then
+    NAME="$NAME-$(printf '%s' "$XLAT_RP_CFLAGS" | tr -c 'A-Za-z0-9' '_')"
+  fi
 fi
 # A source outside the repo gets its own build folder, keyed by its path: two
 # checkouts are both called rp/src, and sharing a folder confuses CMake's cache.
@@ -117,6 +132,10 @@ arm-none-eabi-size "$OUT/rp.elf" | tail -1
 echo "Built $TYPE $BUILD_ID: $OUT/rp.uf2"
 [ "$BUILD_ONLY" = 1 ] && exit 0
 
+if [ "$RESET_ST" = 1 ]; then
+  python3 "$HERE/swd.py" st-reset \
+    || echo "WARNING: could not ask the ST for a reset (the running image unknown?)" >&2
+fi
 if [ "$USE_PROBE" = 1 ]; then
   python3 "$HERE/swd.py" program "$OUT/rp.elf"
 elif picotool load -f -x "$OUT/rp.uf2" > "$OUT/picotool.log" 2>&1; then
@@ -134,6 +153,9 @@ if python3 "$HERE/swd.py" running "$OUT/rp.elf" --timeout "$TIMEOUT" \
    && { [ "$BUILD_ID" = no-build-id ] \
         || [ "$(python3 "$HERE/swd.py" build-id "$OUT/rp.elf")" = "$BUILD_ID" ]; }; then
   echo "Running $TYPE $BUILD_ID"
+  if [ "$RESET_ST" = 1 ]; then
+    python3 "$HERE/swd.py" hello "$OUT/rp.elf" --timeout 30 || exit 1
+  fi
   exit 0
 fi
 echo "ERROR: the RP is not running $TYPE $BUILD_ID" >&2

@@ -814,6 +814,92 @@ def cmd_scene(args: argparse.Namespace) -> int:
     return 0
 
 
+LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl_sum", "vbl_max",
+                "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us")
+LOGIC_STATES = ("idle", "done", "error", "no translation")
+
+
+def logic_profile(elf: str, samples: int) -> None:
+    """Where core 0 spends the run: its PC sampled (halted, read, resumed:
+    the run's times are not the ones to keep), counted by function."""
+    out = openocd(f"targets {CORES[0]}",
+                  f"for {{set i 0}} {{$i < {samples}}} {{incr i}} "
+                  f"{{ halt; echo \"PC [reg pc]\"; resume; sleep 2 }}", core0_only=True)
+    pcs = [int(m, 16) for m in re.findall(r"PC pc \(/32\): (0x[0-9a-fA-F]+)", out)]
+    nm = subprocess.run(["arm-none-eabi-nm", "-S", "-n", elf], capture_output=True,
+                        text=True).stdout
+    funcs = []
+    for line in nm.splitlines():
+        p = line.split()
+        if len(p) == 4 and p[2] in "tTwW":
+            funcs.append((int(p[0], 16), int(p[1], 16), p[3]))
+    counts: dict[str, int] = {}
+    for pc in pcs:
+        name = next((n for a, size, n in funcs if a <= pc < a + size), f"{pc:08x}")
+        counts[name] = counts.get(name, 0) + 1
+    print(f"profile: {len(pcs)} samples")
+    sizes = {n: size for _a, size, n in funcs}
+    for name, n in sorted(counts.items(), key=lambda kv: -kv[1])[:30]:
+        print(f"  {100.0 * n / max(1, len(pcs)):5.1f}%  {name} ({sizes.get(name, 0)} bytes)")
+
+
+def cmd_logic(args: argparse.Namespace) -> int:
+    """The bench's logic run (bench_logic.h): starts it unless --read, waits
+    for it, and prints the logic time a frame (mean, percentiles, max), the
+    VBL handler's, and the checkpoints against the host's. --out FILE: the
+    frames' times, one a line. Any build with a translation (XLAT_RP_DIR)."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "benchLogicResult", "benchLogicRequest", "benchLogicUs",
+                      "benchLogicMismatch")
+    if "benchLogicResult" not in sym:
+        raise SwdError(f"{os.path.basename(elf)} has no logic run")
+    base = sym["benchLogicResult"][0]
+    if not args.read:
+        openocd(f"targets {CORES[0]}", f"mww 0x{base:08x} 0",
+                f"mww 0x{sym['benchLogicRequest'][0]:08x} 1")
+        started = time.time()
+        if args.profile:
+            logic_profile(elf, args.profile)
+        while True:
+            time.sleep(2.0)
+            if read_words([base])[0] != 0:
+                break
+            if time.time() - started > args.timeout:
+                raise SwdError(f"the run did not end within {args.timeout} s")
+        print(f"ran in {time.time() - started:.0f} s")
+    data = read_memory(base, sym["benchLogicResult"][1])
+    r = dict(zip(LOGIC_FIELDS, struct.unpack(f"<{len(LOGIC_FIELDS)}I", data[:4 * len(LOGIC_FIELDS)])))
+    error = data[4 * len(LOGIC_FIELDS):].split(b"\0")[0].decode("latin-1")
+    state = LOGIC_STATES[r["state"]] if r["state"] < len(LOGIC_STATES) else str(r["state"])
+    print(f"state {state}" + (f": {error} at {r['error_address']:06X}" if error else ""))
+    frames = r["frames"]
+    if not frames:
+        return 1
+    times = []
+    if "benchLogicUs" in sym:
+        count = min(frames, sym["benchLogicUs"][1] // 2)
+        times = list(struct.unpack(f"<{count}H", read_memory(sym["benchLogicUs"][0], 2 * count)))
+    print(f"frames {frames} from frame {r['first_frame']}, {r['total_us'] / 1e6:.1f} s in all")
+    if times:
+        ordered = sorted(times)
+        pick = lambda q: ordered[min(len(ordered) - 1, int(q * len(ordered)))]
+        print(f"logic us a frame: mean {sum(times) / len(times):.0f}, p50 {pick(0.5)}, "
+              f"p95 {pick(0.95)}, p99 {pick(0.99)}, max {r['logic_max']}")
+    print(f"VBL handler us a frame: mean {r['vbl_sum'] / frames:.0f}, max {r['vbl_max']}")
+    print(f"checkpoints {r['checkpoints']}, {r['mismatches']} differ"
+          + (f" (first at frame {r['first_mismatch']})" if r["mismatches"] else ""))
+    if r["mismatches"] and "benchLogicMismatch" in sym:
+        m = read_memory(sym["benchLogicMismatch"][0], 64)
+        print(f"  RP   {m[:32].hex()}\n  host {m[32:].hex()}")
+    if args.out and times:
+        with open(args.out, "w") as f:
+            f.write("# frame logic-us\n")
+            for k, t in enumerate(times):
+                f.write(f"{r['first_frame'] + k + 1} {t}\n")
+        print(f"times in {args.out}")
+    return 0 if state == "done" and not r["mismatches"] else 1
+
+
 def cmd_still(args: argparse.Namespace) -> int:
     """A still picture on the ST's screen: the bench stops drawing
     (bench_still 1) and publishes what the chunky buffer holds, with
@@ -1231,6 +1317,39 @@ def include_defines() -> dict[str, int]:
     return header_defines(*sorted(glob.glob(os.path.join(INCLUDE_DIR, "*.h"))))
 
 
+def cmd_st_reset(args: argparse.Namespace) -> int:
+    """Ask the ST for a cold reset: CART_CMD_RESET in the command sentinel of
+    the image the RP runs now (userfw acts on it within a frame, waits a
+    couple of seconds, then resets; from GEM it does nothing). flash.sh
+    --reset-st sends it just before it flashes, so the ST boots the new
+    image."""
+    elf = matching_elf(args.elf)
+    defs = include_defines()
+    sentinel = cartridge_window(elf) + defs["CART_CMD_SENTINEL_OFFSET"]
+    value = defs["CART_CMD_RESET"]
+    value = ((value & 0xFFFF) << 16) | (value >> 16)  # cart_asM68kLong
+    openocd(f"targets {CORES[0]}", f"mww 0x{sentinel:08x} 0x{value:08x}")
+    print(f"ST reset requested (sentinel 0x{sentinel:08x})")
+    return 0
+
+
+def cmd_hello(args: argparse.Namespace) -> int:
+    """Wait until the ST has said hello to this ELF's image: after a flash,
+    proof that the ST booted it (0 hellos: it booted before the image was
+    there, and needs a reset by hand)."""
+    hellos = elf_symbols(args.elf, "stSessionHellos").get("stSessionHellos")
+    if not hellos:
+        raise SwdError(f"{args.elf} has no stSessionHellos")
+    started = time.time()
+    while time.time() - started < args.timeout:
+        if read_words([hellos[0]])[0]:
+            print(f"the ST booted the new image ({time.time() - started:.0f} s)")
+            return 0
+        time.sleep(1.0)
+    print(f"no hello from the ST within {args.timeout:.0f} s: reset the ST by hand")
+    return 1
+
+
 def cmd_select(args: argparse.Namespace) -> int:
     defs = include_defines()
     gpio = defs["SELECT_GPIO"]
@@ -1538,6 +1657,24 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--timeout", type=float, default=1800.0)
     sc.add_argument("--elf")
     sc.set_defaults(func=cmd_scene)
+
+    sr = sub.add_parser("st-reset", help="ask the ST for a cold reset (the running image's sentinel)")
+    sr.add_argument("--elf")
+    sr.set_defaults(func=cmd_st_reset)
+
+    he = sub.add_parser("hello", help="wait until the ST says hello to this image")
+    he.add_argument("elf")
+    he.add_argument("--timeout", type=float, default=30.0)
+    he.set_defaults(func=cmd_hello)
+
+    lg = sub.add_parser("logic", help="the bench's logic run: start it and read its times")
+    lg.add_argument("--read", action="store_true", help="only read the last run")
+    lg.add_argument("--out", help="write the frames' times to this file")
+    lg.add_argument("--profile", type=int, default=0, metavar="N",
+                    help="sample core 0's PC N times during the run (slows it)")
+    lg.add_argument("--timeout", type=float, default=900.0)
+    lg.add_argument("--elf")
+    lg.set_defaults(func=cmd_logic)
 
     st = sub.add_parser("still", help="a still picture on the ST's screen (the bench)")
     st.add_argument("file", nargs="?", help="256 x 256 colour numbers + 16 palette words")

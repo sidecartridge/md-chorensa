@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #include "audio.h"
+#include "bench_logic.h"
 #include "bench_scene.h"
 #include "cart_shared.h"
 #include "debug.h"
@@ -101,6 +102,8 @@ static void print_at(int x, int y, unsigned color, const char *text) {
  * to the test card. */
 #define SC_HELP 0x62u
 #define SC_UNDO 0x61u
+/* INSERT: the logic run (bench_logic.h), in a build with a translation. */
+#define SC_INSERT 0x52u
 static bool s_bench_prefer_ym; /* F10's state (audio.c keeps its own) */
 static const uint8_t k_pieces[] = {0, 32, 4, 8};
 static uint8_t s_piece_choice;
@@ -185,6 +188,8 @@ void bench_handle_key(const ikbd_key_event_t *key) {
   } else if (key->scancode == SC_F9) {
     set_copy_lines(fb_copy_lines() == CART_FB_LINES ? CART_FB_LINES_SHORT
                                                     : CART_FB_LINES);
+  } else if (key->scancode == SC_INSERT) {
+    bench_logic_run();
   } else if (key->scancode == SC_HELP) {
     bench_scene_start(BENCH_SCENE_FRAMES_DEFAULT);
   } else if (key->scancode == SC_UNDO) {
@@ -225,6 +230,7 @@ static void draw_test_card(void) {
 void bench_frame(void) {
   char line[48];
 
+  bench_logic_poll();
   bench_scene_poll();
   if (bench_scene_active()) {
     bench_scene_frame();
@@ -287,7 +293,22 @@ void bench_frame(void) {
                                             : "F5: NO SOUND NEXT BOOT");
   print_at(208, 224, COL_LABEL, s_tone_step ? "F6: TONE" : "F6: -");
   print_at(16, 208, COL_LABEL, "F1-F4: INPUT F7: COPY F8: PIECE");
-  print_at(16, 192, COL_LABEL, "HELP: SCENE");
+  const bench_logic_result_t *logic = bench_logic_result();
+  if (logic->state == BENCH_LOGIC_DONE || logic->state == BENCH_LOGIC_ERROR) {
+    snprintf(line, sizeof line, "LOGIC %lu FR %lu/%lu US",
+             (unsigned long)logic->frames,
+             (unsigned long)(logic->frames ? logic->logic_sum / logic->frames : 0),
+             (unsigned long)logic->logic_max);
+    print_at(16, 160, COL_TEXT, line);
+    snprintf(line, sizeof line, "CHECKS %lu BAD %lu %s",
+             (unsigned long)logic->checkpoints, (unsigned long)logic->mismatches,
+             logic->state == BENCH_LOGIC_ERROR ? "ERROR" : "");
+    print_at(16, 176, COL_TEXT, line);
+  } else if (logic->state == BENCH_LOGIC_NO_TRANSLATION) {
+    print_at(16, 160, COL_TEXT, "LOGIC: NO TRANSLATION");
+  }
+  print_at(16, 192, COL_LABEL,
+           bench_logic_available() ? "HELP: SCENE INSERT: LOGIC" : "HELP: SCENE");
   print_at(16, 240, COL_LABEL, "ESC: GEM");
 
   fb_publish();

@@ -5,6 +5,10 @@
 
 #include "bench_scene.h"
 
+/* A build with the game's translated logic (bench_logic.h) leaves the scene
+ * and its assets out: both do not fit the flash together. */
+#ifndef BENCH_SCENE_OFF
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -319,3 +323,18 @@ void bench_scene_frame(void) {
     results_frame();
   }
 }
+
+#else /* BENCH_SCENE_OFF */
+
+bench_scene_result_t benchSceneResults[1];
+volatile uint32_t benchSceneRequest;
+uint32_t benchSceneRun;
+
+void bench_scene_init(void) {}
+void bench_scene_start(uint32_t frames) { (void)frames; }
+void bench_scene_stop(void) {}
+bool bench_scene_active(void) { return false; }
+void bench_scene_poll(void) { benchSceneRequest = 0; }
+void bench_scene_frame(void) {}
+
+#endif /* BENCH_SCENE_OFF */

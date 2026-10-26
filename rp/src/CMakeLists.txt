@@ -122,6 +122,7 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/commemul.pio)
 target_sources(${PROJECT_NAME} PRIVATE
         aconfig.c
         bench.c
+        bench_logic.c
         bench_scene.c
         audio.c
         commemul.c
@@ -316,10 +317,22 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
 # Release carries that type and a 25 fps build (APP_PROFILE) +25fps, so builds
 # of one tree cannot be taken for each other on the device.
 set(BUILD_ID_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/build_id)
+# A build with the translated logic (XLAT_RP_DIR) is marked too, with a tag
+# of its XLAT_RP_CFLAGS when it has any.
+set(LOGIC_TAG "")
+if (DEFINED ENV{XLAT_RP_DIR})
+    set(LOGIC_TAG "logic")
+    if (DEFINED ENV{XLAT_RP_CFLAGS} AND NOT "$ENV{XLAT_RP_CFLAGS}" STREQUAL "")
+        string(MD5 XLAT_CFLAGS_HASH "$ENV{XLAT_RP_CFLAGS}")
+        string(SUBSTRING "${XLAT_CFLAGS_HASH}" 0 4 XLAT_CFLAGS_HASH)
+        set(LOGIC_TAG "logic-${XLAT_CFLAGS_HASH}")
+    endif()
+endif()
 add_custom_target(build_id
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_LIST_DIR}
             -DOUT_DIR=${BUILD_ID_DIR} -DDEBUG_BUILD=${_DEBUG}
             -DCMAKE_TYPE=${CMAKE_BUILD_TYPE} -DAPP_PROFILE=$ENV{APP_PROFILE}
+            -DLOGIC_TAG=${LOGIC_TAG}
             -P ${CMAKE_CURRENT_LIST_DIR}/build_id.cmake
     BYPRODUCTS ${BUILD_ID_DIR}/build_id.h ${BUILD_ID_DIR}/build_id.c
     COMMENT "Checking the build ID")
@@ -329,6 +342,31 @@ set_source_files_properties(${BUILD_ID_DIR}/build_id.c PROPERTIES GENERATED TRUE
 target_include_directories(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR})
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 
+# The bench's logic run (bench_logic.c): the game's code translated by
+# tools/xlat, in a folder XLAT_RP_DIR names (made by tools/xlat/rp_build.py
+# from the user's copy of the game, outside the repository; never in git).
+# Its RAM pages are the chunky framebuffer's, lent while the run lasts; the
+# scene is left out (both do not fit the flash). Without XLAT_RP_DIR the
+# bench has no logic run and builds the scene.
+if (DEFINED ENV{XLAT_RP_DIR})
+    set(XLAT_RP_DIR $ENV{XLAT_RP_DIR})
+    file(GLOB XLAT_SOURCES ${XLAT_RP_DIR}/xl_*.c)
+    target_sources(${PROJECT_NAME} PRIVATE ${XLAT_SOURCES})
+    # XLAT_RP_CFLAGS: other options for the translated files, to measure them
+    # (-O2, or -DXL_FORCE_INLINE: the memory accessors inlined everywhere).
+    set(XLAT_OPTIONS "-Os;-w")
+    if (DEFINED ENV{XLAT_RP_CFLAGS})
+        separate_arguments(XLAT_EXTRA UNIX_COMMAND "$ENV{XLAT_RP_CFLAGS}")
+        list(APPEND XLAT_OPTIONS ${XLAT_EXTRA})
+    endif()
+    set_source_files_properties(${XLAT_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "${XLAT_OPTIONS}" SKIP_LINTING ON)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${XLAT_RP_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE XL_RP=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
+    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=xl_rp_ram=fb_chunked_buffer")
+    message(STATUS "The translated logic from ${XLAT_RP_DIR}")
+else()
 # The bench's synthetic scene (bench_scene.c): background pages and sprite
 # patterns made from a fixed seed by tools/gen_scene.py, nothing of the game.
 # Rewritten only when the script changes.
@@ -342,6 +380,7 @@ add_custom_command(OUTPUT ${SCENE_DIR}/bench_scene_assets.h
 add_custom_target(bench_scene_assets DEPENDS ${SCENE_DIR}/bench_scene_assets.h)
 add_dependencies(${PROJECT_NAME} bench_scene_assets)
 target_include_directories(${PROJECT_NAME} PRIVATE ${SCENE_DIR})
+endif()
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)
