@@ -714,6 +714,41 @@ class Emitter:
             addr = self.t()
             self.out(f"  uint32_t {addr} = {self.address(i.dst, s)};")
         v = self.t()
+        bits = BITS[s]
+        if count[0] == "imm" and kind != 2 and 1 <= count[1] < bits:
+            # A constant count: the result and only the flags read after it.
+            n, m, src = count[1], MASK[s], self.t()
+            self.out(f"  uint32_t {src} = {self.read(i.dst, s, addr)} & {m};")
+            if kind == 3:
+                shifted = (f"(({src} << {n}) | ({src} >> {bits - n}))" if left
+                           else f"(({src} >> {n}) | ({src} << {bits - n}))")
+                self.out(f"  uint32_t {v} = {shifted} & {m};")
+                carry = f"{v} & 1u" if left else f"({v} >> {bits - 1}) & 1u"
+            elif left:
+                self.out(f"  uint32_t {v} = ({src} << {n}) & {m};")
+                carry = f"({src} >> {bits - n}) & 1u"
+            elif kind == 0:
+                sign = {8: "sx8", 16: "sx16", 32: ""}[bits]
+                self.out(f"  uint32_t {v} = (uint32_t)((int32_t){sign}({src}) >> {n}) & {m};")
+                carry = f"({src} >> {n - 1}) & 1u"
+            else:
+                self.out(f"  uint32_t {v} = {src} >> {n};")
+                carry = f"({src} >> {n - 1}) & 1u"
+            self.write(i.dst, s, v, addr)
+            self.nz(v, s, live)
+            if live & FLAG_C:
+                self.out(f"  xl.c = {carry};")
+            if kind != 3 and live & FLAG_X:
+                self.out(f"  xl.x = {carry};")
+            if live & FLAG_V:
+                if kind == 0 and left:
+                    # The sign changed during the shift: the top n + 1 bits
+                    # were not all equal.
+                    top = f"({src} >> {bits - n - 1})"
+                    self.out(f"  xl.v = {top} != 0u && {top} != {(1 << (n + 1)) - 1}u;")
+                else:
+                    self.out("  xl.v = 0;")
+            return
         self.out(f"  uint32_t {v} = xl_shift({kind}, {1 if left else 0}, "
                  f"{self.read(i.dst, s, addr)}, {cnt}, {BITS[s]});")
         self.write(i.dst, s, v, addr)
