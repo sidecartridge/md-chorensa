@@ -25,6 +25,9 @@
  *                    the lines a blitter piece (0: the ST's default)
  *   bench_copy_lines LINES: the lines the ST copies, 256 or 240 (F9 toggles)
  *   F10 on the ST: the YM from the next boot, or the DMA chip again
+ *   bench_still 0|1  stop drawing (1) and publish, every frame, what the
+ *                    chunky buffer holds with benchStillPalette (written
+ *                    over SWD: tools/dev/swd.py still); 0 back to the card
  */
 
 #ifndef BENCH_H
@@ -39,6 +42,7 @@
 #define DEVHOOKS_APP_BENCH_TONE 0x42
 #define DEVHOOKS_APP_BENCH_COPY_MODE 0x43
 #define DEVHOOKS_APP_BENCH_COPY_LINES 0x44
+#define DEVHOOKS_APP_BENCH_STILL 0x45
 
 void bench_init(void);
 void bench_restart(void);

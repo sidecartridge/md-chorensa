@@ -34,9 +34,10 @@ Standard-library Python 3 throughout.
 | Tool | What it does |
 | --- | --- |
 | `amiga_system.py` | Builds the Amiga system drive from the Workbench disk: the disk unpacked, and a startup-sequence that runs the test a run leaves on the second drive |
-| `amiga_run.py` | Runs the Amiga port headless in FS-UAE (`--frames N`, `--config a1200-030` or `a1200-8mb`), one folder per run: `command.txt`, `fs-uae.log`, `output.txt`, `WORK/` (the program and data it ran with), `checkpoints.bin`, `shots/` (screen dumps and PNGs), `result.txt` (PASS when the checkpoints match the port's reference, a shorter run against its start) |
+| `amiga_run.py` | Runs the Amiga port headless in FS-UAE (`--frames N`, `--config a1200-030` or `a1200-8mb`, `--program` another build of the port: one with denser screen dumps, say, kept with the user's copy), one folder per run: `command.txt`, `fs-uae.log`, `output.txt`, `WORK/` (the program and data it ran with), `checkpoints.bin`, `shots/` (screen dumps and PNGs), `result.txt` (PASS when the checkpoints match the port's reference, a shorter run against its start) |
 | `oracle.py` | The port's two formats: checkpoints (`text`, `compare`) and screen dumps (`png`); our builds write the same ones |
 | `hatari_run.py` | Runs the firmware in EmuMD's Hatari, headless and scripted, one folder per run: `command.txt`, `hatari.out` (Hatari's and the firmware's log), `shots/`, `sd/` (the emulated card), `result.txt` |
+| `quantise.py` | Sixteen colours of the ST's 512 for the original's frames, from the port's screen dumps: `stats` (the colours a frame and a stretch use, the entries that cycle), `sheet` (each frame under each scheme at the ST's pixel aspect, with a page), `clip` (consecutive frames side by side, played at 50 fps), `motion` (each scheme's error and the flicker it adds), `still` (one frame as the bench shows it on the ST: `tools/dev/swd.py still`). Its output is the game's: it stays outside the repository |
 | `recfg.py` | Reads `re.cfg` for the others |
 
 FS-UAE on macOS has no headless video driver (SDL's offscreen one gets no
@@ -70,6 +71,9 @@ documents each.
 
 ```sh
 ./amiga_run.py --frames 6000 --name oracle        # the whole attract demo, against the reference
+./amiga_run.py --program <a build of the port> --frames 6000  # e.g. one with denser dumps
+./quantise.py stats ~/chorensa/runs/<run>/WORK --segment title:0-650 --segment play:651-6000
+./quantise.py sheet ~/chorensa/runs/<run>/WORK --frames 700,4100 --segment play:651-6000 --out <dir>
 ./oracle.py png ~/chorensa/runs/<run>/shots/*.bin # screen dumps to PNG
 ./hatari_run.py --build --expect scripts/bench.exp --name bench
 ./hatari_run.py --machine st --expect scripts/bench.exp

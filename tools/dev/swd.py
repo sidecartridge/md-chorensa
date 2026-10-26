@@ -760,6 +760,43 @@ def cmd_key(args: argparse.Namespace) -> int:
     return 0 if fed == len(data) else 3
 
 
+def cmd_still(args: argparse.Namespace) -> int:
+    """A still picture on the ST's screen: the bench stops drawing
+    (bench_still 1) and publishes what the chunky buffer holds, with
+    benchStillPalette; this writes both. FILE: 256 x 256 bytes of colour
+    numbers, then 16 big-endian palette words (tools/re/quantise.py still)."""
+    elf = matching_elf(args.elf)
+    defines = include_defines()
+    still_id = defines.get("DEVHOOKS_APP_BENCH_STILL")
+    if still_id is None:
+        raise SwdError("no DEVHOOKS_APP_BENCH_STILL define in rp/src/include")
+    if args.off:
+        mailbox_request(elf, KIND_APP, still_id, [0])
+        print("still off: the test card again")
+        return 0
+    data = open(args.file, "rb").read()
+    pixels = defines["FB_CHUNKED_W"] * defines["FB_CHUNKED_H"]
+    if len(data) != pixels + 32:
+        raise SwdError(f"{args.file}: {len(data)} bytes, not {pixels} + 32")
+    sym = elf_symbols(elf, "fb_chunked_buffer", "benchStillPalette")
+    if len(sym) < 2:
+        raise SwdError(f"{os.path.basename(elf)} has no still mode (a bench build?)")
+    words = struct.unpack(">16H", data[pixels:])
+    mailbox_request(elf, KIND_APP, still_id, [1])
+    with tempfile.TemporaryDirectory() as tmp:
+        image = os.path.join(tmp, "image.bin")
+        with open(image, "wb") as f:
+            f.write(data[:pixels])
+        palette = os.path.join(tmp, "palette.bin")
+        with open(palette, "wb") as f:
+            f.write(struct.pack("<16H", *words))
+        openocd(f"targets {CORES[0]}",
+                f"load_image {image} 0x{sym['fb_chunked_buffer'][0]:08x} bin",
+                f"load_image {palette} 0x{sym['benchStillPalette'][0]:08x} bin")
+    print(f"still: {os.path.basename(args.file)}, palette " + " ".join(f"{w:03X}" for w in words))
+    return 0
+
+
 def cmd_app(args: argparse.Namespace) -> int:
     elf = matching_elf(args.elf)
     name = "DEVHOOKS_APP_" + args.name.upper()
@@ -1440,6 +1477,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("words", nargs="*", help="16-bit payload words")
     ap.add_argument("--elf")
     ap.set_defaults(func=cmd_app)
+
+    st = sub.add_parser("still", help="a still picture on the ST's screen (the bench)")
+    st.add_argument("file", nargs="?", help="256 x 256 colour numbers + 16 palette words")
+    st.add_argument("--off", action="store_true", help="back to the test card")
+    st.add_argument("--elf")
+    st.set_defaults(func=cmd_still)
 
     hp = sub.add_parser("heap", help="heap size, peak and free space")
     hp.add_argument("--elf")

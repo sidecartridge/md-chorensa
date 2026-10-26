@@ -196,7 +196,10 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
   off), `bench_copy_mode 0-2 [LINES]` (F7, F8), `bench_copy_lines 256|240` (F9: the lines the
   ST copies, the bottom 16 cut at 240; `fb_set_copy_lines()`), and F10 on the ST: the YM from
   its next boot, or the DMA chip again (`audio_prefer_ym()`: the ST family's sound path on an
-  STE). The ST can be reset from the host by writing the reset command to the sentinel
+  STE), `bench_still 0|1` (the bench stops drawing and publishes the chunky buffer with
+  `benchStillPalette`: `swd.py still FILE` writes both and turns it on, `--off` back to the card;
+  `tools/re/quantise.py still` makes the file). The ST can be reset from the host by writing the
+  reset command to the sentinel
   (`CART_CMD_RESET` as the ST reads it, `0x00010000`, at `0x20034000`): `userfw` cold-resets it a
   second later, so a mode that takes a boot (the output, the lines) can be measured without
   touching the machine, and a flash with `swd.py program` right after it comes up in time.

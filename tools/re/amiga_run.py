@@ -10,8 +10,12 @@ Each run is a folder <RUNS>/<date>-amiga-<config>[-name]/ with command.txt,
 fs-uae.log, output.txt (the program's own text), WORK/ (the drive the program
 ran from: its copy of the program and the data), the results, and result.txt.
 
+--program runs another build of the port than the one it ships (a build with
+denser screen dumps, say: kept with the user's copy, outside this repository).
+
 usage: amiga_run.py [--config a1200-030] [--frames 6000] [--name NAME]
-                    [--compare REFERENCE] [--music] [--show] [--timeout S]
+                    [--program PATH] [--compare REFERENCE] [--music] [--show]
+                    [--timeout S]
 """
 
 import argparse
@@ -41,6 +45,7 @@ def main():
     parser.add_argument("--config", default="a1200-030", choices=sorted(CONFIGS))
     parser.add_argument("--frames", type=int, default=6000)
     parser.add_argument("--name", default="")
+    parser.add_argument("--program", help="the port's program to run (default: the one it ships)")
     parser.add_argument("--compare", metavar="REFERENCE",
                         help="checkpoints to compare with (default: the port's own)")
     parser.add_argument("--music", action="store_true", help="copy MUSIC_DAT's streams too")
@@ -62,7 +67,7 @@ def main():
     os.makedirs(work)
 
     game = os.path.join(original, "binaries", "amiga")
-    shutil.copy(os.path.join(game, "sz2"), os.path.join(work, "program"))
+    shutil.copy(args.program or os.path.join(game, "sz2"), os.path.join(work, "program"))
     for data in sorted(glob.glob(os.path.join(game, "*_DAT"))):
         if os.path.basename(data) == "MUSIC_DAT":
             if args.music:

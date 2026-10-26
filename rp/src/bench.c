@@ -45,6 +45,12 @@ static const uint16_t s_palette[PALETTE_ENTRIES] = {
  * (also readable over SWD by symbol). */
 uint32_t benchFrames;
 uint32_t benchFramesPerSecond;
+/* The still mode (bench_still): the bench stops drawing and publishes what
+ * the chunky buffer holds, with this palette, every frame. A host tool
+ * (tools/dev/swd.py still) writes both over SWD: a picture to look at on the
+ * ST's own screen. */
+uint16_t benchStillPalette[PALETTE_ENTRIES];
+static bool s_still;
 static uint32_t s_second_start_us;
 static uint32_t s_second_frames;
 
@@ -206,6 +212,13 @@ static void draw_test_card(void) {
 void bench_frame(void) {
   char line[48];
 
+  if (s_still) {
+    palette_set(benchStillPalette);
+    fb_publish();
+    benchFrames++;
+    return;
+  }
+
   font_set_font(&font8x8);
   font_set_border(0, 0);
   font_align(FONT_ALIGN_LEFT);
@@ -279,6 +292,11 @@ uint32_t bench_devhook(uint16_t commandId, const uint16_t *payload,
       return 1;
     case DEVHOOKS_APP_BENCH_TONE:
       set_tone(payloadSize >= 2u ? payload[0] : 0u);
+      return 1;
+    case DEVHOOKS_APP_BENCH_STILL:
+      s_still = payloadSize >= 2u && payload[0] != 0u;
+      if (!s_still) palette_set(s_palette);
+      DPRINTF("bench: still %s\n", s_still ? "on" : "off");
       return 1;
     case DEVHOOKS_APP_BENCH_COPY_LINES:
       if (payloadSize < 2u) return 0;

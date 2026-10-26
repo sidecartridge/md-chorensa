@@ -106,15 +106,23 @@ def write_png(path, width, height, rgb_rows):
         out.write(chunk(b"IEND", b""))
 
 
+def rgb_rows(width, lines, palette, pixels):
+    """Rows of 8-bit RGB for indexed pixels: each channel through a
+    translation table, then interleaved (no Python loop per pixel)."""
+    tables = [bytes(palette[i][c] for i in range(256)) for c in range(3)]
+    rows = []
+    for y in range(lines):
+        line = pixels[y * width:(y + 1) * width]
+        row = bytearray(3 * width)
+        for c in range(3):
+            row[c::3] = line.translate(tables[c])
+        rows.append(row)
+    return rows
+
+
 def screen_to_png(path, out_dir=None):
     width, lines, _, palette, pixels = read_screen(path)
-    rows = []
-
-    for y in range(lines):
-        row = bytearray()
-        for index in pixels[y * width:(y + 1) * width]:
-            row += bytes(palette[index])
-        rows.append(row)
+    rows = rgb_rows(width, lines, palette, pixels)
 
     base = os.path.splitext(os.path.basename(path))[0] + ".png"
     target = os.path.join(out_dir or os.path.dirname(path), base)
