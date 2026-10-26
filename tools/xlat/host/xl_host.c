@@ -66,27 +66,45 @@ static uint32_t s_effect_end_tick;
 static uint32_t s_trace[TRACE_RING][3]; /* kind (0 enter, 1 return), address, A7 or target */
 static uint32_t s_trace_next;
 
-/* The functions entered: per entry the calls and the first and last frame
- * (coverage.txt at the end). */
+/* The functions entered: per entry the calls, the first and last frame, and
+ * the phases it ran in (coverage.txt at the end). Phases: XL_PHASES, a list
+ * of entries in hex (the game's stage routines); the phase is the one
+ * entered last, 0 before any. */
 #define COVERAGE_SLOTS 4096u
-static uint32_t s_coverage[COVERAGE_SLOTS][4]; /* entry + 1, calls, first, last */
+#define PHASES 31
+static uint32_t s_coverage[COVERAGE_SLOTS][5]; /* entry + 1, calls, first, last, phases */
+static uint32_t s_phase_entries[PHASES], s_phase_count, s_phase;
+
+static void read_phases(void) {
+  const char *p = getenv("XL_PHASES");
+  while (p && *p && s_phase_count < PHASES) {
+    char *end;
+    uint32_t a = (uint32_t)strtoul(p, &end, 16);
+    if (end == p) break;
+    s_phase_entries[s_phase_count++] = a;
+    p = *end ? end + 1 : end;
+  }
+}
 
 static void write_coverage(const char *out_dir) {
   char path[1024];
   snprintf(path, sizeof path, "%s/coverage.txt", out_dir);
   FILE *f = fopen(path, "w");
   if (f == NULL) return;
-  fprintf(f, "# entry calls first-frame last-frame\n");
+  fprintf(f, "# entry calls first-frame last-frame phases (bit n: phase n, XL_PHASES)\n");
   for (uint32_t k = 0; k < COVERAGE_SLOTS; k++) {
     if (s_coverage[k][0]) {
-      fprintf(f, "%06X %u %u %u\n", s_coverage[k][0] - 1, s_coverage[k][1], s_coverage[k][2],
-              s_coverage[k][3]);
+      fprintf(f, "%06X %u %u %u %08X\n", s_coverage[k][0] - 1, s_coverage[k][1], s_coverage[k][2],
+              s_coverage[k][3], s_coverage[k][4]);
     }
   }
   fclose(f);
 }
 
 void xl_trace_enter(uint32_t entry) {
+  for (uint32_t n = 0; n < s_phase_count; n++) {
+    if (s_phase_entries[n] == entry) s_phase = n + 1;
+  }
   uint32_t k = (entry * 2654435761u) >> 20;
   while (s_coverage[k][0] && s_coverage[k][0] != entry + 1) k = (k + 1) % COVERAGE_SLOTS;
   if (s_coverage[k][0] == 0) {
@@ -95,6 +113,7 @@ void xl_trace_enter(uint32_t entry) {
   }
   s_coverage[k][1]++;
   s_coverage[k][3] = s_frame_count;
+  s_coverage[k][4] |= 1u << s_phase;
   uint32_t *t = s_trace[s_trace_next++ % TRACE_RING];
   t[0] = 0;
   t[1] = entry;
@@ -1035,6 +1054,9 @@ int main(int argc, char **argv) {
   A(7) = XL_NEW_STACK;
   xl.sr_high = 0x20; /* supervisor */
 
+#ifdef XL_TRACE
+  read_phases();
+#endif
   uint32_t start = XL_ENTRY;
   if (resume_path) start = read_snapshot(resume_path);
 
