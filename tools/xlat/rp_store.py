@@ -19,7 +19,9 @@ sd-put), and the firmware copies them into the store.
    their regions' addresses: the common image against the firmware's
    symbols, the stage's against the firmware's and the common image's.
 5. The first stage's art (palette_fit.py, rp_art.py) in its image.
-6. The headers' size and CRC, and the files.
+6. The headers' size and CRC, and the files; beside them EFFECTS.SE8, the
+   effects the host decoded (the snapshot run's effects.bin), which the RP
+   plays from the card.
 
 Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
@@ -329,6 +331,8 @@ def main():
             f.write(data)
         print(f"{name}: {len(data)} bytes, CRC {struct.unpack_from('<I', data, CRC_OFFSET)[0]:08X}, "
               f"for {fw_id}")
+    shutil.copyfile(os.path.join(snap, "effects.bin"), os.path.join(args.out, "EFFECTS.SE8"))
+    print(f"EFFECTS.SE8: {os.path.getsize(os.path.join(args.out, 'EFFECTS.SE8'))} bytes")
 
 
 if __name__ == "__main__":

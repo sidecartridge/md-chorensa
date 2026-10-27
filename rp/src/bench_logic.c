@@ -399,6 +399,9 @@ static const uint32_t k_adpcm_rates_hz100[5] = {4000000u * 100u / 1024u, 4000000
                                                 8000000u * 100u / 1024u, 8000000u * 100u / 768u,
                                                 8000000u * 100u / 512u};
 
+static void effect_start(uint32_t address, uint32_t bytes, uint32_t mode);
+static void effect_stop(void);
+
 static void iocs(uint32_t pc) {
   switch (D(0) & 0xFFu) {
     case 0x04: /* _BITSNS: no key held */
@@ -407,12 +410,13 @@ static void iocs(uint32_t pc) {
     case 0x3B: /* _JOYGET: nothing pressed, but to the player's reads */
       D(0) = s_live_read ? (0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu)) : 0xFFFFFFFFu;
       return;
-    case 0x60: { /* _ADPCMOUT */
+    case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
       if (s_samples_decoded && channels && (length >> 1)) {
         uint32_t rate = (D(1) & 0xFFFFu) >> 8;
         if (rate > 4) rate = 4;
         s_effect_end_tick = length * FRAME_TIMER_HZ100 / k_adpcm_rates_hz100[rate] + 1u + s_total_vbl;
+        if (s_playing) effect_start(A(1) & 0xFFFFFFu, length, D(1) & 0xFFFFu);
       }
       D(0) = 0;
       return;
@@ -421,7 +425,10 @@ static void iocs(uint32_t pc) {
       D(0) = (s_effect_end_tick && s_total_vbl < s_effect_end_tick) ? 2u : 0u;
       return;
     case 0x67: /* _ADPCMMOD */
-      if (D(1) == 0) s_effect_end_tick = 0;
+      if (D(1) == 0) {
+        s_effect_end_tick = 0;
+        effect_stop();
+      }
       D(0) = 0;
       return;
     case 0x81: /* _B_SUPER */
@@ -463,6 +470,93 @@ static struct {
 } s_song = {.transferred = NO_SONG};
 
 static void song_samples(int8_t *buf, uint32_t samples);
+static uint32_t s_out_rate; /* the rate the PCM callback was given, in Hz */
+
+/* The effects: _ADPCMOUT plays a sample of the bank the host decoded
+ * (tools/xlat/host/xl_host.c's effects.bin, EFFECTS.SE8 in the app's folder
+ * on the card: 'CRSE', the address the game's table points from, the bytes,
+ * then signed 8-bit samples), one at a time, a start replacing the one
+ * playing (the game decides by priority, PLAY_PCM_SAMPLE), _ADPCMMOD 0
+ * stopping it. Read from the card as the song is, a sector at a time at the
+ * file's sector boundaries (FatFs reads those straight into the chunk,
+ * leaving the volume's buffer, which the song's reads share, alone), and
+ * added to the song, stepped from its ADPCM rate to the callback's, the sum
+ * saturated. */
+#define EFFECTS_HEADER 16u
+#define EFFECT_CHUNK 512u /* a sector */
+static FIL s_effects_file;
+static struct {
+  int open;
+  uint32_t base, size;
+  uint32_t at, end;              /* the playing effect's bytes in the bank; at >= end: none */
+  uint32_t frac, rate_hz100;     /* the fraction past `at` (16 bits), its ADPCM rate */
+  uint32_t chunk_at, chunk_len;  /* the file's bytes in `chunk`: from offset chunk_at */
+  int8_t chunk[EFFECT_CHUNK];
+} s_fx;
+
+static void effects_open(void) {
+  char path[PATH_BYTES];
+  uint8_t head[EFFECTS_HEADER];
+  UINT got = 0;
+  s_fx.open = 0;
+  s_fx.at = s_fx.end = 0;
+  s_fx.chunk_len = 0;
+  card_path(path, "EFFECTS.SE8");
+  if (f_open(&s_effects_file, path, FA_READ) != FR_OK) return;
+  if (f_read(&s_effects_file, head, sizeof head, &got) != FR_OK || got != sizeof head ||
+      memcmp(head, "CRSE", 4) != 0) {
+    f_close(&s_effects_file);
+    return;
+  }
+  s_fx.base = (uint32_t)head[4] | (uint32_t)head[5] << 8 | (uint32_t)head[6] << 16 |
+              (uint32_t)head[7] << 24;
+  s_fx.size = (uint32_t)head[8] | (uint32_t)head[9] << 8 | (uint32_t)head[10] << 16 |
+              (uint32_t)head[11] << 24;
+  s_fx.open = 1;
+}
+
+static void effects_close(void) {
+  if (s_fx.open) f_close(&s_effects_file);
+  s_fx.open = 0;
+}
+
+static void effect_start(uint32_t address, uint32_t bytes, uint32_t mode) {
+  uint32_t rate = mode >> 8;
+  if (!s_fx.open || address < s_fx.base || address - s_fx.base >= s_fx.size) return;
+  s_fx.at = address - s_fx.base;
+  s_fx.end = s_fx.at + bytes < s_fx.size ? s_fx.at + bytes : s_fx.size;
+  s_fx.frac = 0;
+  s_fx.rate_hz100 = k_adpcm_rates_hz100[rate > 4u ? 4u : rate];
+}
+
+static void effect_stop(void) { s_fx.end = s_fx.at; }
+
+/* Add the playing effect to `samples` of the song. */
+static void effect_mix(int8_t *buf, uint32_t samples) {
+  if (s_fx.at >= s_fx.end || s_out_rate == 0) return;
+  uint32_t step = (uint32_t)(((uint64_t)s_fx.rate_hz100 << 16) / (s_out_rate * 100u));
+  for (uint32_t k = 0; k < samples && s_fx.at < s_fx.end; k++) {
+    uint32_t file_at = EFFECTS_HEADER + s_fx.at;
+    if (file_at < s_fx.chunk_at || file_at - s_fx.chunk_at >= s_fx.chunk_len) {
+      uint32_t sector = file_at & ~(EFFECT_CHUNK - 1u);
+      UINT got = 0;
+      if ((f_tell(&s_effects_file) != sector && f_lseek(&s_effects_file, sector) != FR_OK) ||
+          f_read(&s_effects_file, s_fx.chunk, EFFECT_CHUNK, &got) != FR_OK ||
+          sector + got <= file_at) {
+        s_fx.end = s_fx.at;
+        s_fx.chunk_len = 0;
+        break;
+      }
+      s_fx.chunk_at = sector;
+      s_fx.chunk_len = got;
+    }
+    int32_t m = (int32_t)buf[k] + s_fx.chunk[file_at - s_fx.chunk_at];
+    buf[k] = (int8_t)(m > 127 ? 127 : m < -128 ? -128 : m);
+    s_fx.frac += step;
+    s_fx.at += s_fx.frac >> 16;
+    s_fx.frac &= 0xFFFFu;
+  }
+}
 
 static void song_stop(void) {
   s_song.playing = 0;
@@ -506,7 +600,8 @@ static void song_play(uint32_t index, uint32_t frames) {
   f_lseek(&s_song_file, SONG_HEADER + s_song.pos);
   s_song.fade_length = 0;
   s_song.playing = 1;
-  audio_set_pcm_callback(song_samples, s_song.rate);
+  s_out_rate = s_song.rate;
+  audio_set_pcm_callback(song_samples, s_out_rate);
 }
 
 /* The template's PCM output asks for `samples` (from audio_render_frame). */
@@ -545,6 +640,7 @@ static void song_samples(int8_t *buf, uint32_t samples) {
     s_song.fade_at += done;
     if (s_song.fade_at >= s_song.fade_length) song_stop();
   }
+  effect_mix(buf, samples);
 }
 
 /* MCDRV's calls the game makes: d0.l the function, d1.l, a0. */
@@ -686,7 +782,12 @@ static void run(int drawn) {
   }
   uint32_t begin = time_us_32();
   s_playing = drawn;
-  if (drawn) audio_set_pcm_callback(song_samples, AUDIO_DMA_RATE_HZ);
+  if (drawn) {
+    /* The output's rate until a song gives its own: the songs' (ST8 or YM8). */
+    s_out_rate = audio_uses_dma() ? AUDIO_DMA_RATE_HZ : PROFILE_YM_RATE_HZ;
+    audio_set_pcm_callback(song_samples, s_out_rate);
+    effects_open();
+  }
   do {
     restore();
     benchLogicResult.first_frame = s_frame_count;
@@ -701,6 +802,7 @@ static void run(int drawn) {
   } while (drawn && benchPlay && benchLogicResult.state == BENCH_LOGIC_DONE);
   if (drawn) {
     song_stop();
+    effects_close();
     audio_set_pcm_callback(NULL, AUDIO_DMA_RATE_HZ);
   }
   s_playing = 0;

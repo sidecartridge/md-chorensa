@@ -23,6 +23,7 @@
  *             entry and the palettes (write_entries)
  */
 #include <errno.h>
+#include <math.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +78,7 @@ static uint8_t *s_checkpoints;
 static uint32_t s_checkpoint_count;
 static int s_samples_decoded;
 static uint32_t s_effect_end_tick;
+static FILE *s_effects_log; /* the effects' starts and stops (XL_MUSIC) */
 
 #ifdef XL_TRACE
 #define TRACE_RING 64
@@ -438,12 +440,63 @@ void xl_patch_sincos(void) {
 
 /* The samples are loaded: the port decodes them and rewrites the game's
  * table, each file's entries pointing at its decoded copy, twice as long
- * (bytes of PCM for bytes of ADPCM). The effects' timing uses those lengths. */
+ * (bytes of PCM for bytes of ADPCM). The effects' timing uses those lengths.
+ * The decoded copies, signed 8-bit, laid out from DECODED_SAMPLES as the
+ * table now points at them, go to effects.bin in the output folder: 'CRSE',
+ * that base and the bytes (u32, little endian), 4 bytes of zero, then the
+ * samples. The RP plays an _ADPCMOUT's address from there. */
 #define SAMPLE_ENTRIES 256
 #define SAMPLE_ENTRY_SIZE 16
 #define SE_LENGTH 2
 #define SE_ADDRESS 6
 #define DECODED_SAMPLES 0x400000u
+#define DECODED_MAX 0x100000u
+#define EFFECTS_HEADER 16u
+static int8_t s_decoded[DECODED_MAX];
+
+/* The MSM6258's ADPCM, as MAME's okim6258 decodes it: a 12-bit signal
+ * stepped by a table of 49 steps (16 x 1.1^n), the low nibble of each byte
+ * first, from signal -2 and step 0 as each playback starts; the top 8 bits
+ * kept. */
+static void adpcm_decode(uint32_t from, uint32_t bytes, int8_t *out) {
+  static const int k_shift[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+  static int diff[49 * 16];
+  if (diff[16] == 0) {
+    for (int step = 0; step < 49; step++) {
+      int v = (int)floor(16.0 * pow(1.1, step));
+      for (int nib = 0; nib < 16; nib++) {
+        int d = v / 8 + ((nib & 4) ? v : 0) + ((nib & 2) ? v / 2 : 0) + ((nib & 1) ? v / 4 : 0);
+        diff[step * 16 + nib] = (nib & 8) ? -d : d;
+      }
+    }
+  }
+  int signal = -2, step = 0;
+  for (uint32_t k = 0; k < 2u * bytes; k++) {
+    int nib = (rd8(from + k / 2u) >> ((k & 1u) ? 4 : 0)) & 15;
+    signal += diff[step * 16 + nib];
+    if (signal > 2047) signal = 2047;
+    if (signal < -2048) signal = -2048;
+    step += k_shift[nib & 7];
+    if (step < 0) step = 0;
+    if (step > 48) step = 48;
+    out[k] = (int8_t)(signal >> 4);
+  }
+}
+
+static void write_effects(uint32_t bytes) {
+  char path[1024];
+  snprintf(path, sizeof path, "%s/effects.bin", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) return;
+  uint8_t head[EFFECTS_HEADER] = {'C', 'R', 'S', 'E'};
+  for (int b = 0; b < 4; b++) {
+    head[4 + b] = (uint8_t)(DECODED_SAMPLES >> (8 * b));
+    head[8 + b] = (uint8_t)(bytes >> (8 * b));
+  }
+  fwrite(head, 1, sizeof head, f);
+  fwrite(s_decoded, 1, bytes, f);
+  fclose(f);
+}
 
 void xl_patch_samples_loaded(void) {
   uint32_t original[SAMPLE_ENTRIES];
@@ -465,11 +518,14 @@ void xl_patch_samples_loaded(void) {
       continue;
     }
     uint32_t length = rd32(at + SE_LENGTH) * 2u;
+    if (next - DECODED_SAMPLES + length > DECODED_MAX) xl_fatal("the decoded samples overflow", 0);
+    adpcm_decode(original[e], length / 2u, s_decoded + (next - DECODED_SAMPLES));
     wr32(at + SE_LENGTH, length);
     wr32(at + SE_ADDRESS, next);
     next += length;
   }
   s_samples_decoded = 1;
+  if (s_out_dir) write_effects(next - DECODED_SAMPLES);
 }
 
 /* The host plays the demo as recorded, unless XL_LIVE_FROM names a frame:
@@ -533,8 +589,12 @@ static void iocs(void) {
     case 0x3B: /* _JOYGET: nothing pressed (active low), or the scripted player */
       D(0) = s_live_read ? scripted_stick() : 0xFFFFFFFFu;
       return;
-    case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes */
+    case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
+      if (s_effects_log) {
+        fprintf(s_effects_log, "%u out %06X %u %04X\n", s_frame_count, A(1) & 0xFFFFFFu, length,
+                D(1) & 0xFFFFu);
+      }
       if (s_samples_decoded && channels && (length >> 1)) {
         uint32_t rate = (D(1) & 0xFFFFu) >> 8;
         if (rate > 4) rate = 4;
@@ -548,6 +608,7 @@ static void iocs(void) {
       return;
     case 0x67: /* _ADPCMMOD: 0 stops */
       if (D(1) == 0) s_effect_end_tick = 0;
+      if (D(1) == 0 && s_effects_log) fprintf(s_effects_log, "%u stop\n", s_frame_count);
       D(0) = 0;
       return;
     case 0x7F: /* _ONTIME: fixed, so the replays stay deterministic */
@@ -634,6 +695,9 @@ static void mcdrv_install(void) {
   snprintf(path, sizeof path, "%s/music.txt", s_out_dir);
   s_music_log = fopen(path, "w");
   if (s_music_log) fprintf(s_music_log, "# frame call song argument\n");
+  snprintf(path, sizeof path, "%s/effects.txt", s_out_dir);
+  s_effects_log = fopen(path, "w");
+  if (s_effects_log) fprintf(s_effects_log, "# frame out address bytes mode | frame stop\n");
 }
 
 static void mcdrv(void) {
@@ -1326,6 +1390,7 @@ int main(int argc, char **argv) {
   write_checkpoints();
   write_pattern_use();
   if (s_music_log) fclose(s_music_log);
+  if (s_effects_log) fclose(s_effects_log);
   MEMMAP_PAUSE(1);
   write_graphics();
   write_memmap(s_out_dir);

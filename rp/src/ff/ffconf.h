@@ -207,7 +207,11 @@ function needs to implement /  GET_SECTOR_SIZE command. */
 / System Configurations
 /---------------------------------------------------------------------------*/
 
-#if defined(_DEBUG) && (_DEBUG != 0)
+/* Tiny in debug builds, and in the translated game's store builds (XL_STORE),
+   where the song and the effects stream from two files at once and RAM is
+   short: their FILs share the volume's sector buffer instead of 512 bytes
+   each. */
+#if (defined(_DEBUG) && (_DEBUG != 0)) || defined(XL_STORE)
 #define FF_FS_TINY 1
 #else
 #define FF_FS_TINY 0
