@@ -102,6 +102,13 @@ void sdcard_changeSpiSpeed(int baudRateKbits);
 void sdcard_setSpiSpeedSettings();
 
 /**
+ * @brief The clock the card's SPI really runs at, in Hz (the peripheral
+ *        divides its own clock, so it can differ from the one asked for);
+ *        0 when there is no card interface.
+ */
+uint32_t sdcard_getSpiHz(void);
+
+/**
  * @brief Retrieve SD card storage information.
  *
  * Obtains details regarding the SD card by determining both total capacity and

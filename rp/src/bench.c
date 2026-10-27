@@ -267,8 +267,8 @@ void bench_frame(void) {
       spi_set_baudrate(card->spi_if_p->spi->hw_inst, khz * SDCARD_KILOBAUD);
       benchSetSdKhz = 0;
     }
-    benchSdHz = spi_get_baudrate(card->spi_if_p->spi->hw_inst);
   }
+  benchSdHz = sdcard_getSpiHz();
   if (bench_logic_poll()) palette_set(s_palette); /* the game had the screen */
   if (bench_logic_holds_screen()) return;           /* the framebuffer is the card's buffer */
   bench_scene_poll();

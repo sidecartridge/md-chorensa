@@ -131,6 +131,16 @@ void sdcard_changeSpiSpeed(int baudRateKbits) {
   }
 }
 
+uint32_t sdcard_getSpiHz(void) {
+  size_t sdNum = sd_get_num();
+  sd_card_t *sdCard = sdNum > 0 ? sd_get_by_num(sdNum - 1) : NULL;
+  if ((sdCard == NULL) || (sdCard->spi_if_p == NULL) ||
+      (sdCard->spi_if_p->spi == NULL)) {
+    return 0;
+  }
+  return spi_get_baudrate(sdCard->spi_if_p->spi->hw_inst);
+}
+
 void sdcard_setSpiSpeedSettings() {
   // Get the SPI speed from the configuration
   SettingsConfigEntry *spiSpeed =

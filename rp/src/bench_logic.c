@@ -30,10 +30,13 @@
 #include "constants.h"
 #include "fb.h"
 #include "fb_chunked.h"
+#include "fb_font.h"
 #include "ff.h"
 #include "ikbd.h"
 #include "select.h"
 #include "palette.h"
+#include "sdcard.h"
+#include "st_session.h"
 #include "store.h"
 #include "xl.h"
 #include "xl_render.h"
@@ -837,9 +840,64 @@ static void serve_card(void) {
 
 bool bench_logic_holds_screen(void) { return benchSd.held != 0; }
 
+/* The game streams its music and effects from the card beside the frames:
+ * on a card whose SPI runs slower than this it does not start (measured, a
+ * good card holds 50 frames a second down to 3 MHz; this leaves room for
+ * poor ones). */
+#define PLAY_MIN_SD_HZ 8000000u
+
+extern const struct FB_FONT font8x8; /* fb.c */
+
+static void say(int y, unsigned color, const char *text) {
+  font_set_color(color);
+  font_move(16u, (unsigned)y);
+  font_print(text);
+}
+
+/* The card is too slow: the ST says so, and at a key press the RP restarts
+ * into Booster, where the user raises the SD card's speed. The host can
+ * stop the play over SWD instead (benchPlay 0), to leave without Booster. */
+static void refuse_slow_card(uint32_t hz) {
+  static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [14] = 0x770,
+                                                      [15] = 0x777};
+  char line[40];
+  benchLogicResult.state = BENCH_LOGIC_ERROR;
+  snprintf(benchLogicResult.error, sizeof benchLogicResult.error,
+           "the card's clock is %lu kHz, under %lu", (unsigned long)(hz / 1000u),
+           (unsigned long)(PLAY_MIN_SD_HZ / 1000u));
+  palette_set(k_colours);
+  fb_chunked_clear(0);
+  font_set_font(&font8x8);
+  say(48, 14, "MICROSD CARD TOO SLOW");
+  snprintf(line, sizeof line, "THE CARD RUNS AT %lu.%lu MHZ.", (unsigned long)(hz / 1000000u),
+           (unsigned long)(hz / 100000u % 10u));
+  say(80, 15, line);
+  say(92, 15, "THE GAME NEEDS 8 MHZ OR MORE.");
+  say(124, 15, "PRESS A KEY: BOOSTER STARTS.");
+  say(136, 15, "IN BOOSTER, SET THE SD CARD");
+  say(148, 15, "SPEED TO 8 MHZ OR MORE,");
+  say(160, 15, "OR USE A FASTER CARD.");
+  fb_publish();
+  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+  }
+  while (benchPlay) {
+    fb_pump_rom3();
+    ikbd_pump();
+    select_poll();
+    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
+  }
+}
+
 /* Play until the host stops it or the run fails (then not again until the
  * host asks: benchPlay back to 1). */
 static void play(void) {
+  uint32_t hz = sdcard_getSpiHz();
+  if (hz < PLAY_MIN_SD_HZ) {
+    refuse_slow_card(hz);
+    return;
+  }
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
   run(1);
   ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
