@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <math.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,7 +123,10 @@ static void write_coverage(const char *out_dir) {
 
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
-    if (s_phase_entries[n] == entry) s_phase = n + 1;
+    if (s_phase_entries[n] == entry && s_phase != n + 1) {
+      s_phase = n + 1;
+      printf("xl: phase %u from frame %u, score %u\n", s_phase, s_frame_count, rd32(XL_PLAYER_SCORE));
+    }
   }
   uint32_t k = (entry * 2654435761u) >> 20;
   while (s_coverage[k][0] && s_coverage[k][0] != entry + 1) k = (k + 1) % COVERAGE_SLOTS;
@@ -318,6 +322,10 @@ static void render_picture(void) {
 
 static void finish(int reason);
 
+static void keep_invincible(void);
+static void save_replay(void);
+
+/* The game's frame ends (either of its frame waits). */
 static void frame_wait_end(void) {
   s_frame_count++;
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) {
@@ -333,6 +341,19 @@ static void frame_wait_end(void) {
     c[12] = (uint8_t)(s_last_sprite_count >> 8);
     c[13] = (uint8_t)s_last_sprite_count;
     memcpy(c + 16, xl_mem + XL_PLAYER_INFO_STRUCT, 14);
+  }
+  keep_invincible();
+  save_replay();
+  /* XL_SPRITE_FRAMES=A-B: the sprites drawn each frame from A to B (as the
+   * port's measure.bin records them), to place a screen that differs. */
+  static long sprite_from = -2, sprite_to;
+  if (sprite_from == -2) {
+    const char *v = getenv("XL_SPRITE_FRAMES");
+    sprite_from = -1;
+    if (v && sscanf(v, "%ld-%ld", &sprite_from, &sprite_to) != 2) sprite_from = -1;
+  }
+  if (sprite_from >= 0 && s_frame_count >= (uint32_t)sprite_from && s_frame_count <= (uint32_t)sprite_to) {
+    printf("xl: frame %u: %u sprites\n", s_frame_count, s_last_sprite_count);
   }
   if (s_frame_limit && s_frame_count >= s_frame_limit) finish(1);
 }
@@ -397,9 +418,48 @@ static void rp_take_sprites(uint32_t count) {
 }
 #endif
 
+/* XL_SPRITE_DUMP=A-B: each sprite list the game hands XSP_OUT in frames A
+ * to B (the frames completed so far, as the port's frame_count), to
+ * sprites.bin: the entries (u32), then each as the port's harness writes it
+ * (port_build.py --dump-sprites): the frame (u32), the sprites (u32) and 512
+ * slots of 8 bytes, big endian. Up to 16 lists. */
+#define SPRITE_DUMP_ENTRIES 16u
+#define SPRITE_DUMP_ENTRY (8u + 512u * 8u)
+static void dump_sprite_list(uint32_t count) {
+  static long from = -2, to;
+  static uint8_t dump[SPRITE_DUMP_ENTRIES][SPRITE_DUMP_ENTRY];
+  static uint32_t entries;
+  if (from == -2) {
+    const char *v = getenv("XL_SPRITE_DUMP");
+    from = -1;
+    if (v && sscanf(v, "%ld-%ld", &from, &to) != 2) from = -1;
+  }
+  if (from < 0 || s_frame_count < (uint32_t)from || s_frame_count > (uint32_t)to ||
+      entries == SPRITE_DUMP_ENTRIES) {
+    return;
+  }
+  uint8_t *e = dump[entries++];
+  memset(e, 0, SPRITE_DUMP_ENTRY);
+  for (int b = 0; b < 4; b++) {
+    e[b] = (uint8_t)(s_frame_count >> (24 - 8 * b));
+    e[4 + b] = (uint8_t)(count >> (24 - 8 * b));
+  }
+  memcpy(e + 8, xl_mem + XL_SPRITE_DATA_TABLE, count * 8u);
+  char path[1024];
+  snprintf(path, sizeof path, "%s/sprites.bin", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) return;
+  uint8_t n[4] = {(uint8_t)(entries >> 24), (uint8_t)(entries >> 16), (uint8_t)(entries >> 8),
+                  (uint8_t)entries};
+  fwrite(n, 1, 4, f);
+  fwrite(dump, SPRITE_DUMP_ENTRY, entries, f);
+  fclose(f);
+}
+
 void xl_patch_xsp_out(void) {
   uint32_t count = (rd32(XL_CURRENT_SPRITE_DATA_ENTRY) - XL_SPRITE_DATA_TABLE) / 8u;
   if (count > MAXIMUM_SPRITES) count = MAXIMUM_SPRITES;
+  dump_sprite_list(count > 512u ? 512u : count);
   s_frame_sprite_count = count;
   s_sprite_list_count = count;
   memcpy(s_sprites, xl_mem + XL_SPRITE_DATA_TABLE, count * 8u);
@@ -554,6 +614,98 @@ static uint32_t scripted_stick(void) {
   return 0xFFFFFF00u | (~closed & 0xFFu);
 }
 
+/* XL_INPUT names a script that drives every _JOYGET of stick 1, the menus'
+ * as the game's: lines "FRAME MASK", the stick from that frame on, MASK the
+ * bits held (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B;
+ * the game reads them active low), or "auto" for the scripted player.
+ * Lines in frame order; '#' starts a comment. */
+#define INPUT_STEPS 256
+#define INPUT_AUTO 0xFFFFFFFFu
+static struct {
+  uint32_t frame, mask;
+} s_input[INPUT_STEPS];
+static int s_input_steps = -1; /* -1: not read yet */
+
+static int input_scripted(uint32_t *joyget) {
+  if (s_input_steps < 0) {
+    s_input_steps = 0;
+    const char *path = getenv("XL_INPUT");
+    FILE *f = path ? fopen(path, "r") : NULL;
+    if (path && !f) xl_fatal("XL_INPUT: no such script", 0);
+    char line[128];
+    while (f && fgets(line, sizeof line, f) && s_input_steps < INPUT_STEPS) {
+      char *hash = strchr(line, '#');
+      if (hash) *hash = 0;
+      char word[32];
+      unsigned frame;
+      if (sscanf(line, "%u %31s", &frame, word) != 2) continue;
+      s_input[s_input_steps].frame = frame;
+      s_input[s_input_steps].mask =
+          strcmp(word, "auto") == 0 ? INPUT_AUTO : (uint32_t)strtoul(word, NULL, 16) & 0xFFu;
+      s_input_steps++;
+    }
+    if (f) fclose(f);
+  }
+  if (s_input_steps == 0) return 0;
+  uint32_t mask = 0;
+  for (int k = 0; k < s_input_steps && s_input[k].frame <= s_frame_count; k++) mask = s_input[k].mask;
+  /* The game waits for the buttons to be released in loops with no frame
+   * wait (the game over's first, $23C18): a frame that reads the stick more
+   * than a frame's worth, the script lets go, as a player would (the port's
+   * scripted build does the same: tools/re/port_build.py --scripted). */
+  static uint32_t reads_frame = 0xFFFFFFFFu, reads;
+  reads = s_frame_count == reads_frame ? reads + 1u : 0u;
+  reads_frame = s_frame_count;
+  *joyget = mask == INPUT_AUTO ? scripted_stick() : (0xFFFFFF00u | (~mask & 0xFFu));
+  if (reads > 64u) *joyget |= 0x60u;
+  return 1;
+}
+
+/* XL_INVINCIBLE: the hidden menu's invincibility (muteki) on from the boot,
+ * set again whenever it reads 0 (the boot clears it once, before the main
+ * menu): as a build of the port with `addq.w #1,INVINCIBILITY_MODE` in place
+ * of that clear, so both replay a recording made with it the same way. */
+static void keep_invincible(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("XL_INVINCIBLE") != NULL;
+  if (on && rd16(XL_INVINCIBILITY_MODE) == 0) wr16(XL_INVINCIBILITY_MODE, 1);
+}
+
+/* XL_SAVE_REPLAY_AT names a frame: there the game's recording so far goes
+ * to replay.rep in the output folder, as SAVE_REPLAY_FILE writes it: the
+ * header (14 bytes), the directions' length and bytes from the buffer's
+ * start, the buttons' length and bytes up to its end (each length u32,
+ * big endian, at most the buffer's 128 KB). */
+#define REPLAY_BUFFER 0x20000u
+static void save_replay(void) {
+  static long at = -2;
+  if (at == -2) {
+    const char *v = getenv("XL_SAVE_REPLAY_AT");
+    at = v ? strtol(v, NULL, 10) : -1;
+  }
+  if (at < 0 || s_frame_count != (uint32_t)at) return;
+  uint32_t directions = rd32(XL_CURRENT_DEMO_RECORD_POINTER) - XL_DEMO_REPLAY_DATA + 1u;
+  uint32_t buttons = XL_DEMO_REPLAY_DATA + REPLAY_BUFFER - rd32(XL_CURRENT_DEMO_RECORD_END_POINTER);
+  if (directions > REPLAY_BUFFER) directions = REPLAY_BUFFER;
+  if (buttons > REPLAY_BUFFER) buttons = REPLAY_BUFFER;
+  char path[1024];
+  snprintf(path, sizeof path, "%s/replay.rep", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) xl_fatal("replay.rep: cannot write", 0);
+  for (uint32_t k = 0; k < 14u; k++) fputc(rd8(XL_DEMO_REPLAY_HEADER + k), f);
+  uint8_t be[4] = {(uint8_t)(directions >> 24), (uint8_t)(directions >> 16),
+                   (uint8_t)(directions >> 8), (uint8_t)directions};
+  fwrite(be, 1, 4, f);
+  for (uint32_t k = 0; k < directions; k++) fputc(rd8(XL_DEMO_REPLAY_DATA + k), f);
+  uint8_t be2[4] = {(uint8_t)(buttons >> 24), (uint8_t)(buttons >> 16), (uint8_t)(buttons >> 8),
+                    (uint8_t)buttons};
+  fwrite(be2, 1, 4, f);
+  for (uint32_t k = 0; k < buttons; k++) fputc(rd8(XL_DEMO_REPLAY_DATA + REPLAY_BUFFER - buttons + k), f);
+  fclose(f);
+  printf("xl: replay.rep at frame %u: %u bytes of directions, %u of buttons\n", s_frame_count,
+         directions, buttons);
+}
+
 /* --- IOCS (TRAP #15), as the port serves it ----------------------------- */
 
 static const uint32_t k_adpcm_rates_hz100[5] = {4000000u * 100u / 1024u, 4000000u * 100u / 768u,
@@ -586,9 +738,15 @@ static void iocs(void) {
       }
       return;
     }
-    case 0x3B: /* _JOYGET: nothing pressed (active low), or the scripted player */
+    case 0x3B: { /* _JOYGET: nothing pressed (active low), the script, or the scripted player */
+      uint32_t joyget;
+      if ((D(1) & 0xFFu) == 0 && input_scripted(&joyget)) {
+        D(0) = joyget;
+        return;
+      }
       D(0) = s_live_read ? scripted_stick() : 0xFFFFFFFFu;
       return;
+    }
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
       if (s_effects_log) {
@@ -1331,7 +1489,21 @@ static void write_graphics(void) {
   fclose(f);
 }
 
+/* Stopped from outside (a run that hangs: the game waiting on something the
+ * host does not serve): the coverage so far, so its last frames name the
+ * loop. */
+static void on_stop(int sig) {
+  (void)sig;
+#ifdef XL_TRACE
+  if (s_out_dir) write_coverage(s_out_dir);
+#endif
+  fprintf(stderr, "xl: stopped at frame %u\n", s_frame_count);
+  _exit(3);
+}
+
 int main(int argc, char **argv) {
+  signal(SIGTERM, on_stop);
+  signal(SIGINT, on_stop);
   if (argc < 4) {
     fprintf(stderr, "usage: %s DATA_DIR FRAMES OUT_DIR [--screens N]\n", argv[0]);
     return 2;
