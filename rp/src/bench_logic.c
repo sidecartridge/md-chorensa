@@ -55,6 +55,9 @@ extern const char release_build_id[]; /* build_id.c */
  * arena (rp_image.py points the stage's page table at both, by these
  * symbols; xl_store.h). */
 uint8_t xl_rp_ram[XL_STORE_RAM_BYTES] __attribute__((aligned(4)));
+/* The text plane in its layout (xl_store.h's XL_STORE_TEXT_*): the stage's
+ * page table points its pages into it. */
+uint8_t xl_rp_text[XL_STORE_TEXT_BYTES] __attribute__((aligned(4)));
 #define POOL_RAM_PAGES (XL_STORE_RAM_BYTES >> XL_PAGE_BITS)
 #define POOL_PAGES (POOL_RAM_PAGES + (XL_STORE_WINDOW_FREE_BYTES >> XL_PAGE_BITS))
 _Static_assert(XL_STORE_WINDOW_FREE == CART_APP_FREE_OFFSET &&
@@ -391,9 +394,7 @@ void xl_patch_xsp_out(void) {
   xl.c = 0;
 }
 
-void xl_patch_clear_text_planes(void) {
-  for (uint32_t a = 0xE00000u; a < 0xE80000u; a += 4) wr32(a, 0);
-}
+void xl_patch_clear_text_planes(void) { memset(xl_rp_text, 0, sizeof xl_rp_text); }
 
 void xl_patch_sincos(void) { xl_fatal("the sine tables load", GAME(SIN_COS_TABLES_START)); }
 void xl_patch_samples_loaded(void) { xl_fatal("the samples load", 0); }
@@ -733,6 +734,10 @@ static void restore(void) {
     memcpy(pool_page(k), s_stage->ram_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
   }
   memset(pool_page(s_stage->ram_pages), 0, 1u << XL_PAGE_BITS); /* the spare */
+  memset(xl_rp_text, 0, sizeof xl_rp_text);
+  for (uint32_t k = 0; k < s_stage->text_row_count; k++) {
+    memcpy(xl_rp_text + s_stage->text_rows[k], s_stage->text_init + 32u * k, 32u);
+  }
   const uint32_t *w = s_stage->state + 2;
   for (int k = 0; k < 8; k++) xl.d[k] = *w++;
   for (int k = 0; k < 8; k++) xl.a[k] = *w++;

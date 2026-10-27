@@ -27,8 +27,22 @@
 #define XL_STORE_WINDOW_FREE 0x5180u          /* CART_APP_FREE_OFFSET */
 #define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
 
+/* The text plane (four planes of 1024 lines, 128 bytes a line, at $E00000)
+ * in a layout of its own: the game shows it unscrolled, writes only its
+ * first 32 bytes a line (the screen's 256 pixels) and never reads it, so the
+ * runtime keeps the screen's lines' first 32 bytes only. Each page (two
+ * lines) points into a packed area: four pages to 256 bytes, page j of a
+ * plane at 32 * (j % 4) + 256 * (j / 4), its first line's 32 bytes there and
+ * its second line's 128 bytes on, so the pages' bytes past 32 a line overlap
+ * the next pages' (never written). The pages of the lines past the screen
+ * point at the spare page; the last page's overlap runs 96 bytes past the
+ * last plane (XL_STORE_TEXT_BYTES keeps them, so a stray write stays in it). */
+#define XL_STORE_TEXT_LINES 0x100u          /* the screen's lines */
+#define XL_STORE_TEXT_PLANE_BYTES 0x2000u   /* 256 lines of 32 bytes */
+#define XL_STORE_TEXT_BYTES 0x8060u         /* four planes and the overlap */
+
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 4u          /* 4: the songs */
+#define XL_STORE_VERSION 5u          /* 4: the songs; 5: the text plane's layout */
 #define XL_STORE_KIND_COMMON 0u      /* else the stage's number */
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
 
@@ -112,6 +126,11 @@ typedef struct {
   uint32_t song_playing;              /* a stage's snapshot: the song playing (in the
                                          common image's table), or 0xFFFFFFFF */
   uint32_t song_frames;               /* the frames it had played then */
+  /* A stage's snapshot: the text plane's rows (32 bytes, a line's shown
+   * part) that are not clear, the others clear. */
+  const uint16_t *text_rows;          /* each row's offset in the packed area */
+  const uint8_t *text_init;           /* their bytes, 32 a row */
+  uint32_t text_row_count;
 } xl_store_header_t;
 
 #endif /* XL_STORE_H */

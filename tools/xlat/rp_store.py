@@ -62,7 +62,7 @@ LIVE_FROM, LIVE_UNTIL = 1000, 2900
 STAGES = (0x2BA68, 0x2BBE4, 0x2C52E, 0x2D15C, 0x2DD78, 0x2F080, 0x2FBA0, 0x30D72, 0x320D2)
 FIRST_STAGE_PHASE = 2
 PHASE_FRAMES = 150000
-HEADER_SIZE = 144         # sizeof(xl_store_header_t)
+HEADER_SIZE = 156         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
           "SIN_COS_TABLES_START")  # xl_store.h's XL_LAYOUT_* order
@@ -223,6 +223,7 @@ def header_c(path, image, kind, firmware_id, entries, stage=None, layout=None, s
             f.write(f"  k_songs, {len(songs)}u, 0xFFFFFFFFu, 0,\n")
         elif stage:
             f.write(f"  0, 0, {stage['song']}u, {stage['song_frames']}u,\n")
+        f.write("  xl_rp_text_rows, xl_rp_text_init, XL_RP_TEXT_ROWS,\n" if stage else "")
         f.write("};\n")
 
 
