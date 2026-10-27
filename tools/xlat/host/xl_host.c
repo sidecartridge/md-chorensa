@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <math.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +81,10 @@ static int s_samples_decoded;
 static uint32_t s_effect_end_tick;
 static FILE *s_effects_log; /* the effects' starts and stops (XL_MUSIC) */
 
+/* The patterns the current phase's sprites drew (PATTERNS of them, below):
+ * counted at each phase change (XL_TRACE, XL_PHASES). */
+static uint8_t s_phase_patterns[2048];
+
 #ifdef XL_TRACE
 #define TRACE_RING 64
 static uint32_t s_trace[TRACE_RING][3]; /* kind (0 enter, 1 return), address, A7 or target */
@@ -120,9 +125,23 @@ static void write_coverage(const char *out_dir) {
   fclose(f);
 }
 
+#ifdef XL_MEMMAP
+static void memmap_phase_end(uint32_t phase);
+#endif
+
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
-    if (s_phase_entries[n] == entry) s_phase = n + 1;
+    if (s_phase_entries[n] == entry && s_phase != n + 1) {
+#ifdef XL_MEMMAP
+      memmap_phase_end(s_phase);
+#endif
+      s_phase = n + 1;
+      uint32_t patterns = 0;
+      for (uint32_t k = 0; k < sizeof s_phase_patterns; k++) patterns += s_phase_patterns[k];
+      memset(s_phase_patterns, 0, sizeof s_phase_patterns);
+      printf("xl: phase %u from frame %u, score %u (the phase before drew %u patterns)\n", s_phase,
+             s_frame_count, rd32(XL_PLAYER_SCORE), patterns);
+    }
   }
   uint32_t k = (entry * 2654435761u) >> 20;
   while (s_coverage[k][0] && s_coverage[k][0] != entry + 1) k = (k + 1) % COVERAGE_SLOTS;
@@ -228,6 +247,9 @@ void xl_hw_wr(uint32_t a, uint32_t v, int size) {
 #ifdef XL_MEMMAP
 #define BLOCKS (XL_MEMORY >> 8)
 static uint8_t *s_touched;
+/* Per page, in the current phase: 1 if a byte of it was read before the
+ * phase wrote it (the page's value comes from before the phase). */
+static uint8_t s_page_carried[XL_MEMORY >> 8];
 static uint32_t s_block_reads[BLOCKS], s_block_writes[BLOCKS];
 static uint32_t s_block_first[BLOCKS], s_block_last[BLOCKS];
 static int s_memmap_paused;
@@ -243,7 +265,11 @@ void xl_memmap_access(uint32_t a, int size, int write) {
     s_block_reads[block]++;
   }
   uint8_t flag = write == 0 ? 1u : write == 1 ? 2u : 4u;
-  for (int k = 0; k < size; k++) s_touched[(a + (uint32_t)k) & 0xFFFFFFu] |= flag;
+  for (int k = 0; k < size; k++) {
+    uint32_t b = (a + (uint32_t)k) & 0xFFFFFFu;
+    if (write == 0 && !(s_touched[b] & 6u)) s_page_carried[b >> 8] = 1;
+    s_touched[b] |= flag;
+  }
 }
 
 static void memmap_range(uint32_t a, uint32_t n, int write) {
@@ -273,6 +299,68 @@ static void write_memmap(const char *out_dir) {
   fclose(f);
 }
 #define MEMMAP_PAUSE(on) (s_memmap_paused = (on))
+
+/* With XL_PHASES too (a trace build): at each phase change and at the end,
+ * what the phase touched in pages of 256 bytes (the RP's, xl.h's
+ * XL_PAGE_BITS), to memmap_phases.txt, and the map starts over: per region
+ * (main memory, the graphics pages, the text plane, the rest) the pages it
+ * wrote (the code or the runtime for it) and the pages it only read. */
+static FILE *s_phase_map;
+static uint32_t s_phase_map_from;
+/* The pages any stage wrote (phases from the first stage on): what RAM the
+ * game's state needs across the stages, since it carries over. */
+static uint8_t s_written_since_play[XL_MEMORY >> 8];
+
+static void memmap_phase_end(uint32_t phase) {
+  static const struct {
+    uint32_t from, to;
+    const char *name;
+  } regions[] = {{0, 0xC00000u, "main"}, {0xC00000u, 0xE00000u, "gvram"},
+                 {0xE00000u, 0xE80000u, "text"}, {0xE80000u, XL_MEMORY, "io"}};
+  if (s_phase_map == NULL) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/memmap_phases.txt", s_out_dir);
+    s_phase_map = fopen(path, "w");
+    if (s_phase_map == NULL) return;
+    fprintf(s_phase_map, "# phase from-frame to-frame, then per region: name written-pages "
+                         "read-only-pages written-by-any-stage-so-far (256 bytes each)\n");
+  }
+  fprintf(s_phase_map, "%u %u %u", phase, s_phase_map_from, s_frame_count);
+  for (size_t r = 0; r < sizeof regions / sizeof regions[0]; r++) {
+    uint32_t written = 0, read = 0, since = 0;
+    for (uint32_t page = regions[r].from; page < regions[r].to; page += 256u) {
+      uint8_t flags = 0;
+      for (uint32_t k = 0; k < 256u; k++) flags |= s_touched[page + k];
+      if (flags & 6u) {
+        written++;
+        if (phase >= 2u) s_written_since_play[page >> 8] = 1; /* phase 2: the first stage */
+      } else if (flags & 1u) {
+        read++;
+      }
+      since += s_written_since_play[page >> 8];
+    }
+    fprintf(s_phase_map, " %s %u %u %u", regions[r].name, written, read, since);
+  }
+  fprintf(s_phase_map, "\n");
+  fflush(s_phase_map);
+  /* The phase's pages for a liveness pass (memmap_NN.bin, NN the phase's
+   * order): per page, bit 0 written, bit 1 read before written. */
+  static uint32_t sequence;
+  char name[1024];
+  snprintf(name, sizeof name, "%s/memmap_%02u.bin", s_out_dir, sequence++);
+  FILE *f = fopen(name, "wb");
+  if (f) {
+    for (uint32_t page = 0; page < (XL_MEMORY >> 8); page++) {
+      uint8_t flags = 0;
+      for (uint32_t k = 0; k < 256u; k++) flags |= s_touched[(page << 8) + k];
+      fputc(((flags & 6u) ? 1 : 0) | (s_page_carried[page] ? 2 : 0), f);
+    }
+    fclose(f);
+  }
+  memset(s_page_carried, 0, sizeof s_page_carried);
+  memset(s_touched, 0, XL_MEMORY);
+  s_phase_map_from = s_frame_count;
+}
 #else
 #define memmap_range(a, n, write) ((void)0)
 #define write_memmap(out_dir) ((void)0)
@@ -318,6 +406,10 @@ static void render_picture(void) {
 
 static void finish(int reason);
 
+static void keep_invincible(void);
+static void save_replay(void);
+
+/* The game's frame ends (either of its frame waits). */
 static void frame_wait_end(void) {
   s_frame_count++;
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) {
@@ -333,6 +425,19 @@ static void frame_wait_end(void) {
     c[12] = (uint8_t)(s_last_sprite_count >> 8);
     c[13] = (uint8_t)s_last_sprite_count;
     memcpy(c + 16, xl_mem + XL_PLAYER_INFO_STRUCT, 14);
+  }
+  keep_invincible();
+  save_replay();
+  /* XL_SPRITE_FRAMES=A-B: the sprites drawn each frame from A to B (as the
+   * port's measure.bin records them), to place a screen that differs. */
+  static long sprite_from = -2, sprite_to;
+  if (sprite_from == -2) {
+    const char *v = getenv("XL_SPRITE_FRAMES");
+    sprite_from = -1;
+    if (v && sscanf(v, "%ld-%ld", &sprite_from, &sprite_to) != 2) sprite_from = -1;
+  }
+  if (sprite_from >= 0 && s_frame_count >= (uint32_t)sprite_from && s_frame_count <= (uint32_t)sprite_to) {
+    printf("xl: frame %u: %u sprites\n", s_frame_count, s_last_sprite_count);
   }
   if (s_frame_limit && s_frame_count >= s_frame_limit) finish(1);
 }
@@ -381,6 +486,7 @@ static uint32_t s_sprite_list_count;
  * attributes' bits 15-14 = n): pattern_use.bin at the end, 'CRSU' then a byte
  * a pattern (tools/xlat/rp_store.py converts those). */
 #define PATTERNS 2048u
+_Static_assert(sizeof s_phase_patterns == PATTERNS, "a pattern a byte");
 static uint8_t s_pattern_use[PATTERNS];
 
 #ifdef XL_RP_RENDER
@@ -397,16 +503,58 @@ static void rp_take_sprites(uint32_t count) {
 }
 #endif
 
+/* XL_SPRITE_DUMP=A-B: each sprite list the game hands XSP_OUT in frames A
+ * to B (the frames completed so far, as the port's frame_count), to
+ * sprites.bin: the entries (u32), then each as the port's harness writes it
+ * (port_build.py --dump-sprites): the frame (u32), the sprites (u32) and 512
+ * slots of 8 bytes, big endian. Up to 16 lists. */
+#define SPRITE_DUMP_ENTRIES 16u
+#define SPRITE_DUMP_ENTRY (8u + 512u * 8u)
+static void dump_sprite_list(uint32_t count) {
+  static long from = -2, to;
+  static uint8_t dump[SPRITE_DUMP_ENTRIES][SPRITE_DUMP_ENTRY];
+  static uint32_t entries;
+  if (from == -2) {
+    const char *v = getenv("XL_SPRITE_DUMP");
+    from = -1;
+    if (v && sscanf(v, "%ld-%ld", &from, &to) != 2) from = -1;
+  }
+  if (from < 0 || s_frame_count < (uint32_t)from || s_frame_count > (uint32_t)to ||
+      entries == SPRITE_DUMP_ENTRIES) {
+    return;
+  }
+  uint8_t *e = dump[entries++];
+  memset(e, 0, SPRITE_DUMP_ENTRY);
+  for (int b = 0; b < 4; b++) {
+    e[b] = (uint8_t)(s_frame_count >> (24 - 8 * b));
+    e[4 + b] = (uint8_t)(count >> (24 - 8 * b));
+  }
+  memcpy(e + 8, xl_mem + XL_SPRITE_DATA_TABLE, count * 8u);
+  char path[1024];
+  snprintf(path, sizeof path, "%s/sprites.bin", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) return;
+  uint8_t n[4] = {(uint8_t)(entries >> 24), (uint8_t)(entries >> 16), (uint8_t)(entries >> 8),
+                  (uint8_t)entries};
+  fwrite(n, 1, 4, f);
+  fwrite(dump, SPRITE_DUMP_ENTRY, entries, f);
+  fclose(f);
+}
+
 void xl_patch_xsp_out(void) {
   uint32_t count = (rd32(XL_CURRENT_SPRITE_DATA_ENTRY) - XL_SPRITE_DATA_TABLE) / 8u;
   if (count > MAXIMUM_SPRITES) count = MAXIMUM_SPRITES;
+  dump_sprite_list(count > 512u ? 512u : count);
   s_frame_sprite_count = count;
   s_sprite_list_count = count;
   memcpy(s_sprites, xl_mem + XL_SPRITE_DATA_TABLE, count * 8u);
   for (uint32_t k = 0; k < count; k++) {
     const uint8_t *e = s_sprites + 8u * k;
     uint32_t pattern = ((uint32_t)e[4] << 8) | e[5];
-    if (pattern < PATTERNS) s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
+    if (pattern < PATTERNS) {
+      s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
+      s_phase_patterns[pattern] = 1;
+    }
   }
 #ifdef XL_RP_RENDER
   rp_take_sprites(count);
@@ -554,6 +702,98 @@ static uint32_t scripted_stick(void) {
   return 0xFFFFFF00u | (~closed & 0xFFu);
 }
 
+/* XL_INPUT names a script that drives every _JOYGET of stick 1, the menus'
+ * as the game's: lines "FRAME MASK", the stick from that frame on, MASK the
+ * bits held (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B;
+ * the game reads them active low), or "auto" for the scripted player.
+ * Lines in frame order; '#' starts a comment. */
+#define INPUT_STEPS 256
+#define INPUT_AUTO 0xFFFFFFFFu
+static struct {
+  uint32_t frame, mask;
+} s_input[INPUT_STEPS];
+static int s_input_steps = -1; /* -1: not read yet */
+
+static int input_scripted(uint32_t *joyget) {
+  if (s_input_steps < 0) {
+    s_input_steps = 0;
+    const char *path = getenv("XL_INPUT");
+    FILE *f = path ? fopen(path, "r") : NULL;
+    if (path && !f) xl_fatal("XL_INPUT: no such script", 0);
+    char line[128];
+    while (f && fgets(line, sizeof line, f) && s_input_steps < INPUT_STEPS) {
+      char *hash = strchr(line, '#');
+      if (hash) *hash = 0;
+      char word[32];
+      unsigned frame;
+      if (sscanf(line, "%u %31s", &frame, word) != 2) continue;
+      s_input[s_input_steps].frame = frame;
+      s_input[s_input_steps].mask =
+          strcmp(word, "auto") == 0 ? INPUT_AUTO : (uint32_t)strtoul(word, NULL, 16) & 0xFFu;
+      s_input_steps++;
+    }
+    if (f) fclose(f);
+  }
+  if (s_input_steps == 0) return 0;
+  uint32_t mask = 0;
+  for (int k = 0; k < s_input_steps && s_input[k].frame <= s_frame_count; k++) mask = s_input[k].mask;
+  /* The game waits for the buttons to be released in loops with no frame
+   * wait (the game over's first, $23C18): a frame that reads the stick more
+   * than a frame's worth, the script lets go, as a player would (the port's
+   * scripted build does the same: tools/re/port_build.py --scripted). */
+  static uint32_t reads_frame = 0xFFFFFFFFu, reads;
+  reads = s_frame_count == reads_frame ? reads + 1u : 0u;
+  reads_frame = s_frame_count;
+  *joyget = mask == INPUT_AUTO ? scripted_stick() : (0xFFFFFF00u | (~mask & 0xFFu));
+  if (reads > 64u) *joyget |= 0x60u;
+  return 1;
+}
+
+/* XL_INVINCIBLE: the hidden menu's invincibility (muteki) on from the boot,
+ * set again whenever it reads 0 (the boot clears it once, before the main
+ * menu): as a build of the port with `addq.w #1,INVINCIBILITY_MODE` in place
+ * of that clear, so both replay a recording made with it the same way. */
+static void keep_invincible(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("XL_INVINCIBLE") != NULL;
+  if (on && rd16(XL_INVINCIBILITY_MODE) == 0) wr16(XL_INVINCIBILITY_MODE, 1);
+}
+
+/* XL_SAVE_REPLAY_AT names a frame: there the game's recording so far goes
+ * to replay.rep in the output folder, as SAVE_REPLAY_FILE writes it: the
+ * header (14 bytes), the directions' length and bytes from the buffer's
+ * start, the buttons' length and bytes up to its end (each length u32,
+ * big endian, at most the buffer's 128 KB). */
+#define REPLAY_BUFFER 0x20000u
+static void save_replay(void) {
+  static long at = -2;
+  if (at == -2) {
+    const char *v = getenv("XL_SAVE_REPLAY_AT");
+    at = v ? strtol(v, NULL, 10) : -1;
+  }
+  if (at < 0 || s_frame_count != (uint32_t)at) return;
+  uint32_t directions = rd32(XL_CURRENT_DEMO_RECORD_POINTER) - XL_DEMO_REPLAY_DATA + 1u;
+  uint32_t buttons = XL_DEMO_REPLAY_DATA + REPLAY_BUFFER - rd32(XL_CURRENT_DEMO_RECORD_END_POINTER);
+  if (directions > REPLAY_BUFFER) directions = REPLAY_BUFFER;
+  if (buttons > REPLAY_BUFFER) buttons = REPLAY_BUFFER;
+  char path[1024];
+  snprintf(path, sizeof path, "%s/replay.rep", s_out_dir);
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) xl_fatal("replay.rep: cannot write", 0);
+  for (uint32_t k = 0; k < 14u; k++) fputc(rd8(XL_DEMO_REPLAY_HEADER + k), f);
+  uint8_t be[4] = {(uint8_t)(directions >> 24), (uint8_t)(directions >> 16),
+                   (uint8_t)(directions >> 8), (uint8_t)directions};
+  fwrite(be, 1, 4, f);
+  for (uint32_t k = 0; k < directions; k++) fputc(rd8(XL_DEMO_REPLAY_DATA + k), f);
+  uint8_t be2[4] = {(uint8_t)(buttons >> 24), (uint8_t)(buttons >> 16), (uint8_t)(buttons >> 8),
+                    (uint8_t)buttons};
+  fwrite(be2, 1, 4, f);
+  for (uint32_t k = 0; k < buttons; k++) fputc(rd8(XL_DEMO_REPLAY_DATA + REPLAY_BUFFER - buttons + k), f);
+  fclose(f);
+  printf("xl: replay.rep at frame %u: %u bytes of directions, %u of buttons\n", s_frame_count,
+         directions, buttons);
+}
+
 /* --- IOCS (TRAP #15), as the port serves it ----------------------------- */
 
 static const uint32_t k_adpcm_rates_hz100[5] = {4000000u * 100u / 1024u, 4000000u * 100u / 768u,
@@ -586,9 +826,15 @@ static void iocs(void) {
       }
       return;
     }
-    case 0x3B: /* _JOYGET: nothing pressed (active low), or the scripted player */
+    case 0x3B: { /* _JOYGET: nothing pressed (active low), the script, or the scripted player */
+      uint32_t joyget;
+      if ((D(1) & 0xFFu) == 0 && input_scripted(&joyget)) {
+        D(0) = joyget;
+        return;
+      }
       D(0) = s_live_read ? scripted_stick() : 0xFFFFFFFFu;
       return;
+    }
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
       if (s_effects_log) {
@@ -1331,7 +1577,21 @@ static void write_graphics(void) {
   fclose(f);
 }
 
+/* Stopped from outside (a run that hangs: the game waiting on something the
+ * host does not serve): the coverage so far, so its last frames name the
+ * loop. */
+static void on_stop(int sig) {
+  (void)sig;
+#ifdef XL_TRACE
+  if (s_out_dir) write_coverage(s_out_dir);
+#endif
+  fprintf(stderr, "xl: stopped at frame %u\n", s_frame_count);
+  _exit(3);
+}
+
 int main(int argc, char **argv) {
+  signal(SIGTERM, on_stop);
+  signal(SIGINT, on_stop);
   if (argc < 4) {
     fprintf(stderr, "usage: %s DATA_DIR FRAMES OUT_DIR [--screens N]\n", argv[0]);
     return 2;
@@ -1394,6 +1654,9 @@ int main(int argc, char **argv) {
   MEMMAP_PAUSE(1);
   write_graphics();
   write_memmap(s_out_dir);
+#if defined(XL_MEMMAP) && defined(XL_TRACE)
+  if (s_phase_count) memmap_phase_end(s_phase); /* the last phase */
+#endif
   for (uint32_t k = 0; k < 256; k++) {
     if (s_calls_iocs[k]) printf("xl: IOCS $%02X %u calls\n", k, s_calls_iocs[k]);
   }

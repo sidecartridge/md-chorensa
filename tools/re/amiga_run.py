@@ -12,9 +12,15 @@ ran from: its copy of the program and the data), the results, and result.txt.
 
 --program runs another build of the port than the one it ships (a build with
 denser screen dumps, say: kept with the user's copy, outside this repository).
+--replay plays a recorded game (the host's XL_SAVE_REPLAY_AT) as the attract
+demo, in place of ETC_DAT/DEMO.REP. --input drives the stick from the host's
+input script (XL_INPUT: FRAME MASK lines, "auto" the scripted player), made
+into the port's own script format, on a build of the port that takes input
+as the host does (port_build.py --scripted).
 
 usage: amiga_run.py [--config a1200-030] [--frames 6000] [--name NAME]
-                    [--program PATH] [--compare REFERENCE] [--music] [--show]
+                    [--program PATH] [--replay FILE] [--input SCRIPT] [--compare REFERENCE]
+                    [--music] [--show]
                     [--timeout S]
 """
 
@@ -23,6 +29,7 @@ import datetime
 import glob
 import os
 import shutil
+import struct
 import signal
 import subprocess
 import sys
@@ -40,12 +47,45 @@ CONFIGS = {
 }
 
 
+def scripted_player(frame):
+    """The host's scripted player (xl_host.c scripted_stick): the bits held."""
+    held = 0x08 if (frame // 55) & 1 else 0x04
+    held |= 0x20
+    if frame % 330 < 3:
+        held |= 0x40
+    return held
+
+
+def port_input_script(path, frames):
+    """The host's input script as the port's ('CRSI', records of a frame,
+    kind 0: the stick's state from that game frame on, active low), the
+    scripted player expanded frame by frame to the run's end."""
+    steps = []
+    for line in open(path):
+        p = line.split("#")[0].split()
+        if len(p) >= 2:
+            steps.append((int(p[0]), None if p[1] == "auto" else int(p[1], 16) & 0xFF))
+    records, last = [], None
+    for frame in range(frames + 1):
+        held = 0
+        for at, mask in steps:
+            if at <= frame:
+                held = scripted_player(frame) if mask is None else mask
+        value = ~held & 0xFF
+        if value != last:
+            records.append(struct.pack(">IBBH", frame, 0, value, 0))
+            last = value
+    return b"CRSI" + struct.pack(">I", len(records)) + b"".join(records)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--config", default="a1200-030", choices=sorted(CONFIGS))
     parser.add_argument("--frames", type=int, default=6000)
     parser.add_argument("--name", default="")
     parser.add_argument("--program", help="the port's program to run (default: the one it ships)")
+    parser.add_argument("--replay", metavar="FILE", help="a recorded game played as the attract demo")
+    parser.add_argument("--input", metavar="SCRIPT", help="the host's input script (XL_INPUT)")
     parser.add_argument("--compare", metavar="REFERENCE",
                         help="checkpoints to compare with (default: the port's own)")
     parser.add_argument("--music", action="store_true", help="copy MUSIC_DAT's streams too")
@@ -76,12 +116,18 @@ def main():
                     shutil.copy(stream, os.path.join(work, "MUSIC_DAT"))
         else:
             shutil.copytree(data, os.path.join(work, os.path.basename(data)))
+    if args.replay:
+        shutil.copy(args.replay, os.path.join(work, "ETC_DAT", "DEMO.REP"))
+    if args.input:
+        with open(os.path.join(work, "input.bin"), "wb") as f:
+            f.write(port_input_script(args.input, args.frames))
 
     # The marker is written after the program's output is closed; FailAt 21
     # keeps the script going if the program cannot be loaded.
     with open(os.path.join(work, "Run-Test"), "w", newline="\n") as out:
         out.write("FailAt 21\nCD WORK:\n"
-                  f"WORK:program {args.frames} >WORK:output.txt\n"
+                  f"WORK:program {args.frames}" + (" WORK:input.bin" if args.input else "")
+                  + " >WORK:output.txt\n"
                   "Why >>WORK:output.txt\nEcho \"done\" >WORK:marker.txt\n")
 
     command = [fsuae, *CONFIGS[args.config], f"--kickstart_file={kickstart}",

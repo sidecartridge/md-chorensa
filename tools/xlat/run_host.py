@@ -14,8 +14,10 @@ are the game's.
 
 usage: run_host.py [--frames 6000] [--name NAME] [--build DIR] [--rebuild]
                    [--screens N] [--screen-reference DIR] [--snapshot F] [--resume RUN]
+                   [--replay FILE.rep]
 
---snapshot F writes snapshot.bin and resume.txt into the run at frame F;
+--replay plays FILE (a game the game recorded, XL_SAVE_REPLAY_AT) as the
+attract demo, in place of ETC_DAT/DEMO.REP; --snapshot F writes snapshot.bin and resume.txt into the run at frame F;
 --resume RUN plays on from that run's snapshot, translated with its resume
 entries (a build folder of its own).
 """
@@ -129,6 +131,7 @@ def main():
     ap.add_argument("--screen-reference", help="a folder of the port's screen_NNNNN.bin")
     ap.add_argument("--snapshot", type=int, help="write a snapshot at this frame")
     ap.add_argument("--resume", metavar="RUN", help="start from the snapshot of an earlier run")
+    ap.add_argument("--replay", metavar="FILE", help="a recorded game played as the attract demo")
     ap.add_argument("--rp-art", metavar="DIR", help="with the RP's renderer and this stage art "
                     "(rp_art.py's xl_stage_art.c): rpscreen_NNNNN.bin beside each screen")
     ap.add_argument("--entries", action="store_true",
@@ -153,6 +156,8 @@ def main():
     for d in sorted(glob.glob(os.path.join(game, "*_DAT"))):
         if os.path.basename(d) != "MUSIC_DAT":
             shutil.copytree(d, os.path.join(data, os.path.basename(d)))
+    if args.replay:
+        shutil.copy(args.replay, os.path.join(data, "ETC_DAT", "DEMO.REP"))
     shutil.copy(os.path.join(original, "sources", "sincos.dat"), data)
     shutil.copy(os.path.join(build_dir, "xl_image.bin"), run)
     command = [binary, data, str(args.frames), run, "--screens", str(args.screens)]

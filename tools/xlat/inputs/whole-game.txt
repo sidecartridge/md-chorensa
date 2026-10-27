@@ -1,0 +1,12 @@
+# A played game for the host (XL_INPUT): button A at the title starts a game,
+# then the scripted player (left and right a second each, the shot held, a
+# bomb every six seconds). With XL_INVINCIBLE it plays stages 1-7 and on into
+# the second loop in 150,000 frames; XL_SAVE_REPLAY_AT=149000 writes the
+# game's own recording of it, which run_host.py --replay and amiga_run.py
+# --replay (port_build.py --invincible) play as the attract demo.
+# FRAME MASK (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B)
+300 20
+306 0
+400 20
+406 0
+500 auto

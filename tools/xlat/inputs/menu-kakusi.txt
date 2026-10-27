@@ -1,0 +1,50 @@
+# The hidden menu (KAKUSI MODE) from the title (XL_INPUT; amiga_run.py
+# --input): the cursor to CONTINUE, then up + down + right held (the cursor
+# moves to CONFIG) and button A: CONFIG with that combination opens the
+# hidden menu. STAGE 3, BOSS_ONLY and DEBUG on, SAVE DEMO.REP, EXIT; then
+# CONTINUE (from CONFIG, up once: START always starts at stage 1, CONTINUE
+# from the hidden menu's stage) and the scripted player.
+# FRAME MASK (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B)
+300 2
+304 0
+340 b
+370 2b
+376 b
+380 0
+440 2
+444 0
+460 2
+464 0
+480 8
+484 0
+500 8
+504 0
+520 2
+524 0
+540 2
+544 0
+560 2
+564 0
+580 2
+584 0
+600 8
+604 0
+620 2
+624 0
+640 8
+644 0
+660 2
+664 0
+680 2
+684 0
+700 20
+704 0
+760 2
+764 0
+780 20
+784 0
+860 1
+864 0
+900 20
+904 0
+980 auto
