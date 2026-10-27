@@ -15,9 +15,15 @@
  * each frame's dispatch. `fb_chunked_init()` launches it once at
  * boot via the pico-sdk's `multicore_launch_core1`.
  *
- * Output staging: both cores write their natural row-major planar
- * output into `fb_planar_scratch` in RP RAM. Once both halves are
- * complete, fb_chunky_to_planar copies the planar bytes into the
+ * In place: each core writes its half's planar output (half the size of
+ * its chunky input) from the start of that half of `fb_chunked_buffer`,
+ * the top lines' at offset 0 and the bottom lines' at FB_C2P_HALF_SRC_BYTES:
+ * the worker stores a block's 8 bytes after reading its 16, and its output
+ * runs at half its input's pace, so it never overwrites a pixel not yet
+ * read, and each core stays inside its own half. The chunky buffer then
+ * holds the frame as planes (no 32 KB scratch), until the next frame is
+ * drawn: every frame is drawn whole. Once both halves are
+ * complete, fb_planar_publish copies the planar bytes into the
  * caller's `planar` (the cart framebuffer at $FA8000) in the order the
  * m68k's copy reads them: the lines from the last to the first, each as
  * its last two 44-byte chunks and then its first 40 bytes, because
@@ -49,14 +55,14 @@ extern void fb_c2p_half(uint16_t *dst,
                         const uint8_t *src_end);
 
 #define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32768 */
-#define FB_C2P_HALF_DST_WORDS (FB_C2P_HALF_SRC_BYTES / 4) /* 8192 uint16_t */
 
-/* Planar scratch buffer: c2p outputs natural row-major planar bytes
- * here; fb_planar_publish then copies them to the caller's `planar`
- * (the cart FB at $FA8000) in the copier's layout.
- * 32 KB on the RP's 128 KB SRAM, 4-byte aligned for uint32 stores. */
-static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
-    __attribute__((aligned(4)));
+/* The planar frame after fb_transpose, in place: the top lines' planes from
+ * the chunky buffer's start, the bottom lines' from its middle. */
+#define FB_PLANAR_TOP ((uint16_t *)fb_chunked_buffer)
+#define FB_PLANAR_BOTTOM ((uint16_t *)(fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES))
+#define FB_PLANAR_HALF_LINES (CART_FB_LINES / 2u)
+_Static_assert(FB_C2P_HALF_SRC_BYTES / 2u == FB_PLANAR_HALF_LINES * CART_FB_LINE_BYTES,
+               "a half's planes are half its chunky bytes");
 
 /* Generic Core 1 worker loop (dual-core). Pops a job function
  * pointer + arg off the FIFO, runs it, signals completion. Both the c2p
@@ -111,7 +117,8 @@ void __not_in_flash_func(fb_core1_wait)(void) {
   (void)multicore_fifo_pop_blocking(); /* wait for done */
 }
 
-/* c2p bottom-half job: arg is the bottom-half planar dst pointer. */
+/* c2p bottom-half job: arg is the bottom-half planar dst pointer (the
+ * bottom half's own start: in place). */
 static void __not_in_flash_func(fb_c2p_bottom_job)(void *arg) {
   fb_c2p_half((uint16_t *)arg,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES,
@@ -130,13 +137,12 @@ void fb_chunked_clear(uint8_t color) {
 }
 
 void __not_in_flash_func(fb_transpose)(void) {
-  /* Dispatch bottom half to Core 1. Both cores write into the
-   * scratch buffer (natural row-major layout). */
-  fb_core1_dispatch(fb_c2p_bottom_job,
-                    fb_planar_scratch + FB_C2P_HALF_DST_WORDS);
+  /* Dispatch bottom half to Core 1. Each core writes its half's planes
+   * in place, from the start of its half (natural row-major layout). */
+  fb_core1_dispatch(fb_c2p_bottom_job, FB_PLANAR_BOTTOM);
 
   /* Top half: Core 0 runs the worker directly, in parallel with Core 1. */
-  fb_c2p_half(fb_planar_scratch,
+  fb_c2p_half(FB_PLANAR_TOP,
               fb_chunked_buffer,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES);
 
@@ -154,32 +160,37 @@ _Static_assert(FB_CHUNKED_W / 2 == CART_FB_LINE_BYTES &&
                "the chunky buffer is the framebuffer's size");
 
 void __not_in_flash_func(fb_planar_publish)(uint16_t *planar, bool natural) {
-  /* Scratch -> cart FB in the order the copier reads it (cart_shared.h,
+  /* The planes (in place, two halves) -> cart FB in the order the copier reads it (cart_shared.h,
    * "Framebuffer layout for the m68k's copy"): for the blitter the planes as
    * they are; for the MOVEM copy the lines from the last to the first, each
    * as its two 44-byte chunks from the right, then its first bytes. This is
    * the ONLY cart-FB write -- it must run in the m68k's post-copy slack
    * (gated by fb_publish's wait for the ST's ack), and it's fast so it fits.
-   * The slow transpose above runs unsynchronized (RP scratch RAM) and
+   * The slow transpose above runs unsynchronized (in the RP's RAM) and
    * overlaps the m68k's copy. Every piece is a multiple of 4 bytes at a
    * 4-byte aligned offset. */
   if (natural) {
-    memcpy(planar, fb_planar_scratch, CART_FRAMEBUFFER_SIZE);
+    memcpy(planar, FB_PLANAR_TOP, CART_FRAMEBUFFER_SIZE / 2u);
+    memcpy((uint8_t *)planar + CART_FRAMEBUFFER_SIZE / 2u, FB_PLANAR_BOTTOM,
+           CART_FRAMEBUFFER_SIZE / 2u);
     return;
   }
   /* Word loops, not memcpy: three calls a line for 44, 44 and 40 bytes cost
    * about 350 us a frame against 110 for the loops, out of the ST's slack
    * after its copy. */
-  const uint32_t *line = (const uint32_t *)fb_planar_scratch +
-                         (CART_FB_LINES - 1u) * (CART_FB_LINE_BYTES / 4u);
+  const uint32_t *line = (const uint32_t *)FB_PLANAR_BOTTOM +
+                         (FB_PLANAR_HALF_LINES - 1u) * (CART_FB_LINE_BYTES / 4u);
   uint32_t *cart = (uint32_t *)planar;
   for (uint32_t y = 0; y < CART_FB_LINES; y++) {
+    if (y == FB_PLANAR_HALF_LINES) { /* from the bottom half's first line to the top's last */
+      line = (const uint32_t *)FB_PLANAR_TOP + (FB_PLANAR_HALF_LINES - 1u) * (CART_FB_LINE_BYTES / 4u);
+    }
     const uint32_t *a = line + (CART_FB_LINE_TAIL + CART_FB_CHUNK_BYTES) / 4u;
     const uint32_t *b = line + CART_FB_LINE_TAIL / 4u;
     for (uint32_t i = 0; i < CART_FB_CHUNK_BYTES / 4u; i++) *cart++ = a[i];
     for (uint32_t i = 0; i < CART_FB_CHUNK_BYTES / 4u; i++) *cart++ = b[i];
     for (uint32_t i = 0; i < CART_FB_LINE_TAIL / 4u; i++) *cart++ = line[i];
-    line -= CART_FB_LINE_BYTES / 4u;
+    if (y + 1u != FB_PLANAR_HALF_LINES) line -= CART_FB_LINE_BYTES / 4u;
   }
 }
 

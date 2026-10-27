@@ -75,13 +75,13 @@ void fb_render_frame(void);
 /** @brief Publish the current chunked buffer to the cart framebuffer,
  *         synchronized to the Atari's 50 Hz VBL, tear-free.
  *
- *         Three steps: (1) transpose chunked -> planar SCRATCH (RP RAM,
+ *         Three steps: (1) transpose chunked -> planar in place (RP RAM,
  *         the slow ~1 ms part) -- this overlaps the m68k's blit of the
  *         previous frame since it doesn't touch the cart FB; (2) BLOCK
  *         until the m68k acks it finished that blit (a cart-bus read at
  *         $FB8400 captured by commemul) so the cart FB is free; (3) do
- *         the fast ~120 us chunk-reversed copy scratch -> cart FB and
- *         bump FB_FRAME_COUNTER.
+ *         the fast ~120 us chunk-reversed copy of the planes -> cart FB
+ *         and bump FB_FRAME_COUNTER.
  *
  *         Because only the short copy in step 3 writes the cart FB, and
  *         it runs in the m68k's post-blit slack, the RP never writes
@@ -89,8 +89,15 @@ void fb_render_frame(void);
  *         ~60 ms timeout (safety net for "m68k not running", e.g. at
  *         boot) keeps the RP from hanging. Drawing into
  *         `fb_chunked_buffer` (RP RAM) is unsynchronized; call this
- *         once per frame after drawing. */
+ *         once per frame after drawing. The conversion is in place: the
+ *         buffer holds the frame's planes afterwards, not its pixels, so
+ *         draw every frame whole. */
 void fb_publish(void);
+
+/** @brief The frame fb_publish() last converted, published again (its
+ *         planes are still in `fb_chunked_buffer` while nothing draws):
+ *         a still picture held over several VBLs. */
+void fb_republish(void);
 
 /** @brief Drain the ROM3 commemul ring once, routing each captured
  *         sample to BOTH the IKBD demux and the VBL frame-sync

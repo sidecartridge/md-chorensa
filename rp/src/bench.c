@@ -56,6 +56,7 @@ uint32_t benchFramesPerSecond;
 uint16_t benchStillPalette[PALETTE_ENTRIES];
 volatile uint32_t benchStill;
 static bool s_still; /* what the last frame showed */
+static uint32_t s_still_shown; /* the benchStill value it shows */
 static uint32_t s_second_start_us;
 static uint32_t s_second_frames;
 
@@ -278,9 +279,16 @@ void bench_frame(void) {
     return;
   }
   if (benchStill) {
+    /* A new picture (a new value of benchStill) converted once; the frames
+     * after it publish its planes again (the conversion is in place). */
+    if (!s_still || benchStill != s_still_shown) {
+      s_still_shown = benchStill;
+      palette_set(benchStillPalette);
+      fb_publish();
+    } else {
+      fb_republish();
+    }
     s_still = true;
-    palette_set(benchStillPalette);
-    fb_publish();
     benchFrames++;
     return;
   }

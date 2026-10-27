@@ -11,13 +11,16 @@
  * plane (0..3), the leftmost pixel in bit 15. */
 void fb_c2p_half(uint16_t *dst, const uint8_t *src, const uint8_t *src_end) {
   for (; src < src_end; src += 16, dst += 4) {
+    /* A block's four words stored after its 16 pixels are read, as the
+     * assembly does: fb_transpose converts in place, its output over its
+     * input's start. */
+    uint16_t words[4] = {0, 0, 0, 0};
     for (int plane = 0; plane < 4; plane++) {
-      uint16_t word = 0;
       for (int i = 0; i < 16; i++) {
-        word |= (uint16_t)(((src[i] >> plane) & 1u) << (15 - i));
+        words[plane] |= (uint16_t)(((src[i] >> plane) & 1u) << (15 - i));
       }
-      dst[plane] = word;
     }
+    for (int plane = 0; plane < 4; plane++) dst[plane] = words[plane];
   }
 }
 

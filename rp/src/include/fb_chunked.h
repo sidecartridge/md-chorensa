@@ -94,12 +94,15 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
  * VBL wait (overlapping the m68k blit) and only the fast cart-FB write
  * runs after it. fb.c's fb_publish() uses these directly. */
 
-/* Dual-core transpose: chunked buffer -> internal planar scratch (RP
- * RAM). Does NOT touch the cart FB; safe to run while the m68k blits. */
+/* Dual-core transpose, in place: the chunked buffer then holds the
+ * frame's planes, the top lines' from offset 0 and the bottom lines' from
+ * half the buffer, until the app draws again. Does NOT touch the cart FB;
+ * safe to run while the m68k blits. */
 void __not_in_flash_func(fb_transpose)(void);
 
 /**
- * Copy the planar scratch to the cartridge framebuffer in the copier's
+ * Copy the planes fb_transpose() left in the chunked buffer to the
+ * cartridge framebuffer in the copier's
  * layout (cart_shared.h, "Framebuffer layout for the m68k's copy"): the
  * MOVEM copy's, or with `natural` the blitter's, the planes as they are.
  * The only write to the cartridge framebuffer: fb_publish() calls it after

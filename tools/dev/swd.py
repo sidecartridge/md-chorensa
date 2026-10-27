@@ -1123,8 +1123,9 @@ def cmd_sd_put(args: argparse.Namespace) -> int:
 
 def cmd_still(args: argparse.Namespace) -> int:
     """A still picture on the ST's screen: the bench stops drawing
-    (benchStill 1) and publishes what the chunky buffer holds, with
-    benchStillPalette; this writes all three, in any build. FILE: 256 x 256 bytes of colour
+    (benchStill 1), the picture and benchStillPalette are written, then
+    benchStill 2, on which the bench converts the picture once (in place)
+    and publishes it every frame; in any build. FILE: 256 x 256 bytes of colour
     numbers, then 16 big-endian palette words (tools/re/quantise.py still)."""
     elf = matching_elf(args.elf)
     defines = include_defines()
@@ -1155,6 +1156,8 @@ def cmd_still(args: argparse.Namespace) -> int:
         openocd(f"targets {CORES[0]}",
                 f"load_image {image} 0x{sym['fb_chunked_buffer'][0]:08x} bin",
                 f"load_image {palette} 0x{sym['benchStillPalette'][0]:08x} bin")
+    # A new value (1 -> 2): the bench converts this picture once.
+    openocd(f"targets {CORES[0]}", f"mww 0x{flag[0]:08x} 2")
     print(f"still: {os.path.basename(args.file)}, palette " + " ".join(f"{w:03X}" for w in words))
     return 0
 
