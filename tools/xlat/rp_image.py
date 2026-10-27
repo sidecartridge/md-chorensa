@@ -15,8 +15,13 @@ Its output is the game's: it goes into a build folder outside the
 repository, never committed.
 
 usage: rp_image.py --snapshot RUN/snapshot.bin --memmap RUN/memmap.bin [--memmap ...]
+                   [--pages RUN/memmap_NN.bin ...]
                    --checkpoints RUN/checkpoints.bin --layout BUILD/xl_layout.h
                    --out DIR
+
+--pages adds the pages a phase of another run wrote (a host trace and memory
+map build's memmap_NN.bin: a byte a page, bit 0 written): the stage's pages
+in a whole game, beside what the runs resumed from the snapshot touch.
 """
 
 import argparse
@@ -36,6 +41,8 @@ PAGE_BITS = 8                 # xl_store.h's XL_STORE_PAGE_BITS
 POOL_RAM = _STORE["XL_STORE_RAM_BYTES"] >> PAGE_BITS
 POOL_WINDOW = _STORE["XL_STORE_WINDOW_FREE_BYTES"] >> PAGE_BITS
 WINDOW_FREE = _STORE["XL_STORE_WINDOW_FREE"]
+POOL_FB = _STORE["XL_STORE_FB_FREE_BYTES"] >> PAGE_BITS
+FB_FREE = _STORE["XL_STORE_FB_FREE"]
 PAGE = 1 << PAGE_BITS
 PAGES = 1 << (24 - PAGE_BITS)
 # The text plane in its layout (xl_store.h, XL_STORE_TEXT_*): the screen's
@@ -115,6 +122,8 @@ def main():
     ap.add_argument("--snapshot", required=True)
     ap.add_argument("--memmap", required=True, action="append",
                     help="a resumed run's memory map (several: what any of them touches)")
+    ap.add_argument("--pages", action="append", default=[],
+                    help="a phase's page map (memmap_NN.bin): its written pages in RAM")
     ap.add_argument("--checkpoints", required=True)
     ap.add_argument("--layout", required=True)
     ap.add_argument("--out", required=True)
@@ -137,6 +146,13 @@ def main():
         if len(data) != MEMORY:
             sys.exit(f"{path}: not a memory map")
         touched = bytearray(a | b for a, b in zip(touched, data))
+    for path in args.pages:
+        data = open(path, "rb").read()
+        if len(data) != PAGES:
+            sys.exit(f"{path}: not a page map")
+        for p, flags in enumerate(data):
+            if flags & 1:
+                touched[p * PAGE] |= 2
     layout = {m.group(1): int(m.group(2), 16) for m in
               re.finditer(r"#define XL_(\w+) 0x([0-9A-F]+)u", open(args.layout).read())}
 
@@ -163,7 +179,7 @@ def main():
             ram.append(p)
         elif flags:
             flash.append(p)
-    pool = POOL_RAM + POOL_WINDOW
+    pool = POOL_RAM + POOL_WINDOW + POOL_FB
     if len(ram) + 1 > pool:
         sys.exit(f"{len(ram)} pages written and a spare page, {pool} RAM pages to hold them")
     spare = len(ram)
@@ -186,6 +202,7 @@ def main():
         h.write(f"#define XL_RP_TEXT_ROWS {len(text_rows)}u /* the text plane's rows not clear */\n")
         h.write("extern const uint16_t xl_rp_text_rows[];\nextern const uint8_t xl_rp_text_init[];\n")
         h.write("extern uint8_t __rom_in_ram_start__[];  /* the cartridge window */\n")
+        h.write("extern uint8_t fb_chunked_buffer[];  /* its part a banded frame leaves */\n")
         h.write("extern const uint8_t xl_rp_ram_init[];\n")
         h.write("extern const uint32_t xl_rp_state[];\nextern const uint8_t xl_rp_sprites[];\n")
         h.write("extern const uint8_t xl_rp_checkpoints[];\n")
@@ -204,7 +221,10 @@ def main():
                 f"{c_bytes(rows) or '  0,'}\n}};\n\n")
         pages = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in flash))
         c.write(f"static const uint8_t k_flash[{max(len(pages), 1)}] __attribute__((aligned(4))) = {{\n{c_bytes(pages) or '  0,'}\n}};\n\n")
-        def pool_page(k):  # the firmware's array first, then the window's arena
+        def pool_page(k):  # the chunky buffer's part, the firmware's array, the window's arena
+            if k < POOL_FB:
+                return f"fb_chunked_buffer + 0x{FB_FREE + k * PAGE:X}"
+            k -= POOL_FB
             if k < POOL_RAM:
                 return f"xl_rp_ram + 0x{k * PAGE:X}"
             return f"__rom_in_ram_start__ + 0x{WINDOW_FREE + (k - POOL_RAM) * PAGE:X}"

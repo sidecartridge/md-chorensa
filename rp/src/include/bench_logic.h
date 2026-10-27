@@ -11,8 +11,10 @@
  * store (store.h) unless the store holds them already, timing it, and runs
  * from there. Other builds report that they have no translation. The
  * game's memory is the snapshot's, in pages of 256 bytes (xl.h's XL_PAGED
- * accessors): the pages the game writes in a RAM array of the firmware's
- * (xl_rp_ram), the others read from the stage's image. The ST shows its
+ * accessors): the pages the game writes in RAM (a pool: the chunky
+ * buffer's part a banded frame leaves, an array of the firmware's,
+ * xl_rp_ram, and the cartridge window's free arena; xl_store.h), the others
+ * read from the stage's image. The ST shows its
  * last frame while the run lasts.
  *
  * Every game frame (one XSP_VSYNC) counts the game's logic time in a histogram

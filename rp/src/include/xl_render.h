@@ -8,9 +8,9 @@
  *
  * Plain C over tools/xlat/xl.h's memory accessors, so that the host's
  * runtime (tools/xlat/host/xl_host.c) draws the same picture from the same
- * source and checks it against the host's own renderer. Draws into a 256 x
- * 256 chunky buffer (a byte a pixel, the ST colour number), the lines
- * [y0, y1) of it: two cores draw two bands.
+ * source and checks it against the host's own renderer. Draws the lines
+ * [y0, y1) of a 256 x 256 chunky picture (a byte a pixel, the ST colour
+ * number): the RP draws its frame in bands on two cores (fb_draw_banded).
  */
 
 #ifndef XL_RENDER_H
@@ -40,8 +40,9 @@ typedef struct {
 void xl_render_take_sprites(xl_render_frame_t *f, uint32_t table, uint32_t count);
 /* The scrolls and R1 from the game's registers, and the drawing order. */
 void xl_render_prepare(xl_render_frame_t *f);
-/* Draw the lines [y0, y1) of the frame into `fb`. */
-void xl_render_band(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1);
+/* Draw the lines [y0, y1) of the frame at `band`: line y0's first pixel,
+ * XL_RENDER_W bytes a line. */
+void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1);
 
 /* The 16 ST colours (0RRR0GGG0BBB) for the program's current palettes: per
  * colour, its entries' current colours weighted (palette_fit.py's

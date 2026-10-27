@@ -57,10 +57,15 @@ extern void fb_c2p_half(uint16_t *dst,
 #define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32768 */
 
 /* The planar frame after fb_transpose, in place: the top lines' planes from
- * the chunky buffer's start, the bottom lines' from its middle. */
+ * the chunky buffer's start, the bottom lines' from its middle (or, after
+ * fb_draw_banded, from the second banded half). */
 #define FB_PLANAR_TOP ((uint16_t *)fb_chunked_buffer)
 #define FB_PLANAR_BOTTOM ((uint16_t *)(fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES))
 #define FB_PLANAR_HALF_LINES (CART_FB_LINES / 2u)
+static uint16_t *s_planar_bottom = FB_PLANAR_BOTTOM;
+
+#define FB_BAND_BYTES (FB_BAND_LINES * FB_CHUNKED_W)
+_Static_assert((FB_CHUNKED_H / 2) % FB_BAND_LINES == 0, "a half is whole bands");
 _Static_assert(FB_C2P_HALF_SRC_BYTES / 2u == FB_PLANAR_HALF_LINES * CART_FB_LINE_BYTES,
                "a half's planes are half its chunky bytes");
 
@@ -136,6 +141,32 @@ void fb_chunked_clear(uint8_t color) {
   memset(fb_chunked_buffer, color, sizeof(fb_chunked_buffer));
 }
 
+static fb_band_draw_t s_band_draw;
+static const void *s_band_arg;
+
+/* A half of the frame in bands from line y0: each band drawn where its
+ * planes go, then converted in place; the next band's planes follow. */
+static void __not_in_flash_func(fb_banded_half)(uint8_t *planes, int y0) {
+  for (int y = y0; y < y0 + FB_CHUNKED_H / 2; y += FB_BAND_LINES) {
+    s_band_draw(planes, s_band_arg, y, y + FB_BAND_LINES);
+    fb_c2p_half((uint16_t *)planes, planes, planes + FB_BAND_BYTES);
+    planes += FB_BAND_BYTES / 2;
+  }
+}
+
+static void __not_in_flash_func(fb_banded_bottom_job)(void *arg) {
+  fb_banded_half((uint8_t *)arg, FB_CHUNKED_H / 2);
+}
+
+void __not_in_flash_func(fb_draw_banded)(fb_band_draw_t draw, const void *arg) {
+  s_band_draw = draw;
+  s_band_arg = arg;
+  fb_core1_dispatch(fb_banded_bottom_job, fb_chunked_buffer + FB_BANDED_HALF_BYTES);
+  fb_banded_half(fb_chunked_buffer, 0);
+  fb_core1_wait();
+  s_planar_bottom = (uint16_t *)(fb_chunked_buffer + FB_BANDED_HALF_BYTES);
+}
+
 void __not_in_flash_func(fb_transpose)(void) {
   /* Dispatch bottom half to Core 1. Each core writes its half's planes
    * in place, from the start of its half (natural row-major layout). */
@@ -151,6 +182,7 @@ void __not_in_flash_func(fb_transpose)(void) {
    * Core 1's planar writes are guaranteed visible to Core 0 by the
    * time this returns. */
   fb_core1_wait();
+  s_planar_bottom = FB_PLANAR_BOTTOM;
 }
 
 _Static_assert(CART_FB_LINES * CART_FB_LINE_BYTES == CART_FRAMEBUFFER_SIZE,
@@ -171,14 +203,14 @@ void __not_in_flash_func(fb_planar_publish)(uint16_t *planar, bool natural) {
    * 4-byte aligned offset. */
   if (natural) {
     memcpy(planar, FB_PLANAR_TOP, CART_FRAMEBUFFER_SIZE / 2u);
-    memcpy((uint8_t *)planar + CART_FRAMEBUFFER_SIZE / 2u, FB_PLANAR_BOTTOM,
+    memcpy((uint8_t *)planar + CART_FRAMEBUFFER_SIZE / 2u, s_planar_bottom,
            CART_FRAMEBUFFER_SIZE / 2u);
     return;
   }
   /* Word loops, not memcpy: three calls a line for 44, 44 and 40 bytes cost
    * about 350 us a frame against 110 for the loops, out of the ST's slack
    * after its copy. */
-  const uint32_t *line = (const uint32_t *)FB_PLANAR_BOTTOM +
+  const uint32_t *line = (const uint32_t *)s_planar_bottom +
                          (FB_PLANAR_HALF_LINES - 1u) * (CART_FB_LINE_BYTES / 4u);
   uint32_t *cart = (uint32_t *)planar;
   for (uint32_t y = 0; y < CART_FB_LINES; y++) {

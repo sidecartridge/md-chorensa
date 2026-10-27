@@ -12,20 +12,25 @@
 
 #include <stdint.h>
 
-#define XL_STORE_BASE 0x10060000u        /* after the firmware's 384 KB */
+#define XL_STORE_BASE 0x10040000u        /* after the firmware's 256 KB */
 #define XL_STORE_COMMON XL_STORE_BASE    /* the common code */
 #define XL_STORE_COMMON_SIZE 0x40000u    /* 256 KB */
-#define XL_STORE_STAGE 0x100A0000u       /* the stage being played */
-#define XL_STORE_STAGE_SIZE 0x80000u     /* 512 KB, up to the Booster's area */
+#define XL_STORE_STAGE 0x10080000u       /* the stage being played */
+#define XL_STORE_STAGE_SIZE 0xA0000u     /* 640 KB, up to the Booster's area */
 
 /* The game's memory on the RP: pages of 256 bytes (xl.h's XL_PAGE_BITS),
  * the ones it writes in RAM, the others in the stage's image. The RAM pages
- * fill the firmware's array (xl_rp_ram) first, then the cartridge window's
- * free arena (APP_FREE, which neither the ST nor the firmware uses). */
+ * fill the chunky buffer's part a frame drawn in bands leaves first
+ * (fb_chunked.h's FB_BANDED_BYTES on: the game draws only in bands while it
+ * plays), then the firmware's array (xl_rp_ram), then the cartridge
+ * window's free arena (APP_FREE, which neither the ST nor the firmware
+ * uses). */
 #define XL_STORE_PAGE_BITS 8u
 #define XL_STORE_RAM_BYTES 0xA000u            /* 40 KB: 160 pages */
 #define XL_STORE_WINDOW_FREE 0x5180u          /* CART_APP_FREE_OFFSET */
 #define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
+#define XL_STORE_FB_FREE 0x9000u              /* FB_BANDED_BYTES */
+#define XL_STORE_FB_FREE_BYTES 0x7000u        /* 112 pages, to the buffer's end */
 
 /* The text plane (four planes of 1024 lines, 128 bytes a line, at $E00000)
  * in a layout of its own: the game shows it unscrolled, writes only its

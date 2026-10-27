@@ -16,7 +16,9 @@
  * the image in each line stay untouched.
  *
  * The c2p worker is Thumb assembly on the RP (fb_chunked_asm.S); here it is
- * the C it stands for (emu/fb_workers.c). */
+ * the C it stands for (emu/fb_workers.c). A frame drawn in bands
+ * (fb_draw_banded), converted band by band in the buffer's first part, shows
+ * the same. */
 #include <stdbool.h>
 #include <string.h>
 
@@ -209,6 +211,53 @@ static int short_copy_shows_the_top_lines(void) {
   return 1;
 }
 
+/* fb_draw_banded: each band asked for once, a whole band of lines in its
+ * half, drawn from `drawn`; the buffer past FB_BANDED_BYTES left alone. */
+static uint32_t band_calls;
+static int band_ok = 1;
+
+static void draw_band(uint8_t *band, const void *arg, int y0, int y1) {
+  (void)arg;
+  __atomic_fetch_add(&band_calls, 1u, __ATOMIC_RELAXED);
+  if (y1 - y0 != FB_BAND_LINES || y0 % FB_BAND_LINES != 0 || band < fb_chunked_buffer ||
+      band + (y1 - y0) * W > fb_chunked_buffer + FB_BANDED_BYTES) {
+    band_ok = 0;
+    return;
+  }
+  memcpy(band, drawn + y0 * W, (size_t)(y1 - y0) * W);
+}
+
+static int banded_copy_shows_what_was_drawn(void) {
+  memset(fb_chunked_buffer, 0x77, sizeof fb_chunked_buffer);
+  band_calls = 0;
+  fb_draw_banded(draw_band, NULL);
+  if (!band_ok || band_calls != H / FB_BAND_LINES) {
+    fprintf(stderr, "bands: %u calls, %s\n", (unsigned)band_calls, band_ok ? "in place" : "out of place");
+    return 0;
+  }
+  for (size_t i = FB_BANDED_BYTES; i < sizeof fb_chunked_buffer; i++) {
+    if (fb_chunked_buffer[i] != 0x77) {
+      fprintf(stderr, "byte %u past the banded part written\n", (unsigned)i);
+      return 0;
+    }
+  }
+  fb_planar_publish(cart, false);
+  memset(screen, 0x5A, sizeof(screen));
+  m68k_copy();
+  if (!shows_what_was_drawn() || !screen_right_of_image_untouched(0x5A)) {
+    fprintf(stderr, "the banded frame, the MOVEM copy\n");
+    return 0;
+  }
+  fb_planar_publish(cart, true);
+  memset(screen, 0xA5, sizeof(screen));
+  blitter_copy(CART_BLIT_PIECE_DEFAULT);
+  if (!shows_what_was_drawn() || !screen_right_of_image_untouched(0xA5)) {
+    fprintf(stderr, "the banded frame, the blitter\n");
+    return 0;
+  }
+  return 1;
+}
+
 int main(void) {
   /* The copy covers the whole framebuffer, as userfw's FBDRV_INLINE does
    * (tests/host/test_layout.py checks the two sides agree). */
@@ -228,6 +277,9 @@ int main(void) {
   }
   CHECK(every_copy_shows_what_was_drawn());
   CHECK(short_copy_shows_the_top_lines());
+  /* Drawn in bands, then a whole frame again: each publishes its own. */
+  CHECK(banded_copy_shows_what_was_drawn());
+  CHECK(every_copy_shows_what_was_drawn());
   /* In place: after the conversion the chunky buffer holds planes, not the
    * pixels drawn. */
   CHECK(memcmp(fb_chunked_buffer, drawn, sizeof drawn) != 0);
@@ -239,6 +291,7 @@ int main(void) {
   drawn[H * W - 1] = 4;
   for (int x = 0; x < W; x++) drawn[(H - 1) * W + x] = (uint8_t)(x & 15);
   CHECK(every_copy_shows_what_was_drawn());
+  CHECK(banded_copy_shows_what_was_drawn());
 
   /* The high nibble of a chunky byte is not a colour: the ST sees only the
    * palette index in the low nibble. */

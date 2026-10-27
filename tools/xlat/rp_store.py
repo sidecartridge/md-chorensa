@@ -26,7 +26,8 @@ sd-put), and the firmware copies them into the store.
 Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
-usage: rp_store.py --firmware ELF [--frame 650] [--phases RUN] [--entries RUN] [--out DIR]
+usage: rp_store.py --firmware ELF [--frame 650] [--phases RUN] [--entries RUN]
+                   [--pages RUN/memmap_NN.bin ...] [--out DIR]
 """
 
 import argparse
@@ -227,6 +228,16 @@ def header_c(path, image, kind, firmware_id, entries, stage=None, layout=None, s
         f.write("};\n")
 
 
+def check_firmware_fits(elf):
+    """The firmware ends before the store starts."""
+    end = swd.elf_symbols(elf, "__flash_binary_end").get("__flash_binary_end")
+    if end is None:
+        sys.exit(f"{elf} has no __flash_binary_end")
+    if end[0] > store_layout()["XL_STORE_BASE"]:
+        sys.exit(f"{elf} ends at 0x{end[0]:08X}, past the store's start "
+                 f"0x{store_layout()['XL_STORE_BASE']:08X}")
+
+
 def firmware_id(elf):
     """The firmware's build ID (its release_build_id), as the header keeps it."""
     build_id = swd.elf_build_id(elf)
@@ -241,6 +252,9 @@ def main():
     ap.add_argument("--frame", type=int, default=650, help="the snapshot's frame")
     ap.add_argument("--phases", help="a run with the stages as phases (else one is made)")
     ap.add_argument("--entries", help="a run with the first stage's entries (else one is made)")
+    ap.add_argument("--pages", action="append", default=[],
+                    help="a whole game's page map of the first stage (memmap_NN.bin): its "
+                    "written pages in RAM too (rp_image.py --pages)")
     ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-store"))
     args = ap.parse_args()
     cfg = recfg.load()
@@ -249,6 +263,7 @@ def main():
     listing = os.path.join(original, "sources", "sz2.s")
     fw = os.path.abspath(args.firmware)
     fw_id = firmware_id(fw)
+    check_firmware_fits(fw)
 
     phases_run = args.phases or host_run(
         "store-phases", ["--frames", str(PHASE_FRAMES)],
@@ -290,6 +305,7 @@ def main():
                     "--snapshot", os.path.join(snap, "snapshot.bin"),
                     "--memmap", os.path.join(memmap, "memmap.bin"),
                     "--memmap", os.path.join(live, "memmap.bin"),
+                    *[a for path in args.pages for a in ("--pages", path)],
                     "--checkpoints", os.path.join(bench, "checkpoints.bin"),
                     "--layout", os.path.join(stage_dir, "xl_layout.h"),
                     "--out", stage_dir], check=True)

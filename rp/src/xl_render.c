@@ -68,11 +68,11 @@ static inline void put_pair(uint8_t *d, uint32_t b) {
   d[1] = (uint8_t)(b & 15u);
 }
 
-static void draw_pages(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) {
+static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const xl_store_art_t *art = f->art;
   uint32_t lines = art->page_lines;
   for (int y = y0; y < y1; y++) {
-    uint8_t *d = fb + y * XL_RENDER_W;
+    uint8_t *d = band + (y - y0) * XL_RENDER_W;
     const uint8_t *src = art->page1 + ((f->page1_y + (uint32_t)y) % lines) * (XL_RENDER_W / 2u);
     for (uint32_t x = 0; x < XL_RENDER_W / 2u; x++) put_pair(d + 2u * x, src[x]);
     const uint8_t *rec = art->page0_runs + art->page0_index[(f->page0_y + (uint32_t)y) % lines];
@@ -90,12 +90,12 @@ static void draw_pages(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) 
 
 /* Four planes of 1024 x 1024, colour 0 clear, palette block 0; the
  * horizontal scroll in whole bytes, as the port applies it. */
-static void draw_text(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) {
+static void draw_text(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const uint8_t *colour = f->art->entry_colour + ENTRY_SPRITE;
   uint32_t column = f->text_x >> 3;
   for (int y = y0; y < y1; y++) {
     uint32_t line = TEXT_VRAM + ((f->text_y + (uint32_t)y) & 1023u) * TEXT_LINE;
-    uint8_t *d = fb + y * XL_RENDER_W;
+    uint8_t *d = band + (y - y0) * XL_RENDER_W;
     for (uint32_t b = 0; b < XL_RENDER_W / 8u; b++) {
       uint32_t at = line + ((column + b) & (TEXT_LINE - 1u));
       uint32_t p0 = rd8(at), p1 = rd8(at + TEXT_PLANE), p2 = rd8(at + 2u * TEXT_PLANE),
@@ -113,7 +113,7 @@ static void draw_text(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) {
 
 /* 16 x 16 at 4 bits a pixel in rows of 8 bytes; attributes bits 11-8 the
  * palette block, 14 a horizontal and 15 a vertical flip. */
-static void draw_sprites(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) {
+static void draw_sprites(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const xl_store_art_t *art = f->art;
   for (uint32_t k = 0; k < f->sprite_count; k++) {
     const uint16_t *s = f->sprites[f->order[k]];
@@ -129,7 +129,7 @@ static void draw_sprites(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1
     int hflip = (attr & 0x4000u) != 0, vflip = (attr & 0x8000u) != 0;
     for (int r = r0; r < r1; r++) {
       const uint8_t *row = data + (vflip ? 15 - r : r) * 8;
-      uint8_t *d = fb + (y + r) * XL_RENDER_W;
+      uint8_t *d = band + (y + r - y0) * XL_RENDER_W;
       for (int c = 0; c < 16; c++) {
         uint32_t v = (c & 1) ? (row[c >> 1] & 15u) : (row[c >> 1] >> 4);
         if (v == 0) continue;
@@ -140,17 +140,15 @@ static void draw_sprites(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1
   }
 }
 
-void xl_render_band(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1) {
-  if (y0 < 0) y0 = 0;
-  if (y1 > XL_RENDER_H) y1 = XL_RENDER_H;
-  if (y0 >= y1) return;
-  draw_pages(fb, f, y0, y1);
+void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
+  if (y0 < 0 || y1 > XL_RENDER_H || y0 >= y1) return;
+  draw_pages(band, f, y0, y1);
   if (f->text_in_front) {
-    draw_sprites(fb, f, y0, y1);
-    draw_text(fb, f, y0, y1);
+    draw_sprites(band, f, y0, y1);
+    draw_text(band, f, y0, y1);
   } else {
-    draw_text(fb, f, y0, y1);
-    draw_sprites(fb, f, y0, y1);
+    draw_text(band, f, y0, y1);
+    draw_sprites(band, f, y0, y1);
   }
 }
 
