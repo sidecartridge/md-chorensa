@@ -19,6 +19,7 @@
 #include "fb_font.h"
 #include "palette.h"
 #include "pico/time.h"
+#include "sdcard.h"
 #include "st_session.h"
 
 extern const struct FB_FONT font8x8; /* defined in fb.c */
@@ -114,6 +115,11 @@ static bool s_bench_prefer_ym; /* F10's state (audio.c keeps its own) */
 volatile uint32_t benchSetCopyMode;
 volatile uint32_t benchSetCopyLines;
 volatile uint32_t benchSetSoundPath;
+/* The card's SPI clock over SWD (swd.py bench-set --sd-khz), in kHz, taken
+ * at the next bench frame and cleared, clamped as Booster's SD_BAUD_RATE_KB
+ * is at boot (sdcard.c); benchSdHz is the clock the SPI really runs at. */
+volatile uint32_t benchSetSdKhz;
+uint32_t benchSdHz;
 static const uint8_t k_pieces[] = {0, 32, 4, 8};
 static uint8_t s_piece_choice;
 
@@ -251,6 +257,17 @@ void bench_frame(void) {
     s_bench_prefer_ym = benchSetSoundPath == 2u;
     audio_prefer_ym(s_bench_prefer_ym);
     benchSetSoundPath = 0;
+  }
+  sd_card_t *card = sd_get_num() ? sd_get_by_num(sd_get_num() - 1u) : NULL;
+  if (card && card->spi_if_p && card->spi_if_p->spi) {
+    if (benchSetSdKhz) {
+      uint32_t khz = benchSetSdKhz;
+      khz = khz > SDCARD_MAX_KHZ ? SDCARD_MAX_KHZ : khz < SDCARD_MIN_KHZ ? SDCARD_MIN_KHZ : khz;
+      sdcard_changeSpiSpeed((int)khz); /* kept for the card's next initialisation */
+      spi_set_baudrate(card->spi_if_p->spi->hw_inst, khz * SDCARD_KILOBAUD);
+      benchSetSdKhz = 0;
+    }
+    benchSdHz = spi_get_baudrate(card->spi_if_p->spi->hw_inst);
   }
   if (bench_logic_poll()) palette_set(s_palette); /* the game had the screen */
   if (bench_logic_holds_screen()) return;           /* the framebuffer is the card's buffer */

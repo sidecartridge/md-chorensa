@@ -917,7 +917,7 @@ def cmd_logic(args: argparse.Namespace) -> int:
 
 
 PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
-               "publish_sum", "publish_max")
+               "publish_sum", "publish_max", "audio_sum", "audio_max")
 
 
 def image_numbers(image: list[int], width: int = 256, height: int = 256) -> bytes:
@@ -985,7 +985,7 @@ def wait_not_loading(elf: str, seconds: float = 60.0) -> None:
 def cmd_play(args: argparse.Namespace) -> int:
     """The bench's play mode (bench_logic.h): the frames shown and what each
     cost on the RP (the game, the picture, the c2p and the wait for the
-    ST's copy), over --seconds; --stop / --start."""
+    ST's copy, the sound), over --seconds; --stop / --start."""
     elf = matching_elf(args.elf)
     sym = elf_symbols(elf, "benchPlay", "benchPlayStats")
     if len(sym) < 2:
@@ -993,7 +993,13 @@ def cmd_play(args: argparse.Namespace) -> int:
     if args.hold is not None:
         return play_hold(elf, args)
     if args.stop or args.start:
-        openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlay'][0]:08x} {1 if args.start else 0}")
+        cmds = [f"mww 0x{sym['benchPlay'][0]:08x} {1 if args.start else 0}"]
+        if args.start and args.force_copy:
+            force = elf_symbols(elf, "storeForceCopy").get("storeForceCopy")
+            if force is None:
+                raise SwdError(f"{os.path.basename(elf)} cannot force the store's copy")
+            cmds.insert(0, f"mww 0x{force[0]:08x} 1")
+        openocd(f"targets {CORES[0]}", *cmds)
         print("play " + ("started" if args.start else "stopped"))
         if args.start:
             wait_not_loading(elf)
@@ -1010,7 +1016,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     print(f"{frames} frames in {args.seconds:.0f} s: {frames / args.seconds:.1f} a second "
           f"({b['frames']} shown, {b['laps']} laps)")
     if frames:
-        for name in ("game", "draw", "publish"):
+        for name in ("game", "draw", "publish", "audio"):
             mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
             print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
     return 0
@@ -1019,10 +1025,12 @@ def cmd_play(args: argparse.Namespace) -> int:
 def cmd_bench_set(args: argparse.Namespace) -> int:
     """The bench's copy and sound settings over SWD (bench.c's benchSet*):
     who copies the frame, the lines the ST copies, the sound path from the
-    ST's next boot. The bench takes them at its next frame (not while it
-    plays: swd.py play --stop first)."""
+    ST's next boot, the card's SPI clock. The bench takes them at its next
+    frame (not while it plays: swd.py play --stop first). With nothing to
+    set, the clock the card runs at."""
     elf = matching_elf(args.elf)
-    sym = elf_symbols(elf, "benchSetCopyMode", "benchSetCopyLines", "benchSetSoundPath")
+    sym = elf_symbols(elf, "benchSetCopyMode", "benchSetCopyLines", "benchSetSoundPath",
+                      "benchSetSdKhz", "benchSdHz")
     if len(sym) < 3:
         raise SwdError(f"{os.path.basename(elf)} has no bench settings over SWD")
     defs = include_defines()
@@ -1035,17 +1043,27 @@ def cmd_bench_set(args: argparse.Namespace) -> int:
         cmds.append(f"mww 0x{sym['benchSetCopyLines'][0]:08x} {args.lines}")
     if args.sound:
         cmds.append(f"mww 0x{sym['benchSetSoundPath'][0]:08x} {2 if args.sound == 'ym' else 1}")
+    if args.sd_khz:
+        if "benchSetSdKhz" not in sym:
+            raise SwdError(f"{os.path.basename(elf)} cannot set the card's clock")
+        cmds.append(f"mww 0x{sym['benchSetSdKhz'][0]:08x} {args.sd_khz}")
     if not cmds:
-        raise SwdError("nothing to set: --copy, --lines or --sound")
+        if "benchSdHz" not in sym:
+            raise SwdError("nothing to set: --copy, --lines, --sound or --sd-khz")
+        print(f"the card's clock: {read_word(sym['benchSdHz'][0]) / 1e6:.3f} MHz")
+        return 0
     openocd(f"targets {CORES[0]}", *cmds)
     time.sleep(0.2)
     left = read_words([sym[n][0] for n in ("benchSetCopyMode", "benchSetCopyLines",
-                                            "benchSetSoundPath")])
+                                            "benchSetSoundPath", "benchSetSdKhz") if n in sym])
     if any(left):
         raise SwdError("the bench did not take them (is it playing? swd.py play --stop)")
     print("set: " + ", ".join(f"{k} {v}" for k, v in (("copy", args.copy), ("lines", args.lines),
-                                                       ("sound from the next boot", args.sound))
+                                                       ("sound from the next boot", args.sound),
+                                                       ("the card's clock (kHz)", args.sd_khz))
                               if v))
+    if args.sd_khz:
+        print(f"the card's clock: {read_word(sym['benchSdHz'][0]) / 1e6:.3f} MHz")
     return 0
 
 
@@ -1875,6 +1893,7 @@ def build_parser() -> argparse.ArgumentParser:
     bs.add_argument("--copy", choices=("auto", "cpu", "blitter"))
     bs.add_argument("--lines", type=int, choices=(240, 256))
     bs.add_argument("--sound", choices=("ym", "own"), help="from the ST's next boot")
+    bs.add_argument("--sd-khz", type=int, help="the card's SPI clock (1000-24000), at once")
     bs.add_argument("--elf")
     bs.set_defaults(func=cmd_bench_set)
 
@@ -1882,6 +1901,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--seconds", type=float, default=5.0)
     pl.add_argument("--stop", action="store_true", help="back to the bench's test card")
     pl.add_argument("--start", action="store_true", help="play again")
+    pl.add_argument("--force-copy", action="store_true",
+                    help="with --start: copy the images into the store even if it holds them")
     pl.add_argument("--hold", type=int, metavar="N",
                     help="hold on the host's frame N, grab it (--out PNG) and --compare it")
     pl.add_argument("--compare", metavar="RPSCREEN", help="the host's rpscreen_N.bin")

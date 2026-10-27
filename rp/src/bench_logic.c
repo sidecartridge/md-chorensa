@@ -287,7 +287,8 @@ static void present(uint32_t game_us) {
   uint32_t t1 = time_us_32();
   fb_publish();
   uint32_t t2 = time_us_32();
-  audio_render_frame(); /* the music: song_samples */
+  audio_render_frame(); /* the music and the effects: song_samples */
+  uint32_t t3 = time_us_32();
   ikbd_pump();
   select_poll();
   ikbd_key_event_t key;
@@ -321,6 +322,7 @@ static void present(uint32_t game_us) {
   note(&benchPlayStats.game_sum, &benchPlayStats.game_max, game_us);
   note(&benchPlayStats.draw_sum, &benchPlayStats.draw_max, t1 - t0);
   note(&benchPlayStats.publish_sum, &benchPlayStats.publish_max, t2 - t1);
+  note(&benchPlayStats.audio_sum, &benchPlayStats.audio_max, t3 - t2);
   if (!benchPlay) stop(BENCH_LOGIC_DONE, "stopped", 0);
 }
 
@@ -763,6 +765,7 @@ static void run(int drawn) {
   benchLogicResult.state = BENCH_LOGIC_LOADING;
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
   s_stage = load(1, "STAGE1.IMG", XL_STORE_STAGE, XL_STORE_STAGE_SIZE);
+  storeForceCopy = 0;
   benchLogicResult.state = BENCH_LOGIC_IDLE;
   const char *problem = NULL;
   if (s_common == NULL || s_stage == NULL || s_stage->state == NULL) {

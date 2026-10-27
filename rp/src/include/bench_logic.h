@@ -59,6 +59,7 @@ typedef struct {
   uint32_t game_sum, game_max; /* the game's logic and VBL handler a frame, us */
   uint32_t draw_sum, draw_max; /* the picture on both cores and the palette */
   uint32_t publish_sum, publish_max; /* the c2p and the wait for the ST's copy */
+  uint32_t audio_sum, audio_max; /* the sound: the song's and the effect's reads and the mix */
 } bench_play_t;
 
 enum {

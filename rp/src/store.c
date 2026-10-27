@@ -59,6 +59,8 @@ static void program(uint32_t offset, const uint8_t *data, uint32_t size) {
   restore_interrupts(ints);
 }
 
+volatile uint32_t storeForceCopy;
+
 int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
                store_progress_fn progress) {
   if (f_open(&s_file, path, FA_READ) != FR_OK) return STORE_NO_FILE;
@@ -75,7 +77,7 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
     return STORE_OTHER_FIRMWARE;
   }
   const xl_store_header_t *held = store_header(base);
-  if (held && memcmp(held, &header, sizeof header) == 0) {
+  if (!storeForceCopy && held && memcmp(held, &header, sizeof header) == 0) {
     f_close(&s_file);
     return STORE_SKIPPED;
   }

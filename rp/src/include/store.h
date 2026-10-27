@@ -33,6 +33,11 @@ enum {
 
 typedef void (*store_progress_fn)(void);
 
+/* Set over SWD (tools/dev/swd.py play --force-copy): the next loads copy
+ * their images even when the store holds them already, to time the copy;
+ * the caller clears it. */
+extern volatile uint32_t storeForceCopy;
+
 /* The header of the image at `base` if its magic and version are valid. */
 const xl_store_header_t *store_header(uint32_t base);
 
