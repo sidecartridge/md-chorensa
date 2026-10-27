@@ -121,11 +121,24 @@ static void write_coverage(const char *out_dir) {
   fclose(f);
 }
 
+#ifdef XL_MEMMAP
+static void memmap_phase_end(uint32_t phase);
+#endif
+/* The patterns the phase's sprites drew (PATTERNS of them, below). */
+static uint8_t s_phase_patterns[2048];
+
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
     if (s_phase_entries[n] == entry && s_phase != n + 1) {
+#ifdef XL_MEMMAP
+      memmap_phase_end(s_phase);
+#endif
       s_phase = n + 1;
-      printf("xl: phase %u from frame %u, score %u\n", s_phase, s_frame_count, rd32(XL_PLAYER_SCORE));
+      uint32_t patterns = 0;
+      for (uint32_t k = 0; k < sizeof s_phase_patterns; k++) patterns += s_phase_patterns[k];
+      memset(s_phase_patterns, 0, sizeof s_phase_patterns);
+      printf("xl: phase %u from frame %u, score %u (the phase before drew %u patterns)\n", s_phase,
+             s_frame_count, rd32(XL_PLAYER_SCORE), patterns);
     }
   }
   uint32_t k = (entry * 2654435761u) >> 20;
@@ -232,6 +245,9 @@ void xl_hw_wr(uint32_t a, uint32_t v, int size) {
 #ifdef XL_MEMMAP
 #define BLOCKS (XL_MEMORY >> 8)
 static uint8_t *s_touched;
+/* Per page, in the current phase: 1 if a byte of it was read before the
+ * phase wrote it (the page's value comes from before the phase). */
+static uint8_t s_page_carried[XL_MEMORY >> 8];
 static uint32_t s_block_reads[BLOCKS], s_block_writes[BLOCKS];
 static uint32_t s_block_first[BLOCKS], s_block_last[BLOCKS];
 static int s_memmap_paused;
@@ -247,7 +263,11 @@ void xl_memmap_access(uint32_t a, int size, int write) {
     s_block_reads[block]++;
   }
   uint8_t flag = write == 0 ? 1u : write == 1 ? 2u : 4u;
-  for (int k = 0; k < size; k++) s_touched[(a + (uint32_t)k) & 0xFFFFFFu] |= flag;
+  for (int k = 0; k < size; k++) {
+    uint32_t b = (a + (uint32_t)k) & 0xFFFFFFu;
+    if (write == 0 && !(s_touched[b] & 6u)) s_page_carried[b >> 8] = 1;
+    s_touched[b] |= flag;
+  }
 }
 
 static void memmap_range(uint32_t a, uint32_t n, int write) {
@@ -277,6 +297,68 @@ static void write_memmap(const char *out_dir) {
   fclose(f);
 }
 #define MEMMAP_PAUSE(on) (s_memmap_paused = (on))
+
+/* With XL_PHASES too (a trace build): at each phase change and at the end,
+ * what the phase touched in pages of 256 bytes (the RP's, xl.h's
+ * XL_PAGE_BITS), to memmap_phases.txt, and the map starts over: per region
+ * (main memory, the graphics pages, the text plane, the rest) the pages it
+ * wrote (the code or the runtime for it) and the pages it only read. */
+static FILE *s_phase_map;
+static uint32_t s_phase_map_from;
+/* The pages any stage wrote (phases from the first stage on): what RAM the
+ * game's state needs across the stages, since it carries over. */
+static uint8_t s_written_since_play[XL_MEMORY >> 8];
+
+static void memmap_phase_end(uint32_t phase) {
+  static const struct {
+    uint32_t from, to;
+    const char *name;
+  } regions[] = {{0, 0xC00000u, "main"}, {0xC00000u, 0xE00000u, "gvram"},
+                 {0xE00000u, 0xE80000u, "text"}, {0xE80000u, XL_MEMORY, "io"}};
+  if (s_phase_map == NULL) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/memmap_phases.txt", s_out_dir);
+    s_phase_map = fopen(path, "w");
+    if (s_phase_map == NULL) return;
+    fprintf(s_phase_map, "# phase from-frame to-frame, then per region: name written-pages "
+                         "read-only-pages written-by-any-stage-so-far (256 bytes each)\n");
+  }
+  fprintf(s_phase_map, "%u %u %u", phase, s_phase_map_from, s_frame_count);
+  for (size_t r = 0; r < sizeof regions / sizeof regions[0]; r++) {
+    uint32_t written = 0, read = 0, since = 0;
+    for (uint32_t page = regions[r].from; page < regions[r].to; page += 256u) {
+      uint8_t flags = 0;
+      for (uint32_t k = 0; k < 256u; k++) flags |= s_touched[page + k];
+      if (flags & 6u) {
+        written++;
+        if (phase >= 2u) s_written_since_play[page >> 8] = 1; /* phase 2: the first stage */
+      } else if (flags & 1u) {
+        read++;
+      }
+      since += s_written_since_play[page >> 8];
+    }
+    fprintf(s_phase_map, " %s %u %u %u", regions[r].name, written, read, since);
+  }
+  fprintf(s_phase_map, "\n");
+  fflush(s_phase_map);
+  /* The phase's pages for a liveness pass (memmap_NN.bin, NN the phase's
+   * order): per page, bit 0 written, bit 1 read before written. */
+  static uint32_t sequence;
+  char name[1024];
+  snprintf(name, sizeof name, "%s/memmap_%02u.bin", s_out_dir, sequence++);
+  FILE *f = fopen(name, "wb");
+  if (f) {
+    for (uint32_t page = 0; page < (XL_MEMORY >> 8); page++) {
+      uint8_t flags = 0;
+      for (uint32_t k = 0; k < 256u; k++) flags |= s_touched[(page << 8) + k];
+      fputc(((flags & 6u) ? 1 : 0) | (s_page_carried[page] ? 2 : 0), f);
+    }
+    fclose(f);
+  }
+  memset(s_page_carried, 0, sizeof s_page_carried);
+  memset(s_touched, 0, XL_MEMORY);
+  s_phase_map_from = s_frame_count;
+}
 #else
 #define memmap_range(a, n, write) ((void)0)
 #define write_memmap(out_dir) ((void)0)
@@ -402,6 +484,7 @@ static uint32_t s_sprite_list_count;
  * attributes' bits 15-14 = n): pattern_use.bin at the end, 'CRSU' then a byte
  * a pattern (tools/xlat/rp_store.py converts those). */
 #define PATTERNS 2048u
+_Static_assert(sizeof s_phase_patterns == PATTERNS, "a pattern a byte");
 static uint8_t s_pattern_use[PATTERNS];
 
 #ifdef XL_RP_RENDER
@@ -466,7 +549,10 @@ void xl_patch_xsp_out(void) {
   for (uint32_t k = 0; k < count; k++) {
     const uint8_t *e = s_sprites + 8u * k;
     uint32_t pattern = ((uint32_t)e[4] << 8) | e[5];
-    if (pattern < PATTERNS) s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
+    if (pattern < PATTERNS) {
+      s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
+      s_phase_patterns[pattern] = 1;
+    }
   }
 #ifdef XL_RP_RENDER
   rp_take_sprites(count);
@@ -1566,6 +1652,9 @@ int main(int argc, char **argv) {
   MEMMAP_PAUSE(1);
   write_graphics();
   write_memmap(s_out_dir);
+#if defined(XL_MEMMAP) && defined(XL_TRACE)
+  if (s_phase_count) memmap_phase_end(s_phase); /* the last phase */
+#endif
   for (uint32_t k = 0; k < 256; k++) {
     if (s_calls_iocs[k]) printf("xl: IOCS $%02X %u calls\n", k, s_calls_iocs[k]);
   }
