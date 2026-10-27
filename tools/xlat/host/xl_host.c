@@ -81,6 +81,10 @@ static int s_samples_decoded;
 static uint32_t s_effect_end_tick;
 static FILE *s_effects_log; /* the effects' starts and stops (XL_MUSIC) */
 
+/* The patterns the current phase's sprites drew (PATTERNS of them, below):
+ * counted at each phase change (XL_TRACE, XL_PHASES). */
+static uint8_t s_phase_patterns[2048];
+
 #ifdef XL_TRACE
 #define TRACE_RING 64
 static uint32_t s_trace[TRACE_RING][3]; /* kind (0 enter, 1 return), address, A7 or target */
@@ -124,8 +128,6 @@ static void write_coverage(const char *out_dir) {
 #ifdef XL_MEMMAP
 static void memmap_phase_end(uint32_t phase);
 #endif
-/* The patterns the phase's sprites drew (PATTERNS of them, below). */
-static uint8_t s_phase_patterns[2048];
 
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
