@@ -62,8 +62,13 @@ def build(cfg, out, rebuild, resume=None, art=None):
     sources = sorted(glob.glob(os.path.join(out, "xl_*.c"))) + [os.path.join(HERE, "host", "xl_host.c")]
     flags = list(CFLAGS)
     if art:
-        # The RP's renderer and the stage's art beside the host's renderer.
-        sources += [os.path.join(RP_SRC, "xl_render.c"), os.path.join(art, "xl_stage_art.c")]
+        # The RP's renderer and the scene's art beside the host's renderer;
+        # COMMON's patterns beside it (rp_art.py on its own) or in the
+        # common image's folder next to it (rp_store.py).
+        common = os.path.join(art, "xl_common_art.c")
+        if not os.path.exists(common):
+            common = os.path.join(art, "..", "common", "xl_common_art.c")
+        sources += [os.path.join(RP_SRC, "xl_render.c"), os.path.join(art, "xl_stage_art.c"), common]
         flags += ["-DXL_RP_RENDER", "-I", os.path.join(RP_SRC, "include")]
     for c in sources:
         o = os.path.join(out, os.path.basename(c)[:-2] + ".o")
@@ -132,7 +137,7 @@ def main():
     ap.add_argument("--snapshot", type=int, help="write a snapshot at this frame")
     ap.add_argument("--resume", metavar="RUN", help="start from the snapshot of an earlier run")
     ap.add_argument("--replay", metavar="FILE", help="a recorded game played as the attract demo")
-    ap.add_argument("--rp-art", metavar="DIR", help="with the RP's renderer and this stage art "
+    ap.add_argument("--rp-art", metavar="DIR", help="with the RP's renderer and this scene's art "
                     "(rp_art.py's xl_stage_art.c): rpscreen_NNNNN.bin beside each screen")
     ap.add_argument("--entries", action="store_true",
                     help="beside each screen, each pixel's palette entry (entries_NNNNN.bin)")

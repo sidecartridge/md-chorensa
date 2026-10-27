@@ -1,34 +1,27 @@
 #!/usr/bin/env python3
-"""A stage's memory for the RP's flash store, from a host snapshot and the
-memory map of a run resumed from it: 1 KB pages, the ones the run writes in
-RAM (their contents at the snapshot copied in when the run starts), the ones
-it only reads inside the stage's image (pages of 256 bytes), every 16-bit word in the RP's byte
-order (xl.h's XL_PAGED accessors), and the page table as constants of the
-image (xl_stage_regions: 256 regions of 64 KB, each a row of its 256 pages; the
-firmware copies the regions into RAM). Pages the run never touches point at
-a spare RAM page; the text plane's point into its packed area (xl_store.h's
-XL_STORE_TEXT_*), its rows that are not clear at the snapshot in the image. With it: the runtime's state at the snapshot, its sprite
-list and the checkpoints the host recorded, which the RP checks its own
-against. tools/xlat/rp_store.py builds it into the stage's image.
+"""A scene's memory for the RP's flash store (tools/xlat/xl_store.h), as C
+for its image (xl_rp_image.c): pages of 256 bytes, every 16-bit word in the
+RP's byte order (xl.h's XL_PAGED accessors), and the page table as constants
+of the image (xl_stage_regions: 256 regions of 64 KB, each a row of its 256
+pages; the firmware copies the regions into RAM). The pages the scene writes
+are in RAM (the pool, xl_store.h), the ones it only reads in its own image or
+in COMMON's (xl_common_pages: the ones more than one scene reads), the text
+plane's in its packed area (XL_STORE_TEXT_*); every other page points at a
+spare RAM page. tools/xlat/rp_store.py chooses the pages and builds the C
+into the images. For the logic bench's stage, the snapshot's state too: the
+RAM pages' and the text plane's contents, the runtime's state words, its
+sprite list and the checkpoints the host recorded, which the RP checks its
+own against.
 
 Its output is the game's: it goes into a build folder outside the
 repository, never committed.
-
-usage: rp_image.py --snapshot RUN/snapshot.bin --memmap RUN/memmap.bin [--memmap ...]
-                   [--pages RUN/memmap_NN.bin ...]
-                   --checkpoints RUN/checkpoints.bin --layout BUILD/xl_layout.h
-                   --out DIR
-
---pages adds the pages a phase of another run wrote (a host trace and memory
-map build's memmap_NN.bin: a byte a page, bit 0 written): the stage's pages
-in a whole game, beside what the runs resumed from the snapshot touch.
 """
 
-import argparse
 import os
 import re
 import struct
 import sys
+
 
 def _store_values():
     text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "xl_store.h")).read()
@@ -111,140 +104,114 @@ def swapped(data):
 
 
 def c_bytes(data, indent="  "):
-    lines = []
-    for k in range(0, len(data), 24):
-        lines.append(indent + ",".join(str(b) for b in data[k:k + 24]) + ",")
-    return "\n".join(lines)
+    return "\n".join(indent + ",".join(str(b) for b in data[k:k + 24]) + ","
+                     for k in range(0, len(data), 24))
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--snapshot", required=True)
-    ap.add_argument("--memmap", required=True, action="append",
-                    help="a resumed run's memory map (several: what any of them touches)")
-    ap.add_argument("--pages", action="append", default=[],
-                    help="a phase's page map (memmap_NN.bin): its written pages in RAM")
-    ap.add_argument("--checkpoints", required=True)
-    ap.add_argument("--layout", required=True)
-    ap.add_argument("--out", required=True)
-
-    args = ap.parse_args()
-
-    snap = open(args.snapshot, "rb").read()
-    state = struct.unpack("<%dI" % STATE_WORDS, snap[:4 * STATE_WORDS])
-    if state[0] != 0x4E534C58:
-        sys.exit(f"{args.snapshot}: not a snapshot")
-    at = 4 * STATE_WORDS
-    sprites = snap[at:at + SPRITE_BYTES]
-    at += SPRITE_BYTES + 32 * state[31]
-    memory = snap[at:at + MEMORY]
-    if len(memory) != MEMORY:
-        sys.exit(f"{args.snapshot}: short")
-    touched = bytearray(MEMORY)
-    for path in args.memmap:
-        data = open(path, "rb").read()
-        if len(data) != MEMORY:
-            sys.exit(f"{path}: not a memory map")
-        touched = bytearray(a | b for a, b in zip(touched, data))
-    for path in args.pages:
-        data = open(path, "rb").read()
-        if len(data) != PAGES:
-            sys.exit(f"{path}: not a page map")
-        for p, flags in enumerate(data):
-            if flags & 1:
-                touched[p * PAGE] |= 2
-    layout = {m.group(1): int(m.group(2), 16) for m in
-              re.finditer(r"#define XL_(\w+) 0x([0-9A-F]+)u", open(args.layout).read())}
-
+def runtime_pages(layout):
+    """The pages the runtime touches for the program, which the memory maps
+    leave out: (written, read)."""
+    written, read = set(), set()
     for name, size in RUNTIME_RANGES.items():
-        for a in range(layout[name], layout[name] + size):
-            touched[a] |= 3   # read and written by the runtime
-    for a in range(VBL_VECTOR, VBL_VECTOR + 4):
-        touched[a] |= 1
+        written |= set(range(layout[name] // PAGE, (layout[name] + size - 1) // PAGE + 1))
+    read |= {VBL_VECTOR // PAGE}
     for start, size in RENDER_READS:
-        for a in range(start, start + size):
-            touched[a] |= 1
+        read |= set(range(start // PAGE, (start + size - 1) // PAGE + 1))
+    return written, read
 
+
+def text_pages():
+    return range(TEXT_VRAM // PAGE, (TEXT_VRAM + 4 * TEXT_PLANE) // PAGE)
+
+
+def pool_page(k):
+    """The pool's page k (xl_store.h): the chunky buffer's part, the
+    firmware's array, the window's arena."""
+    if k < POOL_FB:
+        return f"fb_chunked_buffer + 0x{FB_FREE + k * PAGE:X}"
+    k -= POOL_FB
+    if k < POOL_RAM:
+        return f"xl_rp_ram + 0x{k * PAGE:X}"
+    return f"__rom_in_ram_start__ + 0x{WINDOW_FREE + (k - POOL_RAM) * PAGE:X}"
+
+
+POOL = POOL_FB + POOL_RAM + POOL_WINDOW
+
+
+def write_image(out, memory, ram, own, common_at, bench=None):
+    """xl_rp_image.h and .c in `out`: `ram` the pages in RAM (in pool order),
+    `own` the read-only pages in the scene's image, `common_at` {page: its
+    offset in COMMON's xl_common_pages}. `bench`, for the logic bench's
+    stage: {"state": words, "sprites": bytes, "checkpoints": bytes}, with
+    the RAM pages and the text plane as `memory` holds them. Returns a line
+    of figures."""
+    ram, own = sorted(ram), sorted(own)
+    if len(ram) + 1 > POOL:
+        sys.exit(f"{out}: {len(ram)} pages written and a spare page, {POOL} RAM pages to hold them")
+    spare = len(ram)
     text_init, text_where = text_layout(memory)
     text_rows = [at for at in range(0, 4 * TEXT_PLANE_BYTES, TEXT_SHOWN)
-                 if any(text_init[at:at + TEXT_SHOWN])]
-    ram, flash = [], []
-    for p in range(PAGES):
-        if p in text_where:
-            continue
-        flags = 0
-        for b in touched[p * PAGE:(p + 1) * PAGE]:
-            flags |= b
-        if flags & 6:
-            ram.append(p)
-        elif flags:
-            flash.append(p)
-    pool = POOL_RAM + POOL_WINDOW + POOL_FB
-    if len(ram) + 1 > pool:
-        sys.exit(f"{len(ram)} pages written and a spare page, {pool} RAM pages to hold them")
-    spare = len(ram)
-
-    data = open(args.checkpoints, "rb").read()
-    count = struct.unpack(">I", data[4:8])[0]
-    checkpoints = data[8:8 + 32 * count]
-
-    os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, "xl_rp_image.h"), "w") as h:
+                 if bench and any(text_init[at:at + TEXT_SHOWN])]
+    count = len(bench["checkpoints"]) // 32 if bench else 0
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "xl_rp_image.h"), "w") as h:
         h.write("/* Generated by tools/xlat/rp_image.py from the user's copy of the program:\n"
                 " * never commit. */\n#ifndef XL_RP_IMAGE_H\n#define XL_RP_IMAGE_H\n#include <stdint.h>\n")
-        h.write(f"#define XL_RP_RAM_PAGES {spare + 1}u /* the written pages and a spare */\n")
-        h.write(f"#define XL_RP_WRITTEN_PAGES {spare}u\n")
-        h.write(f"#define XL_RP_FLASH_PAGES {len(flash)}u\n")
+        h.write(f"#define XL_RP_WRITTEN_PAGES {spare}u /* in RAM, and a spare */\n")
+        h.write(f"#define XL_RP_FLASH_PAGES {len(own)}u\n")
         h.write(f"#define XL_RP_STATE_WORDS {STATE_WORDS}u\n#define XL_RP_SPRITE_BYTES {SPRITE_BYTES}u\n")
         h.write(f"#define XL_RP_CHECKPOINTS {count}u\n")
+        h.write(f"#define XL_RP_TEXT_ROWS {len(text_rows)}u /* the text plane's rows not clear */\n")
         h.write("extern uint8_t xl_rp_ram[];  /* the firmware's RAM for the pages */\n")
         h.write("extern uint8_t xl_rp_text[];  /* the text plane's packed area */\n")
-        h.write(f"#define XL_RP_TEXT_ROWS {len(text_rows)}u /* the text plane's rows not clear */\n")
-        h.write("extern const uint16_t xl_rp_text_rows[];\nextern const uint8_t xl_rp_text_init[];\n")
         h.write("extern uint8_t __rom_in_ram_start__[];  /* the cartridge window */\n")
         h.write("extern uint8_t fb_chunked_buffer[];  /* its part a banded frame leaves */\n")
-        h.write("extern const uint8_t xl_rp_ram_init[];\n")
-        h.write("extern const uint32_t xl_rp_state[];\nextern const uint8_t xl_rp_sprites[];\n")
-        h.write("extern const uint8_t xl_rp_checkpoints[];\n")
+        h.write("extern const uint8_t xl_common_pages[];  /* COMMON's read-only pages */\n")
         h.write("extern uint8_t *const *const xl_stage_regions[256];\n")
+        if bench:
+            h.write("extern const uint8_t xl_rp_ram_init[];\n")
+            h.write("extern const uint32_t xl_rp_state[];\nextern const uint8_t xl_rp_sprites[];\n")
+            h.write("extern const uint8_t xl_rp_checkpoints[];\n")
+            h.write("extern const uint16_t xl_rp_text_rows[];\nextern const uint8_t xl_rp_text_init[];\n")
         h.write("#endif\n")
-    with open(os.path.join(args.out, "xl_rp_image.c"), "w") as c:
+    with open(os.path.join(out, "xl_rp_image.c"), "w") as c:
         c.write("/* Generated by tools/xlat/rp_image.py from the user's copy of the program:\n"
                 " * never commit. */\n#include \"xl_rp_image.h\"\n\n")
-        init = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in ram))
-        c.write(f"const uint8_t xl_rp_ram_init[{len(init)}] __attribute__((aligned(4))) = {{\n{c_bytes(init)}\n}};\n\n")
-        c.write(f"const uint16_t xl_rp_text_rows[{max(len(text_rows), 1)}] = {{\n"
-                + "".join(f"  0x{at:04X}u,\n" for at in text_rows) + ("" if text_rows else "  0,\n")
-                + "};\n\n")
-        rows = swapped(b"".join(bytes(text_init[at:at + TEXT_SHOWN]) for at in text_rows))
-        c.write(f"const uint8_t xl_rp_text_init[{max(len(rows), 1)}] __attribute__((aligned(4))) = {{\n"
-                f"{c_bytes(rows) or '  0,'}\n}};\n\n")
-        pages = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in flash))
-        c.write(f"static const uint8_t k_flash[{max(len(pages), 1)}] __attribute__((aligned(4))) = {{\n{c_bytes(pages) or '  0,'}\n}};\n\n")
-        def pool_page(k):  # the chunky buffer's part, the firmware's array, the window's arena
-            if k < POOL_FB:
-                return f"fb_chunked_buffer + 0x{FB_FREE + k * PAGE:X}"
-            k -= POOL_FB
-            if k < POOL_RAM:
-                return f"xl_rp_ram + 0x{k * PAGE:X}"
-            return f"__rom_in_ram_start__ + 0x{WINDOW_FREE + (k - POOL_RAM) * PAGE:X}"
-
+        if bench:
+            init = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in ram))
+            c.write(f"const uint8_t xl_rp_ram_init[{max(len(init), 1)}] __attribute__((aligned(4))) = "
+                    f"{{\n{c_bytes(init) or '  0,'}\n}};\n\n")
+            c.write(f"const uint16_t xl_rp_text_rows[{max(len(text_rows), 1)}] = {{\n"
+                    + "".join(f"  0x{at:04X}u,\n" for at in text_rows) + ("" if text_rows else "  0,\n")
+                    + "};\n\n")
+            rows = swapped(b"".join(bytes(text_init[at:at + TEXT_SHOWN]) for at in text_rows))
+            c.write(f"const uint8_t xl_rp_text_init[{max(len(rows), 1)}] __attribute__((aligned(4))) = "
+                    f"{{\n{c_bytes(rows) or '  0,'}\n}};\n\n")
+            c.write(f"const uint32_t xl_rp_state[{STATE_WORDS}] = {{\n"
+                    + "".join(f"  0x{w:08X}u,\n" for w in bench["state"]) + "};\n\n")
+            c.write(f"const uint8_t xl_rp_sprites[{SPRITE_BYTES}] = {{\n{c_bytes(bench['sprites'])}\n}};\n\n")
+            c.write(f"const uint8_t xl_rp_checkpoints[{max(len(bench['checkpoints']), 1)}] = {{\n"
+                    f"{c_bytes(bench['checkpoints']) or '  0,'}\n}};\n\n")
+        pages = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in own))
+        c.write(f"static const uint8_t k_flash[{max(len(pages), 1)}] __attribute__((aligned(4))) = "
+                f"{{\n{c_bytes(pages) or '  0,'}\n}};\n\n")
         where = {}
         for k, p in enumerate(ram):
             where[p] = pool_page(k)
-        for k, p in enumerate(flash):
+        for k, p in enumerate(own):
             where[p] = f"(uint8_t *)k_flash + 0x{k * PAGE:X}"
+        for p, at in common_at.items():
+            where.setdefault(p, f"(uint8_t *)xl_common_pages + 0x{at:X}")
         for p, at in text_where.items():
             if at is not None:
                 where[p] = f"xl_rp_text + 0x{at:X}"
-        # The table in RAM, in two levels: 256 regions of 64 KB, each a row of
-        # its 64 pages; the regions the run never touches share a row of the
-        # spare page.
+        # Two levels: 256 regions of 64 KB, each a row of its pages; the
+        # regions the scene never touches share a row of the spare page. Both
+        # are constants of the image; the firmware's RAM table (xl_regions) is
+        # copied from them.
         per_region = 1 << (16 - PAGE_BITS)
         regions = sorted({p // per_region for p in where})
         void = pool_page(spare)
-        # Both levels are constants of the stage's image; the firmware's RAM
-        # table (xl_regions) is copied from them.
         c.write(f"static uint8_t *const k_rows[{len(regions) + 1}][{per_region}] = {{\n")
         for r in regions:
             c.write("  {" + ", ".join(where.get(r * per_region + k, void)
@@ -253,18 +220,23 @@ def main():
         c.write("uint8_t *const *const xl_stage_regions[256] = {\n")
         for r in range(256):
             c.write(f"  k_rows[{regions.index(r) if r in regions else len(regions)}],\n")
-        c.write("};\n\n")
-        c.write(f"const uint32_t xl_rp_state[{STATE_WORDS}] = {{\n"
-                + "".join(f"  0x{w:08X}u,\n" for w in state) + "};\n\n")
-        c.write(f"const uint8_t xl_rp_sprites[{SPRITE_BYTES}] = {{\n{c_bytes(sprites)}\n}};\n\n")
-        c.write(f"const uint8_t xl_rp_checkpoints[{max(len(checkpoints), 1)}] = {{\n"
-                f"{c_bytes(checkpoints) or '  0,'}\n}};\n")
-    print(f"{len(regions)} regions of 64 KB touched ({(len(regions) + 1) * per_region * 4 + 1024} "
-          f"bytes of table), {len(ram)} pages in RAM ({len(ram) * PAGE // 1024} KB), "
-          f"{len(flash)} in flash ({len(flash) * PAGE // 1024} KB), "
-          f"{len(text_rows)} text rows not clear, "
-          f"resume at frame {state[24]}, {count} checkpoints")
+        c.write("};\n")
+    return (f"{len(ram)} pages in RAM, {len(own)} read-only own ({len(own) * PAGE // 1024} KB), "
+            f"{sum(1 for p in common_at if p in where and 'common' in where[p])} in COMMON, "
+            f"{len(regions)} regions ({(len(regions) + 1) * per_region * 4 // 1024} KB of table)"
+            + (f", {len(text_rows)} text rows, {count} checkpoints" if bench else ""))
 
 
-if __name__ == "__main__":
-    main()
+def read_snapshot(path):
+    """(state words, sprite list, memory) of a host snapshot."""
+    snap = open(path, "rb").read()
+    state = struct.unpack("<%dI" % STATE_WORDS, snap[:4 * STATE_WORDS])
+    if state[0] != 0x4E534C58:
+        sys.exit(f"{path}: not a snapshot")
+    at = 4 * STATE_WORDS
+    sprites = snap[at:at + SPRITE_BYTES]
+    at += SPRITE_BYTES + 32 * state[31]
+    memory = snap[at:at + MEMORY]
+    if len(memory) != MEMORY:
+        sys.exit(f"{path}: short")
+    return state, sprites, memory

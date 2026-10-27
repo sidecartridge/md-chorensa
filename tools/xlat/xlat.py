@@ -894,12 +894,12 @@ class Function:
 
 
 def translate(prog, out_dir, files=32, only=None, homes=None, image=None):
-    """With `homes` ({entry: "common" or "stageN"}) and `image`, one image of
-    the flash store (tools/xlat/xl_store.h): its functions in full and, in
-    the common image, a stub for every other function (a stage's: called
-    through the stage's table, xl_call_stage; one with no home: an error the
-    runtime reports). A stage's image has only its own functions and links
-    against the common image's symbols."""
+    """With `homes` ({entry: "common", "stageN" or "menus"}) and `image`, one
+    image of the flash store (tools/xlat/xl_store.h): its functions in full
+    and, in the common image, a stub for every other function (a scene's:
+    called through the table of the scene in the slot, xl_call_stage; one
+    with no home: an error the runtime reports). A scene's image has only its
+    own functions and links against the common image's symbols."""
     os.makedirs(out_dir, exist_ok=True)
     entries = sorted(prog.entries)
     functions = []
@@ -929,8 +929,11 @@ def translate(prog, out_dir, files=32, only=None, homes=None, image=None):
             em.out("")
             em.out(f"/* {label} */" if label else "")
             if image == "common" and homes.get(f.entry) != "common":
+                # Kept by the link (rp_store.py): a scene may call it when
+                # nothing in COMMON does.
+                em.out(f'__attribute__((section(".text.xl_stub_{f.entry:06X}")))')
                 em.out(f"uint32_t f_{f.entry:06X}(void) {{")
-                if homes.get(f.entry, "").startswith("stage"):
+                if homes.get(f.entry) is not None:
                     em.out(f"  return xl_call_stage(0x{f.entry:06X}u);")
                 else:
                     em.out(f'  xl_fatal("in no image of the store", 0x{f.entry:06X}u);')
@@ -1003,8 +1006,8 @@ def main():
     ap.add_argument("--only", help="translate only these entries (a coverage.txt), the others "
                     "as stubs that report themselves")
     ap.add_argument("--homes", help="each entry's image of the flash store: lines of ADDRESS "
-                    "common|stageN")
-    ap.add_argument("--image", help="emit this image, common or stageN (with --homes)")
+                    "common|stageN|menus")
+    ap.add_argument("--image", help="emit this image, common, stageN or menus (with --homes)")
     args = ap.parse_args()
     image = program.Image(args.executable)
     listing = program.Listing(args.listing, bss=image.bss)

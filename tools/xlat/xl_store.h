@@ -1,32 +1,35 @@
 /* The translated game in the RP's flash store: where its images go and the
  * header each starts with. The firmware carries no game code: the images
- * are made on the host from the user's copy (tools/xlat/rp_build.py), kept
+ * are made on the host from the user's copy (tools/xlat/rp_store.py), kept
  * on the SD card, and copied into the store when the store does not hold
  * them already (rp/src/store.c). Each is linked at its region's address
  * against one firmware build, whose build ID it names.
  *
- * The store: the common code (written once) and the slot of the stage
- * being played (rewritten when another stage starts). */
+ * The store: COMMON (written once: the code, the read-only data and the
+ * sprite patterns more than one scene uses) and the slot of the scene being
+ * played, rewritten when another starts: a stage (STAGE1..7) or the menus
+ * (MENUS: the title, CONFIG, KAKUSI), each with its own code, data,
+ * patterns, background and page table. */
 #ifndef XL_STORE_H
 #define XL_STORE_H
 
 #include <stdint.h>
 
 #define XL_STORE_BASE 0x10040000u        /* after the firmware's 256 KB */
-#define XL_STORE_COMMON XL_STORE_BASE    /* the common code */
-#define XL_STORE_COMMON_SIZE 0x40000u    /* 256 KB */
-#define XL_STORE_STAGE 0x10080000u       /* the stage being played */
-#define XL_STORE_STAGE_SIZE 0xA0000u     /* 640 KB, up to the Booster's area */
+#define XL_STORE_COMMON XL_STORE_BASE    /* the common image */
+#define XL_STORE_COMMON_SIZE 0x90000u    /* 576 KB */
+#define XL_STORE_SLOT 0x100D0000u        /* the scene being played */
+#define XL_STORE_SLOT_SIZE 0x50000u      /* 320 KB, up to the Booster's area */
 
 /* The game's memory on the RP: pages of 256 bytes (xl.h's XL_PAGE_BITS),
- * the ones it writes in RAM, the others in the stage's image. The RAM pages
+ * the ones it writes in RAM, the others in the images. The RAM pages
  * fill the chunky buffer's part a frame drawn in bands leaves first
  * (fb_chunked.h's FB_BANDED_BYTES on: the game draws only in bands while it
  * plays), then the firmware's array (xl_rp_ram), then the cartridge
  * window's free arena (APP_FREE, which neither the ST nor the firmware
  * uses). */
 #define XL_STORE_PAGE_BITS 8u
-#define XL_STORE_RAM_BYTES 0xA000u            /* 40 KB: 160 pages */
+#define XL_STORE_RAM_BYTES 0xC000u            /* 48 KB: 192 pages */
 #define XL_STORE_WINDOW_FREE 0x5180u          /* CART_APP_FREE_OFFSET */
 #define XL_STORE_WINDOW_FREE_BYTES 0x2E00u    /* 46 pages, below the framebuffer */
 #define XL_STORE_FB_FREE 0x9000u              /* FB_BANDED_BYTES */
@@ -47,8 +50,9 @@
 #define XL_STORE_TEXT_BYTES 0x8060u         /* four planes and the overlap */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 5u          /* 4: the songs; 5: the text plane's layout */
-#define XL_STORE_KIND_COMMON 0u      /* else the stage's number */
+#define XL_STORE_VERSION 6u          /* 5: the text plane's layout; 6: the scenes' slot */
+#define XL_STORE_KIND_COMMON 0u      /* 1..7 a stage's */
+#define XL_STORE_KIND_MENUS 8u
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
 
 /* The program's variables the runtime reads and writes (the listing's
@@ -79,7 +83,10 @@ typedef struct {
   char name[12]; /* "SZ2_S1": the song's base name */
 } xl_store_song_t;
 
-/* A stage's pictures for the renderer, in the ST's 16 colours as the follow
+#define XL_STORE_COMMON_PATTERN 0x8000u
+#define XL_STORE_NO_PATTERN 0xFFFFu
+
+/* A scene's pictures for the renderer, in the ST's 16 colours as the follow
  * scheme maps the program's palette entries (tools/xlat/palette_fit.py):
  * the two graphics pages and the sprite patterns converted once, and the
  * palette worked out each frame from the entries' current colours. */
@@ -93,8 +100,11 @@ typedef struct {
   uint32_t page_lines;           /* both pages' lines (512) */
   const uint8_t *patterns;       /* 16 x 16, 4-bit, 8 bytes a row, the left pixel
                                     in the high nibble; the program's colour numbers */
-  const uint16_t *pattern_index; /* per program pattern: its place in patterns,
-                                    or 0xFFFF when the stage never draws it */
+  const uint8_t *common_patterns; /* the same, in COMMON: the ones more than one
+                                     scene draws */
+  const uint16_t *pattern_index; /* per program pattern: its place in patterns, or
+                                    XL_STORE_COMMON_PATTERN + its place in
+                                    common_patterns, or XL_STORE_NO_PATTERN */
   uint32_t pattern_count;        /* entries of pattern_index */
   const uint8_t *entry_colour;   /* the 512 palette entries' ST colour numbers
                                     (0-255 graphics, 256 + n sprite and text) */
@@ -108,7 +118,7 @@ typedef struct {
 typedef struct {
   uint32_t magic;   /* XL_STORE_MAGIC */
   uint32_t version; /* XL_STORE_VERSION */
-  uint32_t kind;    /* XL_STORE_KIND_COMMON or the stage */
+  uint32_t kind;    /* XL_STORE_KIND_COMMON, a stage's number or XL_STORE_KIND_MENUS */
   uint32_t size;    /* bytes of the image, this header included */
   uint32_t crc;     /* CRC-32 of the bytes after the header */
   char firmware[XL_STORE_FIRMWARE_ID]; /* the build ID it links against */
@@ -125,7 +135,7 @@ typedef struct {
   const uint8_t *checkpoints;         /* the host's, 32 bytes each */
   uint32_t checkpoint_count;
   uint32_t layout[XL_LAYOUT_WORDS]; /* the common image's: XL_LAYOUT_* */
-  const xl_store_art_t *art;          /* a stage's pictures, or 0 */
+  const xl_store_art_t *art;          /* a scene's pictures, or 0 */
   const xl_store_song_t *songs;       /* the common image's: the songs loaded */
   uint32_t song_count;
   uint32_t song_playing;              /* a stage's snapshot: the song playing (in the

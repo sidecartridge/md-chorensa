@@ -28,14 +28,31 @@
 #define SPRITE_GUARD 16
 #define SPRITE_LIMIT (XL_RENDER_W + 2 * SPRITE_GUARD - 16)
 #define BUCKETS 32u
-#define NO_PATTERN 0xFFFFu
 
 void xl_render_take_sprites(xl_render_frame_t *f, uint32_t table, uint32_t count) {
   if (count > XL_RENDER_SPRITES) count = XL_RENDER_SPRITES;
+#ifdef XL_PAGED
+  /* A page's words are in the RP's order (xl.h): read as they are. */
+  f->sprite_offset = table & XL_PAGE_MASK;
+  for (uint32_t p = 0; (p << XL_PAGE_BITS) < f->sprite_offset + 8u * count; p++) {
+    f->sprite_pages[p] = xl_at((table & ~XL_PAGE_MASK) + (p << XL_PAGE_BITS));
+  }
+#else
   for (uint32_t k = 0; k < count; k++) {
     for (uint32_t w = 0; w < 4; w++) f->sprites[k][w] = (uint16_t)rd16(table + 8u * k + 2u * w);
   }
+#endif
   f->sprite_count = count;
+}
+
+/* Sprite k's four words. */
+static inline const uint16_t *sprite_words(const xl_render_frame_t *f, uint32_t k) {
+#ifdef XL_PAGED
+  uint32_t at = f->sprite_offset + 8u * k;
+  return (const uint16_t *)(f->sprite_pages[at >> XL_PAGE_BITS] + (at & XL_PAGE_MASK));
+#else
+  return f->sprites[k];
+#endif
 }
 
 void xl_render_prepare(xl_render_frame_t *f) {
@@ -52,13 +69,13 @@ void xl_render_prepare(xl_render_frame_t *f) {
   uint16_t ends[BUCKETS];
   uint16_t total = 0;
   memset(ends, 0, sizeof ends);
-  for (uint32_t k = 0; k < f->sprite_count; k++) ends[f->sprites[k][3] & 31u]++;
+  for (uint32_t k = 0; k < f->sprite_count; k++) ends[sprite_words(f, k)[3] & 31u]++;
   for (uint32_t b = 0; b < BUCKETS; b++) {
     total = (uint16_t)(total + ends[b]);
     ends[b] = total;
   }
   for (uint32_t k = 0; k < f->sprite_count; k++) {
-    f->order[--ends[f->sprites[k][3] & 31u]] = (uint16_t)k;
+    f->order[--ends[sprite_words(f, k)[3] & 31u]] = (uint16_t)k;
   }
 }
 
@@ -116,16 +133,18 @@ static void draw_text(uint8_t *band, const xl_render_frame_t *f, int y0, int y1)
 static void draw_sprites(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const xl_store_art_t *art = f->art;
   for (uint32_t k = 0; k < f->sprite_count; k++) {
-    const uint16_t *s = f->sprites[f->order[k]];
+    const uint16_t *s = sprite_words(f, f->order[k]);
     uint32_t sx = s[0], sy = s[1], pattern = s[2], attr = s[3];
     if (sx > SPRITE_LIMIT || sy > SPRITE_LIMIT || pattern >= art->pattern_count) continue;
     uint32_t at = art->pattern_index[pattern];
-    if (at == NO_PATTERN) continue;
+    if (at == XL_STORE_NO_PATTERN) continue;
     int x = (int)sx - SPRITE_GUARD, y = (int)sy - SPRITE_GUARD;
     int r0 = y0 > y ? y0 - y : 0, r1 = y1 < y + 16 ? y1 - y : 16;
     if (r0 >= r1 || x <= -16 || x >= XL_RENDER_W) continue;
     const uint8_t *lut = art->entry_colour + ENTRY_SPRITE + ((attr >> 8) & 15u) * 16u;
-    const uint8_t *data = art->patterns + at * 128u;
+    const uint8_t *data = (at & XL_STORE_COMMON_PATTERN)
+                              ? art->common_patterns + (at & ~XL_STORE_COMMON_PATTERN) * 128u
+                              : art->patterns + at * 128u;
     int hflip = (attr & 0x4000u) != 0, vflip = (attr & 0x8000u) != 0;
     for (int r = r0; r < r1; r++) {
       const uint8_t *row = data + (vflip ? 15 - r : r) * 8;

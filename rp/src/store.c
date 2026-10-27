@@ -13,14 +13,12 @@
 #include "hardware/sync.h"
 
 #define STORE_BLOCK (64u * 1024u) /* an erase: ~150 ms */
-#define STORE_CHUNK 4096u         /* read from the card, then programmed */
 
 _Static_assert(sizeof(xl_store_header_t) == 156u, "the header's size is the host's too");
 _Static_assert(STORE_CHUNK % FLASH_PAGE_SIZE == 0u, "chunks are whole pages");
 
-/* Static: FatFs's FIL and the chunk are too big for core 0's 4 KB stack. */
+/* Static: FatFs's FIL is too big for core 0's 4 KB stack. */
 static FIL s_file;
-static uint8_t s_chunk[STORE_CHUNK] __attribute__((aligned(4)));
 static uint8_t s_first_page[FLASH_PAGE_SIZE] __attribute__((aligned(4)));
 
 /* The CRC's running state (before the final inversion) over more bytes. */
@@ -62,7 +60,7 @@ static void program(uint32_t offset, const uint8_t *data, uint32_t size) {
 volatile uint32_t storeForceCopy;
 
 int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
-               store_progress_fn progress) {
+               uint8_t *chunk, store_progress_fn progress) {
   if (f_open(&s_file, path, FA_READ) != FR_OK) return STORE_NO_FILE;
   UINT got = 0;
   xl_store_header_t header;
@@ -93,19 +91,19 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
   f_lseek(&s_file, 0);
   for (uint32_t at = 0; at < header.size; at += STORE_CHUNK) {
     uint32_t want = header.size - at < STORE_CHUNK ? header.size - at : STORE_CHUNK;
-    if (f_read(&s_file, s_chunk, want, &got) != FR_OK || got != want) {
+    if (f_read(&s_file, chunk, want, &got) != FR_OK || got != want) {
       f_close(&s_file);
       return STORE_READ_ERROR;
     }
     uint32_t pages = (want + FLASH_PAGE_SIZE - 1u) / FLASH_PAGE_SIZE * FLASH_PAGE_SIZE;
-    memset(s_chunk + want, 0xFF, pages - want);
+    memset(chunk + want, 0xFF, pages - want);
     if (at == 0) {
-      memcpy(s_first_page, s_chunk, FLASH_PAGE_SIZE);
+      memcpy(s_first_page, chunk, FLASH_PAGE_SIZE);
       if (pages > FLASH_PAGE_SIZE) {
-        program(offset + FLASH_PAGE_SIZE, s_chunk + FLASH_PAGE_SIZE, pages - FLASH_PAGE_SIZE);
+        program(offset + FLASH_PAGE_SIZE, chunk + FLASH_PAGE_SIZE, pages - FLASH_PAGE_SIZE);
       }
     } else {
-      program(offset + at, s_chunk, pages);
+      program(offset + at, chunk, pages);
     }
     if (progress) progress();
   }

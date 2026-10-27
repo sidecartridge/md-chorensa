@@ -23,13 +23,22 @@
 #define XL_RENDER_W 256
 #define XL_RENDER_H 256
 #define XL_RENDER_SPRITES 512
+/* The pages of the game's sprite list (8 bytes a sprite) at most. */
+#define XL_RENDER_SPRITE_PAGES (XL_RENDER_SPRITES * 8 / 256 + 1)
 
 /* What a frame shows, taken when the game hands its sprite list over
- * (XSP_OUT) and at its frame wait (XSP_VSYNC). */
+ * (XSP_OUT) and at its frame wait (XSP_VSYNC). Each sprite: x, y, pattern,
+ * attributes. The RP reads them where the game keeps them (the game does not
+ * write its list again before the frame is drawn), the host from a copy. */
 typedef struct {
   const xl_store_art_t *art;
   uint32_t sprite_count;
-  uint16_t sprites[XL_RENDER_SPRITES][4]; /* x, y, pattern, attributes */
+#ifdef XL_PAGED
+  const uint8_t *sprite_pages[XL_RENDER_SPRITE_PAGES]; /* the list's pages */
+  uint32_t sprite_offset;                              /* its start in the first */
+#else
+  uint16_t sprites[XL_RENDER_SPRITES][4];
+#endif
   uint16_t order[XL_RENDER_SPRITES];      /* drawing order (xl_render_prepare) */
   uint16_t page0_y, page1_y;              /* the CRTC's vertical scrolls */
   uint16_t text_x, text_y;

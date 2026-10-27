@@ -707,7 +707,8 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
   char path[PATH_BYTES];
   card_path(path, name);
   uint32_t t0 = time_us_32();
-  int status = store_load(path, base, size, release_build_id, pump);
+  /* Through the chunky buffer's banded part: no frame is drawn during a load. */
+  int status = store_load(path, base, size, release_build_id, fb_chunked_buffer, pump);
   benchLogicResult.load_status[k] = (uint32_t)status;
   benchLogicResult.load_us[k] = time_us_32() - t0;
   DPRINTF("logic: %s %d in %lu us\n", path, status, (unsigned long)benchLogicResult.load_us[k]);
@@ -776,7 +777,7 @@ static void run(int drawn) {
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
   benchLogicResult.state = BENCH_LOGIC_LOADING;
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
-  s_stage = load(1, "STAGE1.IMG", XL_STORE_STAGE, XL_STORE_STAGE_SIZE);
+  s_stage = load(1, "STAGE1.IMG", XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
   storeForceCopy = 0;
   benchLogicResult.state = BENCH_LOGIC_IDLE;
   const char *problem = NULL;
