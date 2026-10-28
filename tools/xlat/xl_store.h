@@ -50,7 +50,7 @@
 #define XL_STORE_TEXT_BYTES 0x8060u         /* four planes and the overlap */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 6u          /* 5: the text plane's layout; 6: the scenes' slot */
+#define XL_STORE_VERSION 7u          /* 6: the scenes' slot; 7: the scene change */
 #define XL_STORE_KIND_COMMON 0u      /* 1..7 a stage's */
 #define XL_STORE_KIND_MENUS 8u
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
@@ -75,6 +75,20 @@ typedef struct {
   uint32_t address; /* the 68000 address the function starts at */
   xl_store_fn_t fn;
 } xl_store_entry_t;
+
+/* A page of a scene kept in RAM and its slot of the pool (xl_store.h's
+ * pool, in rp_image.py's order). Each page has one slot in every scene; two
+ * pages share a slot only when no scene keeps both. */
+typedef struct {
+  uint16_t page; /* the address >> XL_STORE_PAGE_BITS */
+  uint16_t slot;
+} xl_store_ram_page_t;
+
+/* A function the slot's scene holds, and which scene (its kind). */
+typedef struct {
+  uint32_t address;
+  uint32_t kind;
+} xl_store_scene_entry_t;
 
 /* A song the game has loaded (MCDRV names it by its data's address) and the
  * file on the card that plays it (NAME.ST8, tools/xlat/music_convert.py). */
@@ -129,8 +143,13 @@ typedef struct {
   uint32_t resume;                    /* where the run resumes */
   const uint32_t *state;              /* the runtime's state words */
   const uint8_t *sprites;             /* the sprite list */
-  const uint8_t *ram_init;            /* the written pages' contents */
-  uint32_t ram_pages;                 /* how many (XL_STORE_PAGE_BITS) */
+  const uint8_t *ram_init;            /* the RAM pages' contents, in ram_list's order */
+  /* A scene's pages in RAM and their slots. The first entry_pages are the
+   * ones whose slot some other scene's page takes: entering the scene, each
+   * whose slot changed hands since gets entry_init's content (the game's
+   * memory after its boot), the others keep theirs. */
+  const xl_store_ram_page_t *ram_list;
+  uint32_t ram_count;
   uint8_t *const *const *regions;     /* 256 rows of 256 page pointers */
   const uint8_t *checkpoints;         /* the host's, 32 bytes each */
   uint32_t checkpoint_count;
@@ -146,6 +165,12 @@ typedef struct {
   const uint16_t *text_rows;          /* each row's offset in the packed area */
   const uint8_t *text_init;           /* their bytes, 32 a row */
   uint32_t text_row_count;
+  uint32_t entry_pages;               /* a scene's: see ram_list */
+  const uint8_t *entry_init;
+  /* The common image's: which scene holds each function of the slot's, by
+   * address, ascending (the scene change loads it). */
+  const xl_store_scene_entry_t *scenes;
+  uint32_t scene_count;
 } xl_store_header_t;
 
 #endif /* XL_STORE_H */

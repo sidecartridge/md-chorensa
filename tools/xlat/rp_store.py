@@ -18,10 +18,15 @@ bench's snapshot (rp/src/bench_logic.c). They go on the SD card
    and a scripted player's), the patterns drawn to the stage's end.
 3. Each function's home: a scene's when only that scene runs it, COMMON's
    when more than one does, or the game over and the name entry (which come
-   in any stage); none when only the boot does (the RP starts from images).
+   in any stage), and for the snapshot's resume entries (the bench's outer
+   frames, which a scene change must not take away); none when only the boot
+   does (the RP starts from images).
 4. Each scene's pages: the ones it writes, or reads after an earlier scene
    wrote them, in RAM (in every stage too the object pool and the game
-   over's); the ones it only reads in its image, or in COMMON's when another
+   over's), each page in one slot of the pool for every scene (a scene
+   change moves none; a page whose slot another scene's page took gets its
+   content after the boot back on entry: scenes.txt models it on the host,
+   xl_host.c's XL_SCENES); the ones it only reads in its image, or in COMMON's when another
    scene reads them too; the text plane in its layout; the graphics pages,
    the X68000's sprite patterns and, in the stages, its BG maps a sink (the
    RP draws the art, and nothing reads them back). The contents from the
@@ -66,6 +71,9 @@ import xlat  # noqa: E402
 # The first stage's frames in the attract demo (its routine from 645, the
 # second stage's from 10,380): its patterns gathered to there.
 STAGE1_LAST = 10380
+# The bench plays from the snapshot to here (rp/src/bench_logic.c's
+# LAST_FRAME): into the second stage, through a scene change.
+BENCH_LAST = 12000
 # The scripted player of the host (XL_LIVE_FROM: flying, shooting, a bomb
 # every six seconds) takes over the demo here; its memory map runs to before
 # it loses its last life.
@@ -80,6 +88,9 @@ SCENE_OF_PHASE = {**{n + 1: f"stage{n}" for n in range(1, 8)}, 10: "menus", 11: 
                   12: "menus"}
 SCENES = tuple(f"stage{n}" for n in range(1, 8)) + ("menus",)
 SCENE_KIND = {**{f"stage{n}": n for n in range(1, 8)}, "menus": 8}  # xl_store.h's kinds
+# The memory after the boot (the title's frame BOOT_FRAME, every file
+# loaded): what a scene change sets a page to when its slot changed hands.
+BOOT_FRAME = 100
 # The whole game's runs (step 1): name, frames, input script, environment.
 RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         ("whole-gameover", 30000, "whole-game.txt", {}),
@@ -100,7 +111,7 @@ BG_MAPS = (0xEBC000, 0xEC0000)
 # game starts, and nothing reads them back (the RP draws the scene's art).
 GVRAM = (0xC00000, 0xE00000)
 
-HEADER_SIZE = 156         # sizeof(xl_store_header_t)
+HEADER_SIZE = 176         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
           "SIN_COS_TABLES_START")  # xl_store.h's XL_LAYOUT_* order
@@ -236,6 +247,11 @@ class Scenes:
         resumed = xlat.Program(image, listing, resume)
         homes = {}
         for e in sorted(resumed.entries):
+            if e not in plain.entries:
+                # A resume entry (the rest of a function the snapshot was in):
+                # the bench's outer frames, which last through scene changes.
+                homes[e] = "common"
+                continue
             # An entry the runs never entered (a resumed translation's, inside
             # a function) goes with the function it is in.
             seen = e in self.boot or e in bench or any(e in x for x in self.entries.values())
@@ -310,7 +326,28 @@ def read_songs(snap):
 
 
 def header_c(path, image, kind, firmware_id, entries, scene=False, bench=None, layout=None,
-             songs=None):
+             songs=None, scene_entries=None):
+    """The image's header (xl_store.h's xl_store_header_t)."""
+    fields = ["XL_STORE_MAGIC", "XL_STORE_VERSION", f"{kind}u", "0", "0", f'"{firmware_id}"']
+    named = {"entries": f"xl_{image}_entries", "entry_count": f"{entries}u",
+             "song_playing": "0xFFFFFFFFu"}
+    if scene:
+        named.update({"ram_list": "xl_rp_ram_list", "ram_count": "XL_RP_RAM_COUNT",
+                      "regions": "xl_stage_regions", "art": "&xl_stage_art",
+                      "entry_pages": "XL_RP_ENTRY_COUNT", "entry_init": "xl_rp_entry_init"})
+    if bench:
+        named.update({"resume": f"0x{bench['resume']:06X}u", "state": "xl_rp_state",
+                      "sprites": "xl_rp_sprites", "ram_init": "xl_rp_ram_init",
+                      "checkpoints": "xl_rp_checkpoints", "checkpoint_count": "XL_RP_CHECKPOINTS",
+                      "song_playing": f"{bench['song']}u", "song_frames": f"{bench['song_frames']}u",
+                      "text_rows": "xl_rp_text_rows", "text_init": "xl_rp_text_init",
+                      "text_row_count": "XL_RP_TEXT_ROWS"})
+    if layout:
+        named["layout"] = "{" + ", ".join(f"0x{layout[n]:06X}u" for n in LAYOUT) + "}"
+    if songs:
+        named.update({"songs": "k_songs", "song_count": f"{len(songs)}u"})
+    if scene_entries:
+        named.update({"scenes": "k_scenes", "scene_count": f"{len(scene_entries)}u"})
     with open(path, "w") as f:
         f.write("/* Generated by tools/xlat/rp_store.py: never commit. */\n")
         f.write('#include "xl_store.h"\n')
@@ -321,30 +358,15 @@ def header_c(path, image, kind, firmware_id, entries, scene=False, bench=None, l
         if songs:
             f.write("static const xl_store_song_t k_songs[] = {\n" + "".join(
                 f'  {{0x{a:06X}u, "{n}"}},\n' for a, n in songs) + "};\n")
+        if scene_entries:
+            f.write("static const xl_store_scene_entry_t k_scenes[] = {\n" + "".join(
+                f"  {{0x{a:06X}u, {k}u}},\n" for a, k in scene_entries) + "};\n")
         f.write(f"__attribute__((section(\".xl_header\"), used)) const xl_store_header_t "
                 f"xl_{image}_header = {{\n")
-        f.write(f"  XL_STORE_MAGIC, XL_STORE_VERSION, {kind}u, 0, 0, \"{firmware_id}\",\n")
-        f.write(f"  xl_{image}_entries, {entries}u,\n")
-        if bench:
-            f.write(f"  0x{bench['resume']:06X}u, xl_rp_state, xl_rp_sprites, xl_rp_ram_init,\n"
-                    f"  XL_RP_WRITTEN_PAGES, xl_stage_regions, xl_rp_checkpoints, XL_RP_CHECKPOINTS,\n")
-        elif scene:
-            f.write("  0, 0, 0, 0, XL_RP_WRITTEN_PAGES, xl_stage_regions, 0, 0,\n")
-        else:
-            f.write("  0, 0, 0, 0, 0, 0, 0, 0,\n")
-        if layout:
-            f.write("  {" + ", ".join(f"0x{layout[n]:06X}u" for n in LAYOUT) + "},\n")
-        else:
-            f.write("  {0},\n")
-        f.write("  &xl_stage_art,\n" if scene else "  0,\n")
-        if songs:
-            f.write(f"  k_songs, {len(songs)}u, 0xFFFFFFFFu, 0,\n")
-        elif bench:
-            f.write(f"  0, 0, {bench['song']}u, {bench['song_frames']}u,\n")
-        else:
-            f.write("  0, 0, 0xFFFFFFFFu, 0,\n")
-        if bench:
-            f.write("  xl_rp_text_rows, xl_rp_text_init, XL_RP_TEXT_ROWS,\n")
+        for name, value in zip(("magic", "version", "kind", "size", "crc", "firmware"), fields):
+            f.write(f"  .{name} = {value},\n")
+        for name, value in named.items():
+            f.write(f"  .{name} = {value},\n")
         f.write("};\n")
 
 
@@ -414,6 +436,10 @@ def main():
     live = host_run("store-live-memmap", ["--resume", snap, "--frames", str(LIVE_UNTIL)],
                     {"XL_MEMMAP": "1", "XL_LIVE_FROM": str(LIVE_FROM)}, check=False)
     stage_run = host_run("store-stage1", ["--resume", snap, "--frames", str(STAGE1_LAST)])
+    checks = host_run("store-checkpoints", ["--resume", snap, "--frames", str(BENCH_LAST)])
+    boot_run = host_run("store-boot", ["--frames", str(BOOT_FRAME + 1)],
+                        {"XL_MEMORY_AT": str(BOOT_FRAME)})
+    boot_memory = open(os.path.join(boot_run, "memory.bin"), "rb").read()
     resume = os.path.join(snap, "resume.txt")
     print("runs " + " ".join(runs) + f"\nsnapshot {snap}")
 
@@ -468,6 +494,18 @@ def main():
             read[s] |= bench_read
         ram[s] -= text | gvram
         read[s] -= text | gvram | ram[s]
+    slot, shared = rp_image.assign_slots(ram)
+    print(f"RAM: {max(slot.values()) + 1} slots of the pool's {rp_image.SPARE} for "
+          f"{len(slot)} pages, {len(shared)} sharing theirs")
+    # The host's model of the scene changes (xl_host.c's XL_SCENES).
+    with open(os.path.join(args.out, "scenes.txt"), "w") as f:
+        f.write("# rp_store.py: the scenes' RAM pages and their slots (xl_host.c's XL_SCENES)\n")
+        f.write(f"memory {os.path.join(boot_run, 'memory.bin')}\n")
+        for ph, scene in sorted(SCENE_OF_PHASE.items()):
+            f.write(f"phase {ph} {SCENES.index(scene)}\n")
+        for k, scene in enumerate(SCENES):
+            for p in sorted(ram[scene]):
+                f.write(f"page {k} {p} {slot[p]} {int(p in shared)}\n")
     readers = {}
     for s in SCENES:
         for p in read[s]:
@@ -502,7 +540,9 @@ def main():
     songs, playing = read_songs(snap)
     song_names = [n for _a, n in songs]
     common_h = os.path.join(work, "common_header.c")
-    header_c(common_h, "common", 0, fw_id, count["common"], layout=layout, songs=songs)
+    scene_entries = sorted((e, SCENE_KIND[h]) for e, h in homes.items() if h in SCENE_KIND)
+    header_c(common_h, "common", 0, fw_id, count["common"], layout=layout, songs=songs,
+             scene_entries=scene_entries)
     common_elf, common_bin = build_image("common", os.path.join(work, "common"), "XL_STORE_COMMON",
                                          fw, [], work, common_h)
     print(f"common: {len(common_bin) // 1024} KB", flush=True)
@@ -511,12 +551,13 @@ def main():
         out = os.path.join(work, s)
         bench_state = None
         if s == "stage1":
-            data = open(os.path.join(bench, "checkpoints.bin"), "rb").read()
+            data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
             n = struct.unpack(">I", data[4:8])[0]
             bench_state = {"state": state, "sprites": sprites, "checkpoints": data[8:8 + 32 * n]}
-        figures = rp_image.write_image(out, memory, ram[s], read[s] - set(common_at),
+        figures = rp_image.write_image(out, memory, {p: slot[p] for p in ram[s]},
+                                       read[s] - set(common_at),
                                        {p: common_at[p] for p in read[s] & set(common_at)},
-                                       bench_state)
+                                       boot_memory, shared, bench_state)
         own = drawn[s] - set(common_index)
         background, pattern_size = rp_art.write_art(
             os.path.join(out, "xl_stage_art.c"), memory, layout, rp_art.read_palette(palettes[s]),

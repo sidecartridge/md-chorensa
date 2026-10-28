@@ -52,6 +52,11 @@ typedef struct {
   uint32_t total_us;
   uint32_t load_status[2];  /* the common and stage images: store.h's STORE_* */
   uint32_t load_us[2];      /* how long each copy took (or its check) */
+  uint32_t scene_changes;   /* the slot loaded with another scene, in the run */
+  uint32_t scene_kind;      /* the last one's (xl_store.h's kinds) */
+  uint32_t scene_frame;     /* the frame it started at */
+  uint32_t scene_us;        /* how long it took: the copy and the pages set */
+  uint32_t scene_pages;     /* the pages set to their content after the boot */
   char error[48];
 } bench_logic_result_t;
 

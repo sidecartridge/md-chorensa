@@ -41,7 +41,7 @@
 #include "xl.h"
 #include "xl_render.h"
 
-#define LAST_FRAME 6000u
+#define LAST_FRAME 12000u /* into the second stage (tools/xlat/rp_store.py's BENCH_LAST) */
 #define HISTOGRAM_BINS 256u /* the logic times, 32 us a bin: up to 8 ms */
 #define HISTOGRAM_SHIFT 5u
 #define CHECKPOINT_INTERVAL 60u
@@ -168,19 +168,16 @@ static const xl_store_entry_t *find(const xl_store_header_t *h, uint32_t address
   return lo < h->entry_count && h->entries[lo].address == address ? &h->entries[lo] : NULL;
 }
 
+static const xl_store_entry_t *in_scene(uint32_t address);
+
 uint32_t xl_call(uint32_t address) {
   address &= 0xFFFFFFu;
   const xl_store_entry_t *e = find(s_common, address);
-  if (e == NULL) e = find(s_stage, address);
-  if (e == NULL) xl_fatal("no translated code", address);
+  if (e == NULL) e = in_scene(address);
   return e->fn();
 }
 
-uint32_t xl_call_stage(uint32_t address) {
-  const xl_store_entry_t *e = find(s_stage, address);
-  if (e == NULL) xl_fatal("not in the stage's image", address);
-  return e->fn();
-}
+uint32_t xl_call_stage(uint32_t address) { return in_scene(address)->fn(); }
 
 uint32_t xl_get_sr(void) {
   return (xl.sr_high << 8) | (xl.x << 4) | (xl.n << 3) | (xl.z << 2) | (xl.v << 1) | xl.c;
@@ -727,6 +724,84 @@ static uint8_t *pool_page(uint32_t k) {
          ((k - POOL_RAM_PAGES) << XL_PAGE_BITS);
 }
 
+/* The scene holding `address` (COMMON's table), or 0. */
+static uint32_t scene_of(uint32_t address) {
+  uint32_t lo = 0, hi = s_common->scene_count;
+  while (lo < hi) {
+    uint32_t mid = (lo + hi) / 2u;
+    if (s_common->scenes[mid].address < address) {
+      lo = mid + 1u;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo < s_common->scene_count && s_common->scenes[lo].address == address
+             ? s_common->scenes[lo].kind
+             : 0u;
+}
+
+static void scene_file(char *name, uint32_t kind) {
+  if (kind == XL_STORE_KIND_MENUS) {
+    strcpy(name, "MENUS.IMG");
+  } else {
+    snprintf(name, 16, "STAGE%lu.IMG", (unsigned long)kind);
+  }
+}
+
+/* The scene change: the slot copied from the scene's image on the card, its
+ * page table installed, and its pages whose slot another scene's page has
+ * held since set to their content after the boot (each page keeps one slot
+ * in every scene: the rest stay as they are). It runs inside a call from
+ * COMMON's code (the stages' routines are called from COMMON's frame loop,
+ * the menus from its top loop), so no code of the slot is running. The ST
+ * shows the last frame meanwhile. */
+static void scene_change(uint32_t kind) {
+  uint32_t t0 = time_us_32();
+  audio_pause(true); /* the copy blocks the main loop, its erases the interrupts */
+  /* Which page each slot holds, in the chunky buffer's banded part beside
+   * the copy's chunk: no frame is drawn during a load. */
+  uint16_t *owner = (uint16_t *)(fb_chunked_buffer + STORE_CHUNK);
+  for (uint32_t k = 0; k < POOL_PAGES; k++) owner[k] = 0xFFFFu;
+  for (uint32_t k = 0; k < s_stage->ram_count; k++) {
+    owner[s_stage->ram_list[k].slot] = s_stage->ram_list[k].page;
+  }
+  char name[16];
+  scene_file(name, kind);
+  const xl_store_header_t *h = load(1, name, XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
+  if (h == NULL || h->kind != kind || h->ram_count >= POOL_PAGES) xl_fatal("no image for the scene", kind);
+  s_stage = h;
+  for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)h->regions[r];
+  uint32_t set = 0;
+  for (uint32_t k = 0; k < h->entry_pages; k++) {
+    const xl_store_ram_page_t *e = &h->ram_list[k];
+    if (owner[e->slot] != e->page) {
+      memcpy(pool_page(e->slot), h->entry_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
+      set++;
+    }
+  }
+  audio_pause(false);
+  benchLogicResult.scene_changes++;
+  benchLogicResult.scene_kind = kind;
+  benchLogicResult.scene_frame = s_frame_count;
+  benchLogicResult.scene_us = time_us_32() - t0;
+  benchLogicResult.scene_pages = set;
+  s_frame_end_us = time_us_32(); /* the copy is not the game's time */
+}
+
+/* `address`'s function in the slot's scene, changing scene first when
+ * another holds it. */
+static const xl_store_entry_t *in_scene(uint32_t address) {
+  const xl_store_entry_t *e = find(s_stage, address);
+  if (e == NULL) {
+    uint32_t kind = scene_of(address);
+    if (kind == 0 || kind == s_stage->kind) xl_fatal("no translated code", address);
+    scene_change(kind);
+    e = find(s_stage, address);
+    if (e == NULL) xl_fatal("not in its scene's image", address);
+  }
+  return e;
+}
+
 static void restore(void) {
   if (s_playing) {
     s_song.transferred = s_stage->song_playing;
@@ -735,10 +810,11 @@ static void restore(void) {
   s_live = 0;
   s_live_read = 0;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
-  for (uint32_t k = 0; k < s_stage->ram_pages; k++) {
-    memcpy(pool_page(k), s_stage->ram_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
+  for (uint32_t k = 0; k < s_stage->ram_count; k++) {
+    memcpy(pool_page(s_stage->ram_list[k].slot), s_stage->ram_init + (k << XL_PAGE_BITS),
+           1u << XL_PAGE_BITS);
   }
-  memset(pool_page(s_stage->ram_pages), 0, 1u << XL_PAGE_BITS); /* the spare */
+  memset(pool_page(POOL_PAGES - 1u), 0, 1u << XL_PAGE_BITS); /* the spare */
   memset(xl_rp_text, 0, sizeof xl_rp_text);
   for (uint32_t k = 0; k < s_stage->text_row_count; k++) {
     memcpy(xl_rp_text + s_stage->text_rows[k], s_stage->text_init + 32u * k, 32u);
@@ -783,7 +859,7 @@ static void run(int drawn) {
   const char *problem = NULL;
   if (s_common == NULL || s_stage == NULL || s_stage->state == NULL) {
     problem = "no images for this firmware";
-  } else if (s_stage->ram_pages + 1u > POOL_PAGES) {
+  } else if (s_stage->ram_count >= POOL_PAGES) {
     problem = "the RAM pages do not fit";
   }
   if (problem) {
@@ -805,6 +881,15 @@ static void run(int drawn) {
     effects_open();
   }
   do {
+    if (s_stage->kind != 1u) { /* a lap ended in another scene */
+      s_stage = load(1, "STAGE1.IMG", XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
+      if (s_stage == NULL || s_stage->state == NULL) {
+        benchLogicResult.state = BENCH_LOGIC_ERROR;
+        strncpy(benchLogicResult.error, "no images for this firmware",
+                sizeof benchLogicResult.error - 1u);
+        break;
+      }
+    }
     restore();
     benchLogicResult.first_frame = s_frame_count;
     benchLogicResult.state = BENCH_LOGIC_IDLE;

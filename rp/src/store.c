@@ -14,7 +14,7 @@
 
 #define STORE_BLOCK (64u * 1024u) /* an erase: ~150 ms */
 
-_Static_assert(sizeof(xl_store_header_t) == 156u, "the header's size is the host's too");
+_Static_assert(sizeof(xl_store_header_t) == 176u, "the header's size is the host's too");
 _Static_assert(STORE_CHUNK % FLASH_PAGE_SIZE == 0u, "chunks are whole pages");
 
 /* Static: FatFs's FIL is too big for core 0's 4 KB stack. */

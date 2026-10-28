@@ -132,6 +132,73 @@ static void write_coverage(const char *out_dir) {
 static void memmap_phase_end(uint32_t phase);
 #endif
 
+/* XL_SCENES=FILE (tools/xlat/rp_store.py's scenes.txt): the RP's scene
+ * changes, modelled. Each scene keeps its RAM pages in pool slots chosen once
+ * for every scene; entering a scene, a page whose slot another page has held
+ * since is set back to its content after the boot (the file's memory dump),
+ * as the RP's change does. A run with it against one without tells whether
+ * the pages lost that way matter to the game. The file: "memory PATH",
+ * "phase N SCENE" and "page SCENE PAGE SLOT ENTRY" lines (ENTRY 1: set on
+ * entry when its slot changed hands). */
+#define SCENES_MAX 16
+#define SCENE_PAGES 512
+#define POOL_SLOTS 1024
+static struct {
+  uint16_t page[SCENE_PAGES], slot[SCENE_PAGES];
+  uint8_t entry[SCENE_PAGES];
+  uint32_t count;
+} s_scenes[SCENES_MAX];
+static int s_scene_of_phase[PHASES + 1];
+static uint8_t *s_scene_init;
+static uint32_t s_slot_owner[POOL_SLOTS];
+static int s_scene = -1, s_scenes_on;
+
+static void scenes_read(void) {
+  const char *path = getenv("XL_SCENES");
+  for (uint32_t k = 0; k <= PHASES; k++) s_scene_of_phase[k] = -1;
+  if (path == NULL) return;
+  FILE *f = fopen(path, "r");
+  if (f == NULL) xl_fatal("no XL_SCENES file", 0);
+  char line[1200], name[1024];
+  unsigned a, b, c, d;
+  while (fgets(line, sizeof line, f)) {
+    if (sscanf(line, "memory %1023s", name) == 1) {
+      FILE *m = fopen(name, "rb");
+      s_scene_init = malloc(XL_MEMORY);
+      if (m == NULL || s_scene_init == NULL || fread(s_scene_init, 1, XL_MEMORY, m) != XL_MEMORY) {
+        xl_fatal("XL_SCENES: no memory dump", 0);
+      }
+      fclose(m);
+    } else if (sscanf(line, "phase %u %u", &a, &b) == 2 && a <= PHASES && b < SCENES_MAX) {
+      s_scene_of_phase[a] = (int)b;
+    } else if (sscanf(line, "page %u %u %u %u", &a, &b, &c, &d) == 4 && a < SCENES_MAX &&
+               s_scenes[a].count < SCENE_PAGES && c < POOL_SLOTS) {
+      uint32_t k = s_scenes[a].count++;
+      s_scenes[a].page[k] = (uint16_t)b;
+      s_scenes[a].slot[k] = (uint16_t)c;
+      s_scenes[a].entry[k] = (uint8_t)d;
+    }
+  }
+  fclose(f);
+  if (s_scene_init == NULL) xl_fatal("XL_SCENES: no memory line", 0);
+  for (uint32_t k = 0; k < POOL_SLOTS; k++) s_slot_owner[k] = 0xFFFFFFFFu;
+  s_scenes_on = 1;
+}
+
+static void scene_enter(int scene) {
+  uint32_t set = 0;
+  for (uint32_t k = 0; k < s_scenes[scene].count; k++) {
+    uint32_t page = s_scenes[scene].page[k], slot = s_scenes[scene].slot[k];
+    if (s_scene >= 0 && s_scenes[scene].entry[k] && s_slot_owner[slot] != page) {
+      memcpy(xl_mem + (page << 8), s_scene_init + (page << 8), 256);
+      set++;
+    }
+    s_slot_owner[slot] = page;
+  }
+  printf("xl: scene %d from frame %u: %u pages set from the boot\n", scene, s_frame_count, set);
+  s_scene = scene;
+}
+
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
     if (s_phase_entries[n] == entry && s_phase != n + 1) {
@@ -144,6 +211,9 @@ void xl_trace_enter(uint32_t entry) {
       memset(s_phase_patterns, 0, sizeof s_phase_patterns);
       printf("xl: phase %u from frame %u, score %u (the phase before drew %u patterns)\n", s_phase,
              s_frame_count, rd32(XL_PLAYER_SCORE), patterns);
+      if (s_scenes_on && s_scene_of_phase[s_phase] >= 0 && s_scene_of_phase[s_phase] != s_scene) {
+        scene_enter(s_scene_of_phase[s_phase]);
+      }
     }
   }
   uint32_t k = (entry * 2654435761u) >> 20;
@@ -471,6 +541,19 @@ static void frame_wait_end(void) {
     memcpy(c + 16, xl_mem + XL_PLAYER_INFO_STRUCT, 14);
   }
   text_scroll_note();
+  /* XL_MEMORY_AT=F: the memory at frame F's end, memory.bin (rp_store.py's
+   * contents after the boot, for the pages a scene change sets). */
+  static long memory_at = -2;
+  if (memory_at == -2) memory_at = getenv("XL_MEMORY_AT") ? atol(getenv("XL_MEMORY_AT")) : -1;
+  if (memory_at >= 0 && s_frame_count == (uint32_t)memory_at) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/memory.bin", s_out_dir);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+      fwrite(xl_mem, 1, XL_MEMORY, f);
+      fclose(f);
+    }
+  }
   keep_invincible();
   save_replay();
   /* XL_SPRITE_FRAMES=A-B: the sprites drawn each frame from A to B (as the
@@ -1703,6 +1786,7 @@ int main(int argc, char **argv) {
 
 #ifdef XL_TRACE
   read_phases();
+  scenes_read();
 #endif
   if (getenv("XL_MUSIC")) mcdrv_install();
   uint32_t start = XL_ENTRY;
