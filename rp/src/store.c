@@ -14,7 +14,7 @@
 
 #define STORE_BLOCK (64u * 1024u) /* an erase: ~150 ms */
 
-_Static_assert(sizeof(xl_store_header_t) == 176u, "the header's size is the host's too");
+_Static_assert(sizeof(xl_store_header_t) == 160u, "the header's size is the host's too");
 _Static_assert(STORE_CHUNK % FLASH_PAGE_SIZE == 0u, "chunks are whole pages");
 
 /* Static: FatFs's FIL is too big for core 0's 4 KB stack. */
@@ -117,6 +117,15 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
   program(offset, s_first_page, FLASH_PAGE_SIZE);
   return store_header(base) ? STORE_COPIED : STORE_BAD_CRC;
 }
+
+int store_read_open(const char *path) { return f_open(&s_file, path, FA_READ) == FR_OK ? 0 : -1; }
+
+int store_read(void *dst, uint32_t length) {
+  UINT got = 0;
+  return f_read(&s_file, dst, length, &got) == FR_OK ? (int)got : -1;
+}
+
+void store_read_close(void) { f_close(&s_file); }
 
 int store_put(const char *path, uint32_t offset, const uint8_t *data, uint32_t length) {
   BYTE mode = offset == 0 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_EXISTING);

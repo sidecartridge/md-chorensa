@@ -2,14 +2,14 @@
  * File: bench_logic.h
  * Description: The bench's logic run: the ported game's own code, translated
  *              to C by tools/xlat, played on the RP from a snapshot the host
- *              took after the attract demo's stage load, and timed frame by
- *              frame.
+ *              took at the title after the boot, and timed frame by frame.
  *
  * A store build (XLAT_STORE=1) carries no game code: the run copies the
- * images on the SD card (COMMON.IMG and STAGE1.IMG in the app's folder, made
- * by tools/xlat/rp_store.py from the user's copy of the game) into the flash
- * store (store.h) unless the store holds them already, timing it, and runs
- * from there. Other builds report that they have no translation. The
+ * images on the SD card (COMMON.IMG and MENUS.IMG in the app's folder, made
+ * by tools/xlat/rp_store.py from the user's copy of the game, and each
+ * scene's image when the game enters it: STAGE1.IMG..STAGE7.IMG) into the
+ * flash store (store.h) unless the store holds them already, timing it, and
+ * runs from there. Other builds report that they have no translation. The
  * game's memory is the snapshot's, in pages of 256 bytes (xl.h's XL_PAGED
  * accessors): the pages the game writes in RAM (a pool: the chunky
  * buffer's part a banded frame leaves, an array of the firmware's,
@@ -82,7 +82,7 @@ enum {
 bool bench_logic_available(void);
 /* Called every bench frame: serves the host's writes to the card, runs the
  * logic if the host asked for it, and plays (benchPlay, 1 from boot in a
- * store build: the attract demo's stage from the snapshot, drawn and shown
+ * store build: the attract demo from the title's snapshot, drawn and shown
  * at one game frame a VBL, until the host writes 0). True when it took the
  * screen: the bench sets its palette again. */
 bool bench_logic_poll(void);

@@ -52,6 +52,13 @@ const xl_store_header_t *store_header(uint32_t base);
 int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
                uint8_t *chunk, store_progress_fn progress);
 
+/* Read the card's file `path` in pieces into RAM: open it, read as much as
+ * each piece wants (the bytes read, or -1), close it. Through the store's
+ * own file, so not during a copy. */
+int store_read_open(const char *path);
+int store_read(void *dst, uint32_t length);
+void store_read_close(void);
+
 /* Write `length` bytes from RAM at `offset` of the card's file `path`
  * (offset 0 creates or truncates it). The bytes written, or -1. */
 int store_put(const char *path, uint32_t offset, const uint8_t *data, uint32_t length);

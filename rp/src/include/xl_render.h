@@ -57,5 +57,8 @@ void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1);
  * colour, its entries' current colours weighted (palette_fit.py's
  * arithmetic). Returns 1 when they changed since the last call. */
 int xl_render_palette(const xl_store_art_t *art, uint16_t out[16]);
+/* The next xl_render_palette works the colours out whatever the palette's
+ * words (a run starting over: the ST shows another palette by then). */
+void xl_render_palette_forget(void);
 
 #endif /* XL_RENDER_H */

@@ -42,6 +42,9 @@
 #include "xl_render.h"
 
 #define LAST_FRAME 12000u /* into the second stage (tools/xlat/rp_store.py's BENCH_LAST) */
+/* The game starts at the title, in the menus' image, which holds the state
+ * the host left after the boot. */
+#define START_IMAGE "MENUS.IMG"
 #define HISTOGRAM_BINS 256u /* the logic times, 32 us a bin: up to 8 ms */
 #define HISTOGRAM_SHIFT 5u
 #define CHECKPOINT_INTERVAL 60u
@@ -371,12 +374,16 @@ void xl_patch_wait_vbl(void) {
   D(1) = (D(1) & 0xFFFF0000u) | ticks;
   s_last_sprite_count = s_frame_sprite_count;
   s_frame_sprite_count = 0;
+  s_frame_count++;
+  /* The menus' frames: the picture before the wait's VBLs, as the host
+   * takes it (xl_host.c's WAIT_VBL). */
+  if (s_playing) present(time_us_32() - s_frame_end_us);
   if (!(ticks & 0x8000u)) {
     for (uint32_t k = 0; k <= ticks; k++) run_vbl();
   }
-  s_frame_count++;
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) checkpoint();
   if (s_frame_count >= LAST_FRAME) stop(BENCH_LOGIC_DONE, "", 0);
+  s_frame_end_us = time_us_32();
 }
 
 void xl_patch_xsp_out(void) {
@@ -438,6 +445,19 @@ static void iocs(uint32_t pc) {
       return;
     case 0x81: /* _B_SUPER */
       D(0) = 0xFFFFFFFFu;
+      return;
+    case 0xCE: { /* _BGTEXTGT: d1 page, d2 x, d3 y: the BG map's word */
+      uint32_t at = 0xEB8000u + 0x4000u + (D(1) & 1u) * 0x2000u +
+                    ((((D(3) & 63u) << 6) + (D(2) & 63u)) & 0xFFFFu) * 2u;
+      D(0) = rd16(at);
+      return;
+    }
+    /* The calls the host answers with 0 too (tools/xlat/host/xl_host.c):
+     * nothing the RP's picture or sound depends on. */
+    case 0x10: case 0x20: case 0x22: case 0x23: case 0x7D: case 0x87: case 0x90:
+    case 0xAE: case 0xAF: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5:
+    case 0xC1: case 0xC2: case 0xCA:
+      D(0) = 0;
       return;
     default:
       xl_fatal("an IOCS call the bench does not serve", pc);
@@ -724,6 +744,21 @@ static uint8_t *pool_page(uint32_t k) {
          ((k - POOL_RAM_PAGES) << XL_PAGE_BITS);
 }
 
+/* Which page each pool slot holds (16 bits a slot, in the slots below the
+ * spare: xl_store.h's XL_STORE_OWNER_SLOTS), kept across scene changes. */
+#define OWNERS_PER_SLOT ((1u << XL_PAGE_BITS) / 2u)
+#define OWNER_SLOT (POOL_PAGES - 1u - XL_STORE_OWNER_SLOTS)
+_Static_assert(XL_STORE_OWNER_SLOTS * OWNERS_PER_SLOT >= POOL_PAGES, "an owner a slot");
+
+static uint16_t *slot_owner(uint32_t slot) {
+  return (uint16_t *)pool_page(OWNER_SLOT + slot / OWNERS_PER_SLOT) + slot % OWNERS_PER_SLOT;
+}
+
+/* The scene's pages are where they are now. */
+static void owners_of(const xl_store_header_t *h) {
+  for (uint32_t k = 0; k < h->ram_count; k++) *slot_owner(h->ram_list[k].slot) = h->ram_list[k].page;
+}
+
 /* The scene holding `address` (COMMON's table), or 0. */
 static uint32_t scene_of(uint32_t address) {
   uint32_t lo = 0, hi = s_common->scene_count;
@@ -758,13 +793,6 @@ static void scene_file(char *name, uint32_t kind) {
 static void scene_change(uint32_t kind) {
   uint32_t t0 = time_us_32();
   audio_pause(true); /* the copy blocks the main loop, its erases the interrupts */
-  /* Which page each slot holds, in the chunky buffer's banded part beside
-   * the copy's chunk: no frame is drawn during a load. */
-  uint16_t *owner = (uint16_t *)(fb_chunked_buffer + STORE_CHUNK);
-  for (uint32_t k = 0; k < POOL_PAGES; k++) owner[k] = 0xFFFFu;
-  for (uint32_t k = 0; k < s_stage->ram_count; k++) {
-    owner[s_stage->ram_list[k].slot] = s_stage->ram_list[k].page;
-  }
   char name[16];
   scene_file(name, kind);
   const xl_store_header_t *h = load(1, name, XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
@@ -774,11 +802,12 @@ static void scene_change(uint32_t kind) {
   uint32_t set = 0;
   for (uint32_t k = 0; k < h->entry_pages; k++) {
     const xl_store_ram_page_t *e = &h->ram_list[k];
-    if (owner[e->slot] != e->page) {
+    if (*slot_owner(e->slot) != e->page) {
       memcpy(pool_page(e->slot), h->entry_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
       set++;
     }
   }
+  owners_of(h);
   audio_pause(false);
   benchLogicResult.scene_changes++;
   benchLogicResult.scene_kind = kind;
@@ -802,6 +831,44 @@ static const xl_store_entry_t *in_scene(uint32_t address) {
   return e;
 }
 
+/* The start's memory from the card (XL_STORE_START_FILE): the start scene's
+ * RAM pages into their slots, the text plane's rows. NULL, or what is wrong. */
+static const char *read_start(void) {
+  char path[PATH_BYTES];
+  card_path(path, XL_STORE_START_FILE);
+  if (store_read_open(path) != 0) return "no start file on the card";
+  xl_store_start_t h;
+  const char *problem = NULL;
+  if (store_read(&h, sizeof h) != (int)sizeof h || h.magic != XL_STORE_START_MAGIC ||
+      h.version != XL_STORE_VERSION ||
+      strncmp(h.firmware, release_build_id, XL_STORE_FIRMWARE_ID - 1u) != 0 ||
+      h.kind != s_stage->kind || h.ram_count != s_stage->ram_count) {
+    problem = "the start file is not these images'";
+  }
+  for (uint32_t k = 0; !problem && k < h.ram_count; k++) {
+    void *page = pool_page(s_stage->ram_list[k].slot);
+    if (store_read(page, 1u << XL_PAGE_BITS) != (int)(1u << XL_PAGE_BITS)) problem = "a short start file";
+  }
+  memset(xl_rp_text, 0, sizeof xl_rp_text);
+  /* The rows' offsets through the chunky buffer's banded part (no frame is
+   * drawn yet), then each row into place. */
+  uint16_t *rows = (uint16_t *)fb_chunked_buffer;
+  uint32_t offsets = (h.text_row_count * 2u + 3u) & ~3u;
+  if (!problem && (offsets > FB_BANDED_BYTES || store_read(rows, offsets) != (int)offsets)) {
+    problem = "a short start file";
+  }
+  for (uint32_t k = 0; !problem && k < h.text_row_count; k++) {
+    if (rows[k] + 32u > sizeof xl_rp_text || store_read(xl_rp_text + rows[k], 32u) != 32) {
+      problem = "a short start file";
+    }
+  }
+  store_read_close();
+  /* The slots hold the start scene's pages, the others nothing yet. */
+  for (uint32_t k = 0; k < POOL_PAGES; k++) *slot_owner(k) = 0xFFFFu;
+  owners_of(s_stage);
+  return problem;
+}
+
 static void restore(void) {
   if (s_playing) {
     s_song.transferred = s_stage->song_playing;
@@ -810,15 +877,8 @@ static void restore(void) {
   s_live = 0;
   s_live_read = 0;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
-  for (uint32_t k = 0; k < s_stage->ram_count; k++) {
-    memcpy(pool_page(s_stage->ram_list[k].slot), s_stage->ram_init + (k << XL_PAGE_BITS),
-           1u << XL_PAGE_BITS);
-  }
   memset(pool_page(POOL_PAGES - 1u), 0, 1u << XL_PAGE_BITS); /* the spare */
-  memset(xl_rp_text, 0, sizeof xl_rp_text);
-  for (uint32_t k = 0; k < s_stage->text_row_count; k++) {
-    memcpy(xl_rp_text + s_stage->text_rows[k], s_stage->text_init + 32u * k, 32u);
-  }
+  xl_render_palette_forget();
   const uint32_t *w = s_stage->state + 2;
   for (int k = 0; k < 8; k++) xl.d[k] = *w++;
   for (int k = 0; k < 8; k++) xl.a[k] = *w++;
@@ -835,6 +895,9 @@ static void restore(void) {
   s_effect_end_tick = *w++;
   s_samples_decoded = (int)*w++;
   s_sprite_list_count = *w++;
+  /* The list the game handed over last, still on the screen (the title sets
+   * its logo's once): in its table, which the game leaves as it was. */
+  if (s_playing) xl_render_take_sprites(&s_frame, GAME(SPRITE_DATA_TABLE), s_sprite_list_count);
 }
 
 bool bench_logic_available(void) { return true; }
@@ -853,7 +916,7 @@ static void run(int drawn) {
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
   benchLogicResult.state = BENCH_LOGIC_LOADING;
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
-  s_stage = load(1, "STAGE1.IMG", XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
+  s_stage = load(1, START_IMAGE, XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
   storeForceCopy = 0;
   benchLogicResult.state = BENCH_LOGIC_IDLE;
   const char *problem = NULL;
@@ -881,14 +944,20 @@ static void run(int drawn) {
     effects_open();
   }
   do {
-    if (s_stage->kind != 1u) { /* a lap ended in another scene */
-      s_stage = load(1, "STAGE1.IMG", XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
+    if (s_stage->kind != XL_STORE_KIND_MENUS) { /* a lap ended in another scene */
+      s_stage = load(1, START_IMAGE, XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
       if (s_stage == NULL || s_stage->state == NULL) {
         benchLogicResult.state = BENCH_LOGIC_ERROR;
         strncpy(benchLogicResult.error, "no images for this firmware",
                 sizeof benchLogicResult.error - 1u);
         break;
       }
+    }
+    const char *wrong = read_start();
+    if (wrong) {
+      benchLogicResult.state = BENCH_LOGIC_ERROR;
+      strncpy(benchLogicResult.error, wrong, sizeof benchLogicResult.error - 1u);
+      break;
     }
     restore();
     benchLogicResult.first_frame = s_frame_count;

@@ -8,10 +8,10 @@ are in RAM (the pool, xl_store.h), the ones it only reads in its own image or
 in COMMON's (xl_common_pages: the ones more than one scene reads), the text
 plane's in its packed area (XL_STORE_TEXT_*); every other page points at a
 spare RAM page. tools/xlat/rp_store.py chooses the pages and builds the C
-into the images. For the logic bench's stage, the snapshot's state too: the
-RAM pages' and the text plane's contents, the runtime's state words, its
-sprite list and the checkpoints the host recorded, which the RP checks its
-own against.
+into the images. For the scene the game starts in, the snapshot's state
+too: the runtime's state words, its sprite list and the checkpoints the
+host recorded, which the RP checks its own against, in the image; the RAM
+pages' and the text plane's contents in the start file (write_start).
 
 Its output is the game's: it goes into a build folder outside the
 repository, never committed.
@@ -30,6 +30,8 @@ def _store_values():
 
 
 _STORE = _store_values()
+_VERSION = int(re.search(r"#define XL_STORE_VERSION (\d+)u", open(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "xl_store.h")).read()).group(1))
 PAGE_BITS = 8                 # xl_store.h's XL_STORE_PAGE_BITS
 POOL_RAM = _STORE["XL_STORE_RAM_BYTES"] >> PAGE_BITS
 POOL_WINDOW = _STORE["XL_STORE_WINDOW_FREE_BYTES"] >> PAGE_BITS
@@ -139,6 +141,7 @@ POOL = POOL_FB + POOL_RAM + POOL_WINDOW
 
 
 SPARE = POOL - 1  # the pool's last slot: every page no scene touches
+OWNER = SPARE - _STORE["XL_STORE_OWNER_SLOTS"]  # below it: which page each slot holds
 
 
 def assign_slots(ram):
@@ -156,8 +159,8 @@ def assign_slots(ram):
         k = 0
         while k in taken:
             k += 1
-        if k >= SPARE:
-            sys.exit(f"the scenes' RAM pages need more than the pool's {SPARE} slots")
+        if k >= OWNER:
+            sys.exit(f"the scenes' RAM pages need more than the pool's {OWNER} slots")
         slot[p] = k
         for s in scenes_of[p]:
             used[s].add(k)
@@ -167,21 +170,19 @@ def assign_slots(ram):
     return slot, {p for k, ps in holders.items() if len(ps) > 1 for p in ps}
 
 
-def write_image(out, memory, ram, own, common_at, boot, shared, bench=None):
+def write_image(out, memory, ram, own, common_at, boot, entry, bench=None):
     """xl_rp_image.h and .c in `out`: `ram` the pages in RAM {page: slot},
     `own` the read-only pages in the scene's image, `common_at` {page: its
-    offset in COMMON's xl_common_pages}; `shared` the pages whose slot others
-    share, set on entry to their content in `boot` (the memory after the
-    boot). `bench`, for the logic bench's stage: {"state": words, "sprites":
+    offset in COMMON's xl_common_pages}; `entry` the pages set on entry to
+    their content in `boot` (the memory after the boot) when their slot holds
+    another page. `bench`, for the logic bench's stage: {"state": words, "sprites":
     bytes, "checkpoints": bytes}, with the RAM pages and the text plane as
     `memory` holds them. Returns a line of figures."""
     own = sorted(own)
     # The pages set on entry first (xl_store.h's ram_list).
-    order = sorted(ram, key=lambda p: (p not in shared, p))
-    entries = sum(1 for p in order if p in shared)
-    text_init, text_where = text_layout(memory)
-    text_rows = [at for at in range(0, 4 * TEXT_PLANE_BYTES, TEXT_SHOWN)
-                 if bench and any(text_init[at:at + TEXT_SHOWN])]
+    order = sorted(ram, key=lambda p: (p not in entry, p))
+    entries = sum(1 for p in order if p in entry)
+    _text_init, text_where = text_layout(memory)
     count = len(bench["checkpoints"]) // 32 if bench else 0
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "xl_rp_image.h"), "w") as h:
@@ -192,7 +193,6 @@ def write_image(out, memory, ram, own, common_at, boot, shared, bench=None):
         h.write(f"#define XL_RP_FLASH_PAGES {len(own)}u\n")
         h.write(f"#define XL_RP_STATE_WORDS {STATE_WORDS}u\n#define XL_RP_SPRITE_BYTES {SPRITE_BYTES}u\n")
         h.write(f"#define XL_RP_CHECKPOINTS {count}u\n")
-        h.write(f"#define XL_RP_TEXT_ROWS {len(text_rows)}u /* the text plane's rows not clear */\n")
         h.write("extern uint8_t xl_rp_ram[];  /* the firmware's RAM for the pages */\n")
         h.write("extern uint8_t xl_rp_text[];  /* the text plane's packed area */\n")
         h.write("extern uint8_t __rom_in_ram_start__[];  /* the cartridge window */\n")
@@ -200,10 +200,8 @@ def write_image(out, memory, ram, own, common_at, boot, shared, bench=None):
         h.write("extern const uint8_t xl_common_pages[];  /* COMMON's read-only pages */\n")
         h.write("extern uint8_t *const *const xl_stage_regions[256];\n")
         if bench:
-            h.write("extern const uint8_t xl_rp_ram_init[];\n")
             h.write("extern const uint32_t xl_rp_state[];\nextern const uint8_t xl_rp_sprites[];\n")
             h.write("extern const uint8_t xl_rp_checkpoints[];\n")
-            h.write("extern const uint16_t xl_rp_text_rows[];\nextern const uint8_t xl_rp_text_init[];\n")
         h.write("#endif\n")
     with open(os.path.join(out, "xl_rp_image.c"), "w") as c:
         c.write("/* Generated by tools/xlat/rp_image.py from the user's copy of the program:\n"
@@ -214,15 +212,6 @@ def write_image(out, memory, ram, own, common_at, boot, shared, bench=None):
         c.write(f"const uint8_t xl_rp_entry_init[{max(len(entry), 1)}] __attribute__((aligned(4))) = "
                 f"{{\n{c_bytes(entry) or '  0,'}\n}};\n\n")
         if bench:
-            init = swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in order))
-            c.write(f"const uint8_t xl_rp_ram_init[{max(len(init), 1)}] __attribute__((aligned(4))) = "
-                    f"{{\n{c_bytes(init) or '  0,'}\n}};\n\n")
-            c.write(f"const uint16_t xl_rp_text_rows[{max(len(text_rows), 1)}] = {{\n"
-                    + "".join(f"  0x{at:04X}u,\n" for at in text_rows) + ("" if text_rows else "  0,\n")
-                    + "};\n\n")
-            rows = swapped(b"".join(bytes(text_init[at:at + TEXT_SHOWN]) for at in text_rows))
-            c.write(f"const uint8_t xl_rp_text_init[{max(len(rows), 1)}] __attribute__((aligned(4))) = "
-                    f"{{\n{c_bytes(rows) or '  0,'}\n}};\n\n")
             c.write(f"const uint32_t xl_rp_state[{STATE_WORDS}] = {{\n"
                     + "".join(f"  0x{w:08X}u,\n" for w in bench["state"]) + "};\n\n")
             c.write(f"const uint8_t xl_rp_sprites[{SPRITE_BYTES}] = {{\n{c_bytes(bench['sprites'])}\n}};\n\n")
@@ -257,11 +246,29 @@ def write_image(out, memory, ram, own, common_at, boot, shared, bench=None):
         for r in range(256):
             c.write(f"  k_rows[{regions.index(r) if r in regions else len(regions)}],\n")
         c.write("};\n")
-    return (f"{len(ram)} pages in RAM ({entries} set on entry), "
+    return order, (f"{len(ram)} pages in RAM ({entries} set on entry), "
             f"{len(own)} read-only own ({len(own) * PAGE // 1024} KB), "
             f"{sum(1 for p in common_at if p in where and 'common' in where[p])} in COMMON, "
             f"{len(regions)} regions ({(len(regions) + 1) * per_region * 4 // 1024} KB of table)"
-            + (f", {len(text_rows)} text rows, {count} checkpoints" if bench else ""))
+            + (f", {count} checkpoints" if bench else ""))
+
+
+def write_start(path, memory, order, kind, firmware_id):
+    """The start's memory (xl_store.h's xl_store_start_t, XL_STORE_START_FILE):
+    the start scene's RAM pages in `order` (its image's ram_list) and the text
+    plane's rows that are not clear, as `memory` holds them."""
+    text_init, _where = text_layout(memory)
+    rows = [at for at in range(0, 4 * TEXT_PLANE_BYTES, TEXT_SHOWN)
+            if any(text_init[at:at + TEXT_SHOWN])]
+    with open(path, "wb") as f:
+        f.write(struct.pack("<II", _STORE["XL_STORE_START_MAGIC"], _VERSION))
+        f.write(firmware_id.encode().ljust(32, b"\0")[:32])
+        f.write(struct.pack("<III", kind, len(order), len(rows)))
+        f.write(swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in order)))
+        offsets = struct.pack(f"<{len(rows)}H", *rows)
+        f.write(offsets + b"\0" * (-len(offsets) % 4))
+        f.write(swapped(b"".join(bytes(text_init[at:at + TEXT_SHOWN]) for at in rows)))
+    return len(order), len(rows)
 
 
 def read_snapshot(path):

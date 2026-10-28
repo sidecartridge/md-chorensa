@@ -134,12 +134,12 @@ static void memmap_phase_end(uint32_t phase);
 
 /* XL_SCENES=FILE (tools/xlat/rp_store.py's scenes.txt): the RP's scene
  * changes, modelled. Each scene keeps its RAM pages in pool slots chosen once
- * for every scene; entering a scene, a page whose slot another page has held
- * since is set back to its content after the boot (the file's memory dump),
- * as the RP's change does. A run with it against one without tells whether
+ * for every scene; entering a scene, a page marked ENTRY whose slot holds
+ * another page (or none yet) is set to its content after the boot (the
+ * file's memory dump), as the RP's change does; the first scene's are the
+ * start's. A run with it against one without tells whether
  * the pages lost that way matter to the game. The file: "memory PATH",
- * "phase N SCENE" and "page SCENE PAGE SLOT ENTRY" lines (ENTRY 1: set on
- * entry when its slot changed hands). */
+ * "phase N SCENE" and "page SCENE PAGE SLOT ENTRY" lines. */
 #define SCENES_MAX 16
 #define SCENE_PAGES 512
 #define POOL_SLOTS 1024
@@ -199,6 +199,42 @@ static void scene_enter(int scene) {
   s_scene = scene;
 }
 
+/* The functions on the stack when a phase starts: they run on in it, though
+ * they were entered in the one before (the game's loop, entered once from
+ * the title). Every long on the 68000 stack that could be a return address
+ * into the code, by phase: stack_phases.txt at the end ("PHASE ADDRESS";
+ * tools/xlat/rp_store.py keeps the ones that follow a call). */
+#define STACK_NOTES 4096
+static uint32_t s_stack_notes[STACK_NOTES][2];
+static uint32_t s_stack_note_count;
+
+static void note_stack(uint32_t phase) {
+  for (uint32_t at = A(7); at + 4 <= A(7) + 0x10000u && at + 4 <= XL_MEMORY; at += 2) {
+    uint32_t v = ((uint32_t)xl_mem[at] << 24) | ((uint32_t)xl_mem[at + 1] << 16) |
+                 ((uint32_t)xl_mem[at + 2] << 8) | xl_mem[at + 3];
+    if (v < XL_LOAD || v >= XL_BSS || (v & 1u)) continue;
+    uint32_t k = 0;
+    while (k < s_stack_note_count && !(s_stack_notes[k][0] == phase && s_stack_notes[k][1] == v)) k++;
+    if (k == s_stack_note_count && k < STACK_NOTES) {
+      s_stack_notes[k][0] = phase;
+      s_stack_notes[k][1] = v;
+      s_stack_note_count++;
+    }
+  }
+}
+
+static void write_stack_phases(const char *out_dir) {
+  char path[1024];
+  snprintf(path, sizeof path, "%s/stack_phases.txt", out_dir);
+  FILE *f = fopen(path, "w");
+  if (f == NULL) return;
+  fprintf(f, "# phase address: a long on the stack when the phase started\n");
+  for (uint32_t k = 0; k < s_stack_note_count; k++) {
+    fprintf(f, "%u %06X\n", s_stack_notes[k][0], s_stack_notes[k][1]);
+  }
+  fclose(f);
+}
+
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
     if (s_phase_entries[n] == entry && s_phase != n + 1) {
@@ -206,6 +242,7 @@ void xl_trace_enter(uint32_t entry) {
       memmap_phase_end(s_phase);
 #endif
       s_phase = n + 1;
+      note_stack(s_phase);
       uint32_t patterns = 0;
       for (uint32_t k = 0; k < sizeof s_phase_patterns; k++) patterns += s_phase_patterns[k];
       memset(s_phase_patterns, 0, sizeof s_phase_patterns);
@@ -497,7 +534,11 @@ static void run_vbl(void) {
 }
 
 static void write_screen(uint32_t frame);
-static void write_snapshot(void);
+/* Where a run resumed from a snapshot goes on: after the frame wait it was
+ * taken at, XSP_VSYNC's (the stages) or WAIT_VBL's (the menus). */
+#define XSP_VSYNC_RESUME 0x02021Au
+#define WAIT_VBL_RESUME 0x022CB4u
+static void write_snapshot(uint32_t resume);
 static uint32_t s_snapshot_frame;
 
 /* As the port's measurement runs: a screen is due every N frames, at the
@@ -588,7 +629,7 @@ void xl_patch_xsp_vsync(void) {
   xl.c = 0;
   if (s_snapshot_frame && s_frame_count >= s_snapshot_frame) {
     s_snapshot_frame = 0;
-    write_snapshot();
+    write_snapshot(XSP_VSYNC_RESUME);
   }
 }
 
@@ -603,6 +644,10 @@ void xl_patch_wait_vbl(void) {
     for (uint32_t k = 0; k <= ticks; k++) run_vbl();
   }
   frame_wait_end();
+  if (s_snapshot_frame && s_frame_count >= s_snapshot_frame) {
+    s_snapshot_frame = 0;
+    write_snapshot(WAIT_VBL_RESUME);
+  }
 }
 
 /* XSP_OUT: the game's sprite list (8 bytes a sprite) is the frame's; counted,
@@ -1440,7 +1485,8 @@ static void write_entries(uint32_t frame) {
 #ifdef XL_RP_RENDER
 static void write_rp_screen(uint32_t frame) {
   static uint8_t fb[XL_RENDER_W * XL_RENDER_H];
-  uint16_t st[16];
+  /* The ST's colours stay as they are until the RP works them out again. */
+  static uint16_t st[16];
   s_rp_frame.art = &xl_stage_art;
   xl_render_prepare(&s_rp_frame);
   xl_render_band(fb, &s_rp_frame, 0, XL_RENDER_H);
@@ -1536,25 +1582,24 @@ static void write_screen(uint32_t frame) {
 
 /* --- Snapshots: the game resumed where it waited for a frame -------------- */
 
-/* Taken at the end of XSP_VSYNC's wait, so a resumed run goes on at the
- * instruction the patch continues at (xlat.py PATCHES), returning into the
+/* Taken at the end of a frame wait (XSP_VSYNC's or WAIT_VBL's), so a resumed
+ * run goes on at the instruction the patch continues at (xlat.py PATCHES), returning into the
  * callers through the return addresses on the 68000 stack. snapshot.bin:
  * 'XLSN', the resume address, the CPU (d0-d7, a0-a7, n z v c x, the system
  * byte), the frame and VBL counts, the sprite counts, the effect's end tick,
  * whether the samples are decoded, the sprite list's count, the checkpoints'
  * count (all u32 little-endian), the sprite list, the checkpoints so far,
  * then the 16 MB of memory. */
-#define XSP_VSYNC_RESUME 0x02021Au
 #define SNAPSHOT_WORDS 32
 
-static void write_snapshot(void) {
+static void write_snapshot(uint32_t resume) {
   for (int k = 0; k < FILE_HANDLES; k++) {
-    if (s_files[k]) xl_fatal("a snapshot with a file open", XSP_VSYNC_RESUME);
+    if (s_files[k]) xl_fatal("a snapshot with a file open", resume);
   }
   MEMMAP_PAUSE(1);
   uint32_t w[SNAPSHOT_WORDS], n = 0;
   w[n++] = 0x4E534C58u; /* 'XLSN' */
-  w[n++] = XSP_VSYNC_RESUME;
+  w[n++] = resume;
   for (int k = 0; k < 8; k++) w[n++] = xl.d[k];
   for (int k = 0; k < 8; k++) w[n++] = xl.a[k];
   w[n++] = xl.n;
@@ -1574,7 +1619,7 @@ static void write_snapshot(void) {
   char path[1024];
   snprintf(path, sizeof path, "%s/snapshot.bin", s_out_dir);
   FILE *f = fopen(path, "wb");
-  if (f == NULL) xl_fatal("cannot write snapshot.bin", XSP_VSYNC_RESUME);
+  if (f == NULL) xl_fatal("cannot write snapshot.bin", resume);
   for (uint32_t k = 0; k < n; k++) {
     uint8_t b[4] = {(uint8_t)w[k], (uint8_t)(w[k] >> 8), (uint8_t)(w[k] >> 16), (uint8_t)(w[k] >> 24)};
     fwrite(b, 1, 4, f);
@@ -1589,8 +1634,8 @@ static void write_snapshot(void) {
    * xlat.py keeps those that follow a call. */
   snprintf(path, sizeof path, "%s/resume.txt", s_out_dir);
   f = fopen(path, "w");
-  if (f == NULL) xl_fatal("cannot write resume.txt", XSP_VSYNC_RESUME);
-  fprintf(f, "%06X # where the run resumes\n", XSP_VSYNC_RESUME);
+  if (f == NULL) xl_fatal("cannot write resume.txt", resume);
+  fprintf(f, "%06X # where the run resumes\n", resume);
   for (uint32_t at = A(7); at + 4 <= A(7) + 0x10000u && at + 4 <= XL_MEMORY; at += 2) {
     uint32_t v = rd32(at);
     if (v >= XL_LOAD && v < XL_BSS && !(v & 1u)) fprintf(f, "?%06X # at %06X\n", v, at);
@@ -1731,7 +1776,10 @@ static void write_graphics(void) {
 static void on_stop(int sig) {
   (void)sig;
 #ifdef XL_TRACE
-  if (s_out_dir) write_coverage(s_out_dir);
+  if (s_out_dir) {
+    write_coverage(s_out_dir);
+    write_stack_phases(s_out_dir);
+  }
 #endif
   fprintf(stderr, "xl: stopped at frame %u\n", s_frame_count);
   _exit(3);
@@ -1791,6 +1839,10 @@ int main(int argc, char **argv) {
   if (getenv("XL_MUSIC")) mcdrv_install();
   uint32_t start = XL_ENTRY;
   if (resume_path) start = read_snapshot(resume_path);
+#ifdef XL_RP_RENDER
+  /* The RP's renderer's list from the snapshot's, as the RP takes it. */
+  if (resume_path) xl_render_take_sprites(&s_rp_frame, XL_SPRITE_DATA_TABLE, s_sprite_list_count);
+#endif
 
   if (setjmp(s_exit) == 0) {
     uint32_t r = xl_call(start);
@@ -1818,6 +1870,7 @@ int main(int argc, char **argv) {
   }
 #ifdef XL_TRACE
   write_coverage(s_out_dir);
+  write_stack_phases(s_out_dir);
 #endif
   printf("xl: %s after %u frames, %u checkpoints, %u VBLs\n",
          s_exit_reason == 1 ? "frame limit" : "the game exited", s_frame_count,
