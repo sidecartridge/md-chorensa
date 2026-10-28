@@ -97,6 +97,9 @@ static uint32_t s_trace_next;
 #define COVERAGE_SLOTS 4096u
 #define PHASES 31
 static uint32_t s_coverage[COVERAGE_SLOTS][5]; /* entry + 1, calls, first, last, phases */
+/* The patterns each phase's sprites drew, as pattern_use.bin records them
+ * (pattern_use_pNN.bin at the end, NN the phase): a stage's own patterns. */
+static uint8_t s_phase_use[PHASES + 1][2048];
 static uint32_t s_phase_entries[PHASES], s_phase_count, s_phase;
 
 static void read_phases(void) {
@@ -253,6 +256,29 @@ static uint8_t s_page_carried[XL_MEMORY >> 8];
 static uint32_t s_block_reads[BLOCKS], s_block_writes[BLOCKS];
 static uint32_t s_block_first[BLOCKS], s_block_last[BLOCKS];
 static int s_memmap_paused;
+/* The text plane over the whole run (not started over with the phases):
+ * text_map.bin, a byte per address of its four planes with the flags above,
+ * and text_scroll.txt, the scroll's values at the frames' ends. */
+#define TEXT_MAP_BYTES (4u * 0x20000u)
+static uint8_t s_text_map[TEXT_MAP_BYTES];
+#define TEXT_SCROLLS 64u
+static uint32_t s_text_scrolls[TEXT_SCROLLS][4]; /* x << 16 | y, frames, first, last */
+static uint32_t s_text_scroll_count;
+
+static void text_scroll_note(void) {
+  uint32_t x = ((uint32_t)xl_mem[0xE80014u] << 8) | xl_mem[0xE80015u];
+  uint32_t y = ((uint32_t)xl_mem[0xE80016u] << 8) | xl_mem[0xE80017u];
+  uint32_t k = 0;
+  while (k < s_text_scroll_count && s_text_scrolls[k][0] != (x << 16 | y)) k++;
+  if (k == s_text_scroll_count) {
+    if (k == TEXT_SCROLLS) return;
+    s_text_scroll_count++;
+    s_text_scrolls[k][0] = x << 16 | y;
+    s_text_scrolls[k][2] = s_frame_count;
+  }
+  s_text_scrolls[k][1]++;
+  s_text_scrolls[k][3] = s_frame_count;
+}
 
 void xl_memmap_access(uint32_t a, int size, int write) {
   if (s_memmap_paused) return;
@@ -269,6 +295,7 @@ void xl_memmap_access(uint32_t a, int size, int write) {
     uint32_t b = (a + (uint32_t)k) & 0xFFFFFFu;
     if (write == 0 && !(s_touched[b] & 6u)) s_page_carried[b >> 8] = 1;
     s_touched[b] |= flag;
+    if (b - 0xE00000u < TEXT_MAP_BYTES) s_text_map[b - 0xE00000u] |= flag;
   }
 }
 
@@ -284,6 +311,22 @@ static void write_memmap(const char *out_dir) {
   FILE *f = fopen(path, "wb");
   if (f) {
     fwrite(s_touched, 1, XL_MEMORY, f);
+    fclose(f);
+  }
+  snprintf(path, sizeof path, "%s/text_map.bin", out_dir);
+  f = fopen(path, "wb");
+  if (f) {
+    fwrite(s_text_map, 1, TEXT_MAP_BYTES, f);
+    fclose(f);
+  }
+  snprintf(path, sizeof path, "%s/text_scroll.txt", out_dir);
+  f = fopen(path, "w");
+  if (f) {
+    fprintf(f, "# x y frames first-frame last-frame\n");
+    for (uint32_t k = 0; k < s_text_scroll_count; k++) {
+      fprintf(f, "%u %u %u %u %u\n", s_text_scrolls[k][0] >> 16, s_text_scrolls[k][0] & 0xFFFFu,
+              s_text_scrolls[k][1], s_text_scrolls[k][2], s_text_scrolls[k][3]);
+    }
     fclose(f);
   }
   snprintf(path, sizeof path, "%s/memmap.txt", out_dir);
@@ -365,6 +408,7 @@ static void memmap_phase_end(uint32_t phase) {
 #define memmap_range(a, n, write) ((void)0)
 #define write_memmap(out_dir) ((void)0)
 #define MEMMAP_PAUSE(on) ((void)0)
+#define text_scroll_note() ((void)0)
 #endif
 
 /* --- Frames: the game's VBL, the checkpoints, the screen ------------------- */
@@ -426,6 +470,7 @@ static void frame_wait_end(void) {
     c[13] = (uint8_t)s_last_sprite_count;
     memcpy(c + 16, xl_mem + XL_PLAYER_INFO_STRUCT, 14);
   }
+  text_scroll_note();
   keep_invincible();
   save_replay();
   /* XL_SPRITE_FRAMES=A-B: the sprites drawn each frame from A to B (as the
@@ -554,6 +599,9 @@ void xl_patch_xsp_out(void) {
     if (pattern < PATTERNS) {
       s_pattern_use[pattern] |= (uint8_t)(1u << (e[6] >> 6));
       s_phase_patterns[pattern] = 1;
+#ifdef XL_TRACE
+      s_phase_use[s_phase][pattern] |= (uint8_t)(1u << (e[6] >> 6));
+#endif
     }
   }
 #ifdef XL_RP_RENDER
@@ -1111,6 +1159,10 @@ void xl_linef(uint32_t word, uint32_t pc) {
       } else if (word == 0xFF3F) {
         r = (uint32_t)fread(xl_mem + (buffer & 0xFFFFFFu), 1, length, *f);
         memmap_range(buffer, r, 1);
+#ifdef XL_TRACE
+        printf("xl: read %s, %u bytes at %06X, frame %u (phase %u)\n", s_file_names[f - s_files], r,
+               buffer & 0xFFFFFFu, s_frame_count, s_phase);
+#endif
         if (s_load_count < LOADS) {
           s_loads[s_load_count].buffer = buffer & 0xFFFFFFu;
           s_loads[s_load_count].length = r;
@@ -1539,6 +1591,19 @@ static void write_pattern_use(void) {
   fwrite("CRSU", 1, 4, f);
   fwrite(s_pattern_use, 1, sizeof s_pattern_use, f);
   fclose(f);
+#ifdef XL_TRACE
+  for (uint32_t phase = 0; phase <= PHASES; phase++) {
+    uint32_t used = 0;
+    for (uint32_t k = 0; k < PATTERNS; k++) used |= s_phase_use[phase][k];
+    if (!used) continue;
+    snprintf(path, sizeof path, "%s/pattern_use_p%02u.bin", s_out_dir, phase);
+    f = fopen(path, "wb");
+    if (f == NULL) return;
+    fwrite("CRSU", 1, 4, f);
+    fwrite(s_phase_use[phase], 1, PATTERNS, f);
+    fclose(f);
+  }
+#endif
 }
 
 static void write_checkpoints(void) {

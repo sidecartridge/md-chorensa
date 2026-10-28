@@ -41,11 +41,16 @@ extern volatile uint32_t storeForceCopy;
 /* The header of the image at `base` if its magic and version are valid. */
 const xl_store_header_t *store_header(uint32_t base);
 
+/* The RAM a copy reads the card through: the caller's, free while it lasts
+ * (the game lends the chunky buffer, which no frame uses during a load). */
+#define STORE_CHUNK 4096u
+
 /* Copy the image in the card's file `path` into the region at `base`
- * (`max` bytes) if it was made for the firmware `firmware` (a build ID).
- * STORE_COPIED or STORE_SKIPPED, or an error. */
+ * (`max` bytes) if it was made for the firmware `firmware` (a build ID),
+ * through `chunk` (STORE_CHUNK bytes, 4-byte aligned). STORE_COPIED or
+ * STORE_SKIPPED, or an error. */
 int store_load(const char *path, uint32_t base, uint32_t max, const char *firmware,
-               store_progress_fn progress);
+               uint8_t *chunk, store_progress_fn progress);
 
 /* Write `length` bytes from RAM at `offset` of the card's file `path`
  * (offset 0 creates or truncates it). The bytes written, or -1. */

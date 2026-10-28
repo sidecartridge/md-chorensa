@@ -398,13 +398,20 @@ static bool copy_uses_blitter(void) {
   return audio_uses_dma();
 }
 
-void fb_publish(void) {
-  /* 1. Transpose chunked -> planar SCRATCH (RP RAM, dual-core). This is
-   *    the slow part (~1 ms) but it does NOT touch the cart FB, so it
-   *    runs unsynchronized and overlaps the m68k's blit of the previous
-   *    frame. */
+static void fb_publish_frame(bool convert);
+
+void fb_publish(void) { fb_publish_frame(true); }
+
+void fb_republish(void) { fb_publish_frame(false); }
+
+static void fb_publish_frame(bool convert) {
+  /* 1. Transpose chunked -> planar, in place in the chunky buffer (RP RAM,
+   *    dual-core). This is the slow part (~1 ms) but it does NOT touch the
+   *    cart FB, so it runs unsynchronized and overlaps the m68k's blit of
+   *    the previous frame. fb_republish() skips it: the buffer still holds
+   *    the planes of the frame fb_publish() last converted. */
   uint32_t t0 = time_us_32();
-  fb_transpose();
+  if (convert) fb_transpose();
   uint32_t transpose_us = time_us_32() - t0;
 
   /* 2. Block until the m68k has finished blitting the previous frame
@@ -421,7 +428,7 @@ void fb_publish(void) {
   }
   s_vbl_published = s_vbl_seen;
 
-  /* 3. Publish: fast chunk-reversed memcpy scratch -> cart FB. This is
+  /* 3. Publish: fast chunk-reversed copy of the planes -> cart FB. This is
    *    the only cart-FB write and it's short (~120 us), so it fits in
    *    the m68k's post-blit slack -- no overrun, no tearing, full 50 Hz.
    *    Mark the frame ready as the last write (barrier first). */

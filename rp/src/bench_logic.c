@@ -51,15 +51,22 @@
 #define PATH_BYTES 96u
 
 extern const char release_build_id[]; /* build_id.c */
-/* The pages the game writes: this array, then the cartridge window's free
- * arena (rp_image.py points the stage's page table at both, by these
- * symbols; xl_store.h). */
+/* The pages the game writes: the chunky buffer's part a banded frame
+ * leaves, this array, then the cartridge window's free arena (rp_image.py
+ * points the stage's page table at them, by these symbols; xl_store.h). */
 uint8_t xl_rp_ram[XL_STORE_RAM_BYTES] __attribute__((aligned(4)));
+/* The text plane in its layout (xl_store.h's XL_STORE_TEXT_*): the stage's
+ * page table points its pages into it. */
+uint8_t xl_rp_text[XL_STORE_TEXT_BYTES] __attribute__((aligned(4)));
+#define POOL_FB_PAGES (XL_STORE_FB_FREE_BYTES >> XL_PAGE_BITS)
 #define POOL_RAM_PAGES (XL_STORE_RAM_BYTES >> XL_PAGE_BITS)
-#define POOL_PAGES (POOL_RAM_PAGES + (XL_STORE_WINDOW_FREE_BYTES >> XL_PAGE_BITS))
+#define POOL_PAGES (POOL_FB_PAGES + POOL_RAM_PAGES + (XL_STORE_WINDOW_FREE_BYTES >> XL_PAGE_BITS))
 _Static_assert(XL_STORE_WINDOW_FREE == CART_APP_FREE_OFFSET &&
                    XL_STORE_WINDOW_FREE + XL_STORE_WINDOW_FREE_BYTES <= CART_FRAMEBUFFER_OFFSET,
                "the game's pages in the window stay inside its free arena");
+_Static_assert(XL_STORE_FB_FREE == FB_BANDED_BYTES &&
+                   XL_STORE_FB_FREE + XL_STORE_FB_FREE_BYTES == FB_CHUNKED_SIZE,
+               "the game's pages in the chunky buffer are the part a banded frame leaves");
 
 xl_cpu_t xl;
 uint8_t *xl_mem;             /* the host's flat memory: unused (XL_PAGED) */
@@ -265,10 +272,9 @@ static void checkpoint(void) {
   }
 }
 
-/* The bottom half of the frame, on core 1. */
-static void band_job(void *arg) {
-  xl_render_band(fb_chunked_buffer, (const xl_render_frame_t *)arg, XL_RENDER_H / 2,
-                 XL_RENDER_H);
+/* A band of the frame (fb_draw_banded, on either core). */
+static void draw_band(uint8_t *band, const void *arg, int y0, int y1) {
+  xl_render_band(band, (const xl_render_frame_t *)arg, y0, y1);
 }
 
 static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
@@ -276,19 +282,18 @@ static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
   if (us > *max) *max = us;
 }
 
-/* Play mode: the frame the game has just finished, drawn on both cores and
- * shown (fb_publish waits for the ST to have copied the last one: one
+/* Play mode: the frame the game has just finished, drawn and converted in
+ * bands on both cores (the chunky buffer's other part holds game pages) and
+ * shown (fb_republish waits for the ST to have copied the last one: one
  * game frame a VBL), with what the main loop would do meanwhile. */
 static void present(uint32_t game_us) {
   uint32_t t0 = time_us_32();
   s_frame.art = s_stage->art;
   xl_render_prepare(&s_frame);
-  fb_core1_dispatch(band_job, &s_frame);
-  xl_render_band(fb_chunked_buffer, &s_frame, 0, XL_RENDER_H / 2);
-  fb_core1_wait();
+  fb_draw_banded(draw_band, &s_frame);
   if (xl_render_palette(s_stage->art, s_palette)) palette_set(s_palette);
   uint32_t t1 = time_us_32();
-  fb_publish();
+  fb_republish();
   uint32_t t2 = time_us_32();
   audio_render_frame(); /* the music and the effects: song_samples */
   uint32_t t3 = time_us_32();
@@ -391,9 +396,7 @@ void xl_patch_xsp_out(void) {
   xl.c = 0;
 }
 
-void xl_patch_clear_text_planes(void) {
-  for (uint32_t a = 0xE00000u; a < 0xE80000u; a += 4) wr32(a, 0);
-}
+void xl_patch_clear_text_planes(void) { memset(xl_rp_text, 0, sizeof xl_rp_text); }
 
 void xl_patch_sincos(void) { xl_fatal("the sine tables load", GAME(SIN_COS_TABLES_START)); }
 void xl_patch_samples_loaded(void) { xl_fatal("the samples load", 0); }
@@ -704,7 +707,8 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
   char path[PATH_BYTES];
   card_path(path, name);
   uint32_t t0 = time_us_32();
-  int status = store_load(path, base, size, release_build_id, pump);
+  /* Through the chunky buffer's banded part: no frame is drawn during a load. */
+  int status = store_load(path, base, size, release_build_id, fb_chunked_buffer, pump);
   benchLogicResult.load_status[k] = (uint32_t)status;
   benchLogicResult.load_us[k] = time_us_32() - t0;
   DPRINTF("logic: %s %d in %lu us\n", path, status, (unsigned long)benchLogicResult.load_us[k]);
@@ -716,6 +720,8 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
 
 /* The pool's page k, in rp_image.py's order. */
 static uint8_t *pool_page(uint32_t k) {
+  if (k < POOL_FB_PAGES) return fb_chunked_buffer + XL_STORE_FB_FREE + (k << XL_PAGE_BITS);
+  k -= POOL_FB_PAGES;
   if (k < POOL_RAM_PAGES) return xl_rp_ram + (k << XL_PAGE_BITS);
   return (uint8_t *)__rom_in_ram_start__ + XL_STORE_WINDOW_FREE +
          ((k - POOL_RAM_PAGES) << XL_PAGE_BITS);
@@ -733,6 +739,10 @@ static void restore(void) {
     memcpy(pool_page(k), s_stage->ram_init + (k << XL_PAGE_BITS), 1u << XL_PAGE_BITS);
   }
   memset(pool_page(s_stage->ram_pages), 0, 1u << XL_PAGE_BITS); /* the spare */
+  memset(xl_rp_text, 0, sizeof xl_rp_text);
+  for (uint32_t k = 0; k < s_stage->text_row_count; k++) {
+    memcpy(xl_rp_text + s_stage->text_rows[k], s_stage->text_init + 32u * k, 32u);
+  }
   const uint32_t *w = s_stage->state + 2;
   for (int k = 0; k < 8; k++) xl.d[k] = *w++;
   for (int k = 0; k < 8; k++) xl.a[k] = *w++;
@@ -767,7 +777,7 @@ static void run(int drawn) {
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
   benchLogicResult.state = BENCH_LOGIC_LOADING;
   s_common = load(0, "COMMON.IMG", XL_STORE_COMMON, XL_STORE_COMMON_SIZE);
-  s_stage = load(1, "STAGE1.IMG", XL_STORE_STAGE, XL_STORE_STAGE_SIZE);
+  s_stage = load(1, "STAGE1.IMG", XL_STORE_SLOT, XL_STORE_SLOT_SIZE);
   storeForceCopy = 0;
   benchLogicResult.state = BENCH_LOGIC_IDLE;
   const char *problem = NULL;

@@ -8,9 +8,9 @@
  *
  * Plain C over tools/xlat/xl.h's memory accessors, so that the host's
  * runtime (tools/xlat/host/xl_host.c) draws the same picture from the same
- * source and checks it against the host's own renderer. Draws into a 256 x
- * 256 chunky buffer (a byte a pixel, the ST colour number), the lines
- * [y0, y1) of it: two cores draw two bands.
+ * source and checks it against the host's own renderer. Draws the lines
+ * [y0, y1) of a 256 x 256 chunky picture (a byte a pixel, the ST colour
+ * number): the RP draws its frame in bands on two cores (fb_draw_banded).
  */
 
 #ifndef XL_RENDER_H
@@ -23,13 +23,22 @@
 #define XL_RENDER_W 256
 #define XL_RENDER_H 256
 #define XL_RENDER_SPRITES 512
+/* The pages of the game's sprite list (8 bytes a sprite) at most. */
+#define XL_RENDER_SPRITE_PAGES (XL_RENDER_SPRITES * 8 / 256 + 1)
 
 /* What a frame shows, taken when the game hands its sprite list over
- * (XSP_OUT) and at its frame wait (XSP_VSYNC). */
+ * (XSP_OUT) and at its frame wait (XSP_VSYNC). Each sprite: x, y, pattern,
+ * attributes. The RP reads them where the game keeps them (the game does not
+ * write its list again before the frame is drawn), the host from a copy. */
 typedef struct {
   const xl_store_art_t *art;
   uint32_t sprite_count;
-  uint16_t sprites[XL_RENDER_SPRITES][4]; /* x, y, pattern, attributes */
+#ifdef XL_PAGED
+  const uint8_t *sprite_pages[XL_RENDER_SPRITE_PAGES]; /* the list's pages */
+  uint32_t sprite_offset;                              /* its start in the first */
+#else
+  uint16_t sprites[XL_RENDER_SPRITES][4];
+#endif
   uint16_t order[XL_RENDER_SPRITES];      /* drawing order (xl_render_prepare) */
   uint16_t page0_y, page1_y;              /* the CRTC's vertical scrolls */
   uint16_t text_x, text_y;
@@ -40,8 +49,9 @@ typedef struct {
 void xl_render_take_sprites(xl_render_frame_t *f, uint32_t table, uint32_t count);
 /* The scrolls and R1 from the game's registers, and the drawing order. */
 void xl_render_prepare(xl_render_frame_t *f);
-/* Draw the lines [y0, y1) of the frame into `fb`. */
-void xl_render_band(uint8_t *fb, const xl_render_frame_t *f, int y0, int y1);
+/* Draw the lines [y0, y1) of the frame at `band`: line y0's first pixel,
+ * XL_RENDER_W bytes a line. */
+void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1);
 
 /* The 16 ST colours (0RRR0GGG0BBB) for the program's current palettes: per
  * colour, its entries' current colours weighted (palette_fit.py's

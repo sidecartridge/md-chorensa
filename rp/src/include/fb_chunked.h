@@ -56,6 +56,22 @@ typedef void (*fb_core1_job_t)(void *arg);
 void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg);
 void __not_in_flash_func(fb_core1_wait)(void);
 
+/* A frame drawn in bands and converted as it goes, so that it takes only
+ * FB_BANDED_BYTES of the chunked buffer: fb_draw_banded() has core 0 draw
+ * the top half and core 1 the bottom, FB_BAND_LINES lines at a time, and
+ * converts each band to planes in place before it draws the next; each
+ * band's chunky lines start where its planes go, and overlap only the
+ * last band's lines, already converted. `draw(band, arg, y0, y1)` fills
+ * the lines [y0, y1) at `band` (line y0's first pixel, FB_CHUNKED_W bytes
+ * a line). fb_republish() then shows the frame. The buffer from
+ * FB_BANDED_BYTES on is the caller's until the next full-frame drawing
+ * (fb_publish(), the font and blit calls). */
+#define FB_BAND_LINES 16
+#define FB_BANDED_HALF_BYTES (FB_CHUNKED_SIZE / 4 + FB_BAND_LINES * FB_CHUNKED_W / 2)
+#define FB_BANDED_BYTES (2 * FB_BANDED_HALF_BYTES) /* 36 KB */
+typedef void (*fb_band_draw_t)(uint8_t *band, const void *arg, int y0, int y1);
+void fb_draw_banded(fb_band_draw_t draw, const void *arg);
+
 /* Fill the entire chunked buffer with a single palette index. */
 void fb_chunked_clear(uint8_t color);
 
@@ -94,12 +110,15 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
  * VBL wait (overlapping the m68k blit) and only the fast cart-FB write
  * runs after it. fb.c's fb_publish() uses these directly. */
 
-/* Dual-core transpose: chunked buffer -> internal planar scratch (RP
- * RAM). Does NOT touch the cart FB; safe to run while the m68k blits. */
+/* Dual-core transpose, in place: the chunked buffer then holds the
+ * frame's planes, the top lines' from offset 0 and the bottom lines' from
+ * half the buffer, until the app draws again. Does NOT touch the cart FB;
+ * safe to run while the m68k blits. */
 void __not_in_flash_func(fb_transpose)(void);
 
 /**
- * Copy the planar scratch to the cartridge framebuffer in the copier's
+ * Copy the planes fb_transpose() left in the chunked buffer to the
+ * cartridge framebuffer in the copier's
  * layout (cart_shared.h, "Framebuffer layout for the m68k's copy"): the
  * MOVEM copy's, or with `natural` the blitter's, the planes as they are.
  * The only write to the cartridge framebuffer: fb_publish() calls it after
