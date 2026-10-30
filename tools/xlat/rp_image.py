@@ -112,13 +112,15 @@ def c_bytes(data, indent="  "):
 
 def runtime_pages(layout):
     """The pages the runtime touches for the program, which the memory maps
-    leave out: (written, read)."""
+    leave out: (in RAM, read). The renderer's (the palettes, the CRTC's
+    scrolls, R1) are in RAM in every scene: it reads them every frame, and
+    what one scene writes there another shows."""
     written, read = set(), set()
     for name, size in RUNTIME_RANGES.items():
         written |= set(range(layout[name] // PAGE, (layout[name] + size - 1) // PAGE + 1))
     read |= {VBL_VECTOR // PAGE}
     for start, size in RENDER_READS:
-        read |= set(range(start // PAGE, (start + size - 1) // PAGE + 1))
+        written |= set(range(start // PAGE, (start + size - 1) // PAGE + 1))
     return written, read
 
 

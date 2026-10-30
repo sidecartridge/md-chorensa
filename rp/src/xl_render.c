@@ -171,17 +171,14 @@ void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   }
 }
 
-/* The palette's words the last colours were worked out from, and the art
- * (a scene's) they were worked out with. */
+/* The palette's words the last colours were worked out from. */
 static uint16_t s_seen[ENTRIES];
 static int s_valid;
-static const xl_store_art_t *s_seen_art;
 
 void xl_render_palette_forget(void) { s_valid = 0; }
 
 int xl_render_palette(const xl_store_art_t *art, uint16_t out[16]) {
-  int changed = !s_valid || art != s_seen_art;
-  s_seen_art = art;
+  int changed = !s_valid;
   for (uint32_t e = 0; e < ENTRIES; e++) {
     uint16_t w = (uint16_t)rd16(PALETTES + 2u * e);
     if (w != s_seen[e]) {

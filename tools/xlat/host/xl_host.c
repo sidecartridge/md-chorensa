@@ -186,16 +186,25 @@ static void scenes_read(void) {
 }
 
 static void scene_enter(int scene) {
-  uint32_t set = 0;
+  uint32_t set = 0, changed = 0;
+  char list[256] = "";
   for (uint32_t k = 0; k < s_scenes[scene].count; k++) {
     uint32_t page = s_scenes[scene].page[k], slot = s_scenes[scene].slot[k];
     if (s_scene >= 0 && s_scenes[scene].entry[k] && s_slot_owner[slot] != page) {
+      /* Set back: a page whose content was not the boot's any more is the
+       * game's state lost, unless the scene writes it before reading it. */
+      if (memcmp(xl_mem + (page << 8), s_scene_init + (page << 8), 256) != 0) {
+        size_t n = strlen(list);
+        if (n < sizeof list - 8) snprintf(list + n, sizeof list - n, " %06X", page << 8);
+        changed++;
+      }
       memcpy(xl_mem + (page << 8), s_scene_init + (page << 8), 256);
       set++;
     }
     s_slot_owner[slot] = page;
   }
-  printf("xl: scene %d from frame %u: %u pages set from the boot\n", scene, s_frame_count, set);
+  printf("xl: scene %d from frame %u: %u pages set from the boot, %u of them not the boot's%s\n",
+         scene, s_frame_count, set, changed, list);
   s_scene = scene;
 }
 

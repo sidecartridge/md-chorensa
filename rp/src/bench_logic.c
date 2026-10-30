@@ -799,6 +799,8 @@ static void scene_change(uint32_t kind) {
   if (h == NULL || h->kind != kind || h->ram_count >= POOL_PAGES) xl_fatal("no image for the scene", kind);
   s_stage = h;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)h->regions[r];
+  /* The scene's colours with its own art (it sits where the last one did). */
+  xl_render_palette_forget();
   uint32_t set = 0;
   for (uint32_t k = 0; k < h->entry_pages; k++) {
     const xl_store_ram_page_t *e = &h->ram_list[k];
