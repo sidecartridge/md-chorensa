@@ -924,6 +924,21 @@ def cmd_logic(args: argparse.Namespace) -> int:
 
 PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
                "publish_sum", "publish_max", "audio_sum", "audio_max")
+PLAY_SONG_LOG = 32     # bench_logic.h's BENCH_SONG_LOG
+PLAY_SONG_MISSED = 0x80
+
+
+def play_stats(raw: bytes) -> dict:
+    """bench_play_t: the frames' costs, then (newer builds) the songs and the
+    effects."""
+    n = len(PLAY_FIELDS)
+    words = struct.unpack(f"<{len(raw) // 4}I", raw)
+    r = dict(zip(PLAY_FIELDS, words[:n]))
+    if len(words) >= n + 2 + PLAY_SONG_LOG + 2:
+        r["songs"], r["fades"] = words[n], words[n + 1]
+        r["song_log"] = words[n + 2:n + 2 + PLAY_SONG_LOG]
+        r["effects"], r["effects_missed"] = words[n + 2 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG]
+    return r
 
 
 def image_numbers(image: list[int], width: int = 256, height: int = 256) -> bytes:
@@ -1013,7 +1028,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     base, size = sym["benchPlayStats"]
 
     def read():
-        return dict(zip(PLAY_FIELDS, struct.unpack(f"<{len(PLAY_FIELDS)}I", read_memory(base, size))))
+        return play_stats(read_memory(base, size))
 
     a = read()
     time.sleep(args.seconds)
@@ -1025,6 +1040,14 @@ def cmd_play(args: argparse.Namespace) -> int:
         for name in ("game", "draw", "publish", "audio"):
             mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
             print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
+    if "songs" in b:
+        print(f"songs {b['songs']}, fades {b['fades']}, effects {b['effects']} "
+              f"({b['effects_missed']} not in the card's bank) since the start")
+        for e in b["song_log"][:min(b["songs"], PLAY_SONG_LOG)]:
+            song = e & 0x7F
+            print(f"  frame {e >> 8}: " + ("none" if song == 0x7F else f"song {song}")
+                  + (" (not played: no file on the card)" if e & PLAY_SONG_MISSED and song != 0x7F
+                     else ""))
     return 0
 
 

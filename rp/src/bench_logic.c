@@ -602,7 +602,11 @@ static void effects_close(void) {
 
 static void effect_start(uint32_t address, uint32_t bytes, uint32_t mode) {
   uint32_t rate = mode >> 8;
-  if (!s_fx.open || address < s_fx.base || address - s_fx.base >= s_fx.size) return;
+  benchPlayStats.effects++;
+  if (!s_fx.open || address < s_fx.base || address - s_fx.base >= s_fx.size) {
+    benchPlayStats.effects_missed++;
+    return;
+  }
   s_fx.at = address - s_fx.base;
   s_fx.end = s_fx.at + bytes < s_fx.size ? s_fx.at + bytes : s_fx.size;
   s_fx.frac = 0;
@@ -648,6 +652,11 @@ static void song_stop(void) {
  * (50 a second) in. */
 static void song_play(uint32_t index, uint32_t frames) {
   song_stop();
+  if (benchPlayStats.songs < BENCH_SONG_LOG) {
+    benchPlayStats.song_log[benchPlayStats.songs] =
+        s_frame_count << 8 | (index & 0x7Fu) | BENCH_SONG_MISSED;
+  }
+  benchPlayStats.songs++;
   if (index >= s_common->song_count) return;
   char name[24], path[PATH_BYTES];
   snprintf(name, sizeof name, audio_uses_dma() ? "%.12s.ST8" : "%.12s.YM8",
@@ -682,6 +691,9 @@ static void song_play(uint32_t index, uint32_t frames) {
   s_song.playing = 1;
   s_out_rate = s_song.rate;
   audio_set_pcm_callback(song_samples, s_out_rate);
+  if (benchPlayStats.songs <= BENCH_SONG_LOG) {
+    benchPlayStats.song_log[benchPlayStats.songs - 1u] &= ~BENCH_SONG_MISSED;
+  }
 }
 
 /* The template's PCM output asks for `samples` (from audio_render_frame). */
@@ -737,6 +749,7 @@ static void mcdrv(void) {
     } else if (f == MCDRV_STOPMUSIC) {
       song_stop();
     } else if (f == MCDRV_FADEOUT && s_song.playing) {
+      benchPlayStats.fades++;
       s_song.fade_at = 0;
       s_song.fade_length = (uint32_t)((uint64_t)D(1) * s_song.fade_unit * s_song.rate / 10000u);
       if (s_song.fade_length == 0) s_song.fade_length = 1;

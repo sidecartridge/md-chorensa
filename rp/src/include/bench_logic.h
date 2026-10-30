@@ -60,6 +60,9 @@ typedef struct {
   char error[48];
 } bench_logic_result_t;
 
+#define BENCH_SONG_LOG 32u
+#define BENCH_SONG_MISSED 0x80u
+
 /* The play mode's frames, readable over SWD (tools/dev/swd.py play). */
 typedef struct {
   uint32_t frames, laps;       /* shown; runs to the end and back to the snapshot */
@@ -67,6 +70,10 @@ typedef struct {
   uint32_t draw_sum, draw_max; /* the picture on both cores and the palette */
   uint32_t publish_sum, publish_max; /* the c2p and the wait for the ST's copy */
   uint32_t audio_sum, audio_max; /* the sound: the song's and the effect's reads and the mix */
+  uint32_t songs, fades;       /* MCDRV's plays and fades while it played */
+  uint32_t song_log[BENCH_SONG_LOG]; /* the first plays: frame << 8 | BENCH_SONG_MISSED if the
+                                        card had none | the song (the common image's table) */
+  uint32_t effects, effects_missed; /* _ADPCMOUT's samples; of them, none in the card's bank */
 } bench_play_t;
 
 enum {
