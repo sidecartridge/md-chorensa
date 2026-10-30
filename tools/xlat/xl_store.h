@@ -36,8 +36,10 @@
 #define XL_STORE_FB_FREE_BYTES 0x7000u        /* 112 pages, to the buffer's end */
 /* The pool's last slot is the spare (every page no scene touches); the ones
  * below it hold which page each slot holds now, 16 bits a slot (the scene
- * change's record, kept across scenes). */
+ * change's record, kept across scenes), and below them one holds the bench's
+ * checkpoints read from the card. */
 #define XL_STORE_OWNER_SLOTS 0x3u
+#define XL_STORE_BENCH_SLOTS 0x1u
 
 /* The text plane (four planes of 1024 lines, 128 bytes a line, at $E00000)
  * in a layout of its own: the game shows it unscrolled, writes only its
@@ -54,7 +56,7 @@
 #define XL_STORE_TEXT_BYTES 0x8060u         /* four planes and the overlap */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 8u          /* 7: the scene change; 8: the start's memory on the card */
+#define XL_STORE_VERSION 9u          /* 8: the start's memory on the card; 9: a whole game's bench */
 #define XL_STORE_KIND_COMMON 0u      /* 1..7 a stage's */
 #define XL_STORE_KIND_MENUS 8u
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
@@ -70,6 +72,7 @@ enum {
   XL_LAYOUT_BACKGROUND_SCROLL_COUNTER,
   XL_LAYOUT_PLAYER_INFO_STRUCT,
   XL_LAYOUT_SIN_COS_TABLES_START,
+  XL_LAYOUT_INVINCIBILITY_MODE,
   XL_LAYOUT_WORDS
 };
 
@@ -155,8 +158,7 @@ typedef struct {
   const xl_store_ram_page_t *ram_list;
   uint32_t ram_count;
   uint8_t *const *const *regions;     /* 256 rows of 256 page pointers */
-  const uint8_t *checkpoints;         /* the host's, 32 bytes each */
-  uint32_t checkpoint_count;
+
   uint32_t layout[XL_LAYOUT_WORDS]; /* the common image's: XL_LAYOUT_* */
   const xl_store_art_t *art;          /* a scene's pictures, or 0 */
   const xl_store_song_t *songs;       /* the common image's: the songs loaded */
@@ -187,6 +189,24 @@ typedef struct {
   uint32_t kind;           /* the start scene's */
   uint32_t ram_count;      /* its RAM pages: its image's ram_count */
   uint32_t text_row_count;
+  uint32_t flags;          /* XL_STORE_START_* */
+  uint32_t last_frame;     /* where the bench's run ends */
 } xl_store_start_t;
+#define XL_STORE_START_INVINCIBLE 1u /* the game keeps the player invincible (a recording of
+                                        such a game, the host's XL_INVINCIBLE) */
+
+/* The host's checkpoints of the same run, which the bench compares its own
+ * with (every XL_STORE_CHECK_FRAMES frames), on the card: this header,
+ * then 32 bytes each. */
+#define XL_STORE_CHECKS_FILE "CHECKS.DAT"
+#define XL_STORE_CHECKS_MAGIC 0x4B435458u /* 'XTCK' */
+#define XL_STORE_CHECK_FRAMES 60u
+#define XL_STORE_CHECK_BYTES 32u
+typedef struct {
+  uint32_t magic;   /* XL_STORE_CHECKS_MAGIC */
+  uint32_t version; /* XL_STORE_VERSION */
+  char firmware[XL_STORE_FIRMWARE_ID];
+  uint32_t count;
+} xl_store_checks_t;
 
 #endif /* XL_STORE_H */

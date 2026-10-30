@@ -57,6 +57,7 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
  * own file, so not during a copy. */
 int store_read_open(const char *path);
 int store_read(void *dst, uint32_t length);
+int store_read_seek(uint32_t offset); /* 0, or -1 */
 void store_read_close(void);
 
 /* Write `length` bytes from RAM at `offset` of the card's file `path`

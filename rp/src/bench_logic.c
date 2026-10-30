@@ -41,14 +41,13 @@
 #include "xl.h"
 #include "xl_render.h"
 
-#define LAST_FRAME 12000u /* into the second stage (tools/xlat/rp_store.py's BENCH_LAST) */
 /* The game starts at the title, in the menus' image, which holds the state
  * the host left after the boot. */
 #define START_IMAGE "MENUS.IMG"
 #define HISTOGRAM_BINS 256u /* the logic times, 32 us a bin: up to 8 ms */
 #define HISTOGRAM_SHIFT 5u
-#define CHECKPOINT_INTERVAL 60u
-#define CHECKPOINT_BYTES 32u
+#define CHECKPOINT_INTERVAL XL_STORE_CHECK_FRAMES
+#define CHECKPOINT_BYTES XL_STORE_CHECK_BYTES
 #define MAXIMUM_SPRITES 512u
 #define FRAME_TIMER_HZ100 5546u
 #define PATH_BYTES 96u
@@ -244,6 +243,60 @@ static void read_bytes(uint8_t *out, uint32_t a, uint32_t n) {
   for (uint32_t k = 0; k < n; k++) out[k] = (uint8_t)rd8(a + k);
 }
 
+/* The host's checkpoints (XL_STORE_CHECKS_FILE on the card), read a pool
+ * slot's worth at a time into the bench's slot (xl_store.h). */
+#define CHECKS_PER_SLOT ((1u << XL_PAGE_BITS) / CHECKPOINT_BYTES)
+#define BENCH_SLOT (POOL_PAGES - 1u - XL_STORE_OWNER_SLOTS - XL_STORE_BENCH_SLOTS)
+static uint32_t s_check_count;  /* in the file */
+static uint32_t s_check_first;  /* the first of the ones in the slot, or UINT32_MAX */
+static uint32_t s_last_frame;   /* where the run ends (the start file's) */
+static int s_invincible;        /* the start file's XL_STORE_START_INVINCIBLE */
+
+static uint8_t *pool_page(uint32_t k);
+static void card_path(char *out, const char *name);
+
+static void open_checks(void) {
+  char path[PATH_BYTES];
+  card_path(path, XL_STORE_CHECKS_FILE);
+  xl_store_checks_t h;
+  s_check_count = 0;
+  s_check_first = UINT32_MAX;
+  if (store_read_open(path) != 0) return;
+  if (store_read(&h, sizeof h) == (int)sizeof h && h.magic == XL_STORE_CHECKS_MAGIC &&
+      h.version == XL_STORE_VERSION &&
+      strncmp(h.firmware, release_build_id, XL_STORE_FIRMWARE_ID - 1u) == 0) {
+    s_check_count = h.count;
+  }
+  store_read_close();
+}
+
+/* The host's checkpoint k, or NULL past its last. */
+static const uint8_t *host_checkpoint(uint32_t k) {
+  if (k >= s_check_count) return NULL;
+  uint8_t *slot = pool_page(BENCH_SLOT);
+  uint32_t first = k - k % CHECKS_PER_SLOT;
+  if (first != s_check_first) {
+    char path[PATH_BYTES];
+    card_path(path, XL_STORE_CHECKS_FILE);
+    uint32_t n = s_check_count - first < CHECKS_PER_SLOT ? s_check_count - first : CHECKS_PER_SLOT;
+    s_check_first = UINT32_MAX;
+    if (store_read_open(path) != 0) return NULL;
+    if (store_read_seek(sizeof(xl_store_checks_t) + first * CHECKPOINT_BYTES) == 0 &&
+        store_read(slot, n * CHECKPOINT_BYTES) == (int)(n * CHECKPOINT_BYTES)) {
+      s_check_first = first;
+    }
+    store_read_close();
+    if (s_check_first == UINT32_MAX) return NULL;
+  }
+  return slot + (k - first) * CHECKPOINT_BYTES;
+}
+
+/* As the host's XL_INVINCIBLE: the game's invincibility kept on, for a
+ * recording of a game played so. */
+static void keep_invincible(void) {
+  if (s_invincible && rd16(GAME(INVINCIBILITY_MODE)) == 0) wr16(GAME(INVINCIBILITY_MODE), 1);
+}
+
 /* The host's checkpoint (xl_host.c frame_wait_end), against the host's. */
 static void checkpoint(void) {
   uint8_t c[CHECKPOINT_BYTES];
@@ -260,9 +313,9 @@ static void checkpoint(void) {
   read_bytes(c + 16, GAME(PLAYER_INFO_STRUCT), 14);
   if (s_live) return; /* the player's game is not the host's */
   uint32_t k = s_frame_count / CHECKPOINT_INTERVAL - 1u;
+  const uint8_t *expected = host_checkpoint(k);
+  if (expected == NULL) return;
   benchLogicResult.checkpoints++;
-  if (k >= s_stage->checkpoint_count) return;
-  const uint8_t *expected = s_stage->checkpoints + k * CHECKPOINT_BYTES;
   if (memcmp(c, expected, CHECKPOINT_BYTES) != 0) {
     if (benchLogicResult.mismatches++ == 0) {
       benchLogicResult.first_mismatch = s_frame_count;
@@ -365,7 +418,8 @@ void xl_patch_xsp_vsync(void) {
   if (vbl > benchLogicResult.vbl_max) benchLogicResult.vbl_max = vbl;
   if (s_playing) present(logic + vbl);
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) checkpoint();
-  if (s_frame_count >= LAST_FRAME) stop(BENCH_LOGIC_DONE, "", 0);
+  keep_invincible();
+  if (s_frame_count >= s_last_frame) stop(BENCH_LOGIC_DONE, "", 0);
   s_frame_end_us = time_us_32();
 }
 
@@ -382,7 +436,8 @@ void xl_patch_wait_vbl(void) {
     for (uint32_t k = 0; k <= ticks; k++) run_vbl();
   }
   if (s_frame_count % CHECKPOINT_INTERVAL == 0) checkpoint();
-  if (s_frame_count >= LAST_FRAME) stop(BENCH_LOGIC_DONE, "", 0);
+  keep_invincible();
+  if (s_frame_count >= s_last_frame) stop(BENCH_LOGIC_DONE, "", 0);
   s_frame_end_us = time_us_32();
 }
 
@@ -724,8 +779,15 @@ static const xl_store_header_t *load(int k, const char *name, uint32_t base, uin
   char path[PATH_BYTES];
   card_path(path, name);
   uint32_t t0 = time_us_32();
-  /* Through the chunky buffer's banded part: no frame is drawn during a load. */
+  /* Through the chunky buffer's banded part: no frame is drawn during a load.
+   * Tried again when the card failed it: just after a power-on both images
+   * once read as no image, and loaded on the next try. */
   int status = store_load(path, base, size, release_build_id, fb_chunked_buffer, pump);
+  for (int again = 0; again < 2 && (status == STORE_NO_FILE || status == STORE_BAD_FILE ||
+                                    status == STORE_READ_ERROR); again++) {
+    sleep_ms(100);
+    status = store_load(path, base, size, release_build_id, fb_chunked_buffer, pump);
+  }
   benchLogicResult.load_status[k] = (uint32_t)status;
   benchLogicResult.load_us[k] = time_us_32() - t0;
   DPRINTF("logic: %s %d in %lu us\n", path, status, (unsigned long)benchLogicResult.load_us[k]);
@@ -847,6 +909,8 @@ static const char *read_start(void) {
       h.kind != s_stage->kind || h.ram_count != s_stage->ram_count) {
     problem = "the start file is not these images'";
   }
+  s_last_frame = h.last_frame;
+  s_invincible = (h.flags & XL_STORE_START_INVINCIBLE) != 0;
   for (uint32_t k = 0; !problem && k < h.ram_count; k++) {
     void *page = pool_page(s_stage->ram_list[k].slot);
     if (store_read(page, 1u << XL_PAGE_BITS) != (int)(1u << XL_PAGE_BITS)) problem = "a short start file";
@@ -904,7 +968,7 @@ static void restore(void) {
 
 bool bench_logic_available(void) { return true; }
 
-/* Load the images and play from the snapshot to LAST_FRAME: timed (the
+/* Load the images and play from the snapshot to the start file's last frame: timed (the
  * logic bench), or drawn and shown, over and over until the host says
  * otherwise (play). */
 static void run(int drawn);
@@ -956,6 +1020,7 @@ static void run(int drawn) {
       }
     }
     const char *wrong = read_start();
+    open_checks();
     if (wrong) {
       benchLogicResult.state = BENCH_LOGIC_ERROR;
       strncpy(benchLogicResult.error, wrong, sizeof benchLogicResult.error - 1u);

@@ -14,7 +14,7 @@
 
 #define STORE_BLOCK (64u * 1024u) /* an erase: ~150 ms */
 
-_Static_assert(sizeof(xl_store_header_t) == 160u, "the header's size is the host's too");
+_Static_assert(sizeof(xl_store_header_t) == 156u, "the header's size is the host's too");
 _Static_assert(STORE_CHUNK % FLASH_PAGE_SIZE == 0u, "chunks are whole pages");
 
 /* Static: FatFs's FIL is too big for core 0's 4 KB stack. */
@@ -124,6 +124,8 @@ int store_read(void *dst, uint32_t length) {
   UINT got = 0;
   return f_read(&s_file, dst, length, &got) == FR_OK ? (int)got : -1;
 }
+
+int store_read_seek(uint32_t offset) { return f_lseek(&s_file, offset) == FR_OK ? 0 : -1; }
 
 void store_read_close(void) { f_close(&s_file); }
 

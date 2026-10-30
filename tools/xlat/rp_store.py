@@ -46,7 +46,7 @@ Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
 usage: rp_store.py --firmware ELF [--frame 100] [--runs RUN ... --game-over RUN]
-                   [--palettes DIR] [--out DIR]
+                   [--replay FILE [--invincible]] [--bench-frames N] [--palettes DIR] [--out DIR]
 """
 
 import argparse
@@ -83,6 +83,10 @@ START_SCENE = "menus"
 ART_FRAME = 650
 MENUS_ART_FRAME = 500
 BENCH_LAST = 12000
+# A recording's (--replay): the recorded whole game ends at its frame 149,000
+# (XL_SAVE_REPLAY_AT).
+REPLAY_LAST = 149000
+START_INVINCIBLE = 1  # xl_store.h's XL_STORE_START_INVINCIBLE
 
 # The phases (XL_PHASES, numbered from 1 in this order; 0 the boot): the
 # stages' routines (the dispatcher's targets: STAGE_0, the seven stages,
@@ -113,10 +117,10 @@ BG_MAPS = (0xEBC000, 0xEC0000)
 # game starts, and nothing reads them back (the RP draws the scene's art).
 GVRAM = (0xC00000, 0xE00000)
 
-HEADER_SIZE = 160         # sizeof(xl_store_header_t)
+HEADER_SIZE = 156         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
-          "SIN_COS_TABLES_START")  # xl_store.h's XL_LAYOUT_* order
+          "SIN_COS_TABLES_START", "INVINCIBILITY_MODE")  # xl_store.h's XL_LAYOUT_* order
 SIZE_OFFSET, CRC_OFFSET = 12, 16
 
 CFLAGS = ["-mcpu=cortex-m0plus", "-mthumb", "-Os", "-std=c11", "-w", "-ffunction-sections",
@@ -344,7 +348,6 @@ def header_c(path, image, kind, firmware_id, entries, scene=False, bench=None, l
     if bench:
         named.update({"resume": f"0x{bench['resume']:06X}u", "state": "xl_rp_state",
                       "sprites": "xl_rp_sprites",
-                      "checkpoints": "xl_rp_checkpoints", "checkpoint_count": "XL_RP_CHECKPOINTS",
                       "song_playing": f"{bench['song']}u", "song_frames": f"{bench['song_frames']}u"})
     if layout:
         named["layout"] = "{" + ", ".join(f"0x{layout[n]:06X}u" for n in LAYOUT) + "}"
@@ -414,6 +417,13 @@ def main():
     ap.add_argument("--palettes", default=os.path.join(os.path.expanduser("~"), "chorensa",
                                                        "xlat-store", "palettes"),
                     help="the scenes' palette fits: stage1.bin..stage7.bin, menus.bin")
+    ap.add_argument("--replay", help="a recorded game (XL_SAVE_REPLAY_AT's replay.rep) the "
+                    "attract demo plays, for the bench to play the whole of it")
+    ap.add_argument("--invincible", action="store_true",
+                    help="the recording was played invincible (the host's XL_INVINCIBLE)")
+    ap.add_argument("--bench-frames", type=int,
+                    help=f"where the bench's run ends (default {BENCH_LAST}; with --replay, "
+                    f"{REPLAY_LAST})")
     ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-store"))
     args = ap.parse_args()
     if bool(args.runs) != bool(args.game_over):
@@ -430,23 +440,35 @@ def main():
     if missing:
         sys.exit("no palette fit: " + " ".join(missing))
 
+    # The bench's game: the attract demo, or a recording played as it.
+    play = ["--replay", os.path.abspath(args.replay)] if args.replay else []
+    play_env = {"XL_INVINCIBLE": "1"} if args.invincible else {}
+    bench_frames = args.bench_frames or (REPLAY_LAST if args.replay else BENCH_LAST)
     if args.runs:
-        runs, game_over = args.runs, args.game_over
+        runs, game_over = list(args.runs), args.game_over
     else:
         made = whole_game_runs()
         runs, game_over = list(made.values()), made[GAME_OVER_RUN]
+    if args.replay:
+        # The recording's own pages: it loads into the replay's buffer, and
+        # plays a game of its own.
+        runs.append(host_run("whole-replay", ["--frames", str(bench_frames)] + play,
+                             {"XL_TRACE": "1", "XL_MEMMAP": "1",
+                              "XL_PHASES": ",".join(f"{a:06X}" for a in PHASE_ENTRIES),
+                              **play_env}, check=False))
     snap = host_run(f"store-snap{args.frame}", ["--snapshot", str(args.frame),
-                                                 "--frames", str(args.frame + 2)])
-    checks = host_run("store-checkpoints", ["--resume", snap, "--frames", str(BENCH_LAST)])
+                                                 "--frames", str(args.frame + 2)] + play, play_env)
+    checks = host_run("store-checkpoints", ["--resume", snap, "--frames", str(bench_frames)],
+                      play_env, check=False)
     # The memory there too, as a plain dump: what a scene change sets a page
     # to when its slot changed hands (the snapshot's own memory, after the boot).
-    boot_run = host_run("store-boot", ["--frames", str(args.frame + 1)],
-                        {"XL_MEMORY_AT": str(args.frame)})
-    art_run = host_run("store-art", ["--frames", str(ART_FRAME + 1)],
-                       {"XL_MEMORY_AT": str(ART_FRAME)})
+    boot_run = host_run("store-boot", ["--frames", str(args.frame + 1)] + play,
+                        {"XL_MEMORY_AT": str(args.frame), **play_env})
+    art_run = host_run("store-art", ["--frames", str(ART_FRAME + 1)] + play,
+                       {"XL_MEMORY_AT": str(ART_FRAME), **play_env})
     art_memory = open(os.path.join(art_run, "memory.bin"), "rb").read()
-    menus_art_run = host_run("store-menus-art", ["--frames", str(MENUS_ART_FRAME + 1)],
-                             {"XL_MEMORY_AT": str(MENUS_ART_FRAME)})
+    menus_art_run = host_run("store-menus-art", ["--frames", str(MENUS_ART_FRAME + 1)] + play,
+                             {"XL_MEMORY_AT": str(MENUS_ART_FRAME), **play_env})
     menus_art_memory = open(os.path.join(menus_art_run, "memory.bin"), "rb").read()
     boot_memory = open(os.path.join(boot_run, "memory.bin"), "rb").read()
     resume = os.path.join(snap, "resume.txt")
@@ -554,17 +576,20 @@ def main():
         out = os.path.join(work, s)
         bench_state = None
         if s == START_SCENE:
-            data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
-            n = struct.unpack(">I", data[4:8])[0]
-            bench_state = {"state": state, "sprites": sprites, "checkpoints": data[8:8 + 32 * n]}
+            bench_state = {"state": state, "sprites": sprites}
         order, figures = rp_image.write_image(out, memory, {p: slot[p] for p in ram[s]},
                                               read[s] - set(common_at),
                                               {p: common_at[p] for p in read[s] & set(common_at)},
                                               boot_memory, entry[s], bench_state)
         if s == START_SCENE:
             pages, rows = rp_image.write_start(
-                os.path.join(args.out, "START.STA"), memory, order, SCENE_KIND[s], fw_id)
-            print(f"START.STA: {pages} pages, {rows} text rows", flush=True)
+                os.path.join(args.out, "START.STA"), memory, order, SCENE_KIND[s], fw_id,
+                START_INVINCIBLE if args.invincible else 0, bench_frames)
+            data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
+            n = rp_image.write_checks(os.path.join(args.out, "CHECKS.DAT"),
+                                      data[8:8 + 32 * struct.unpack(">I", data[4:8])[0]], fw_id)
+            print(f"START.STA: {pages} pages, {rows} text rows; CHECKS.DAT: {n} checkpoints "
+                  f"to frame {bench_frames}", flush=True)
         own = drawn[s] - set(common_index)
         background, pattern_size = rp_art.write_art(
             os.path.join(out, "xl_stage_art.c"), menus_art_memory if s == "menus" else art_memory,
