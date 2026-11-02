@@ -116,6 +116,7 @@ static uint8_t s_stick;
 
 int xl_live_input(void) { return s_live; }
 void xl_live_read(int on) { s_live_read = on; }
+int xl_record(void) { return 0; }
 
 /* The game's variables the runtime uses, from the common image's header. */
 #define GAME(name) (s_common->layout[XL_LAYOUT_##name])
@@ -221,8 +222,9 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_patch_xsp_out, (const void *)xl_patch_clear_text_planes,
     (const void *)xl_patch_wait_vbl, (const void *)xl_patch_sincos,
     (const void *)xl_patch_samples_loaded, (const void *)xl_live_input,
-    (const void *)xl_live_read,     (const void *)&xl,
-    (const void *)xl_regions,       (const void *)&xl_mem,
+    (const void *)xl_live_read,     (const void *)xl_record,
+    (const void *)&xl,              (const void *)xl_regions,
+    (const void *)&xl_mem,
 };
 
 /* --- Frames --------------------------------------------------------------- */

@@ -101,14 +101,21 @@ SCENE_KIND = {**{f"stage{n}": n for n in range(1, 8)}, "menus": 8}  # xl_store.h
 RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         ("whole-gameover", 30000, "whole-game.txt", {}),
         ("whole-config", 2500, "menu-config.txt", {}),
-        ("whole-kakusi", 6000, "menu-kakusi.txt", {}),
-        ("whole-attract", 150000, None, {}))
+        ("whole-kakusi", 6000, "menu-kakusi-play.txt", {}),
+        ("whole-attract", 150000, None, {})) + tuple(
+        # A game over in every stage: its writes (the high scores, the name
+        # entry) are the stage's own.
+        (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {}) for n in range(1, 8))
 GAME_OVER_RUN = "whole-gameover"
 INPUTS = os.path.join(HERE, "inputs")
 PAGE = rp_image.PAGE
 # The game's object pool (LONG_0009C8E4, its table, and L_0009CEE4, 48 KB):
 # a stage uses any of its slots, so every stage keeps all of it in RAM.
 OBJECT_POOL = (0x9C8E4, 0xA8EE4)
+# The high score table (WORD_0008D994, 240 bytes): the game
+# updates it the moment a player passes a score in it, in any stage, and at
+# the game over; every scene keeps it in RAM.
+HIGH_SCORES = (0x8D994, 0x8DA84)
 # The X68000's sprite patterns and BG maps: the port shows neither; nothing
 # reads the patterns back, and only the menus the maps (through IOCS $CE).
 SPRITE_PATTERNS = (0xEB8000, 0xEBC000)
@@ -171,6 +178,17 @@ def coverage(path):
 
 def pages_of(lo, hi):
     return set(range(lo // PAGE, (hi + PAGE - 1) // PAGE))
+
+
+def page_ranges(pages):
+    """The pages as runs of consecutive ones: (first, last) pairs."""
+    runs = []
+    for p in sorted(pages):
+        if runs and runs[-1][1] == p - 1:
+            runs[-1][1] = p
+        else:
+            runs.append([p, p])
+    return runs
 
 
 class Scenes:
@@ -448,6 +466,10 @@ def main():
         runs, game_over = list(args.runs), args.game_over
     else:
         made = whole_game_runs()
+        if args.replay:
+            # The recording is the attract demo: the demo the game loads never
+            # plays, and its pages would read as another scene's.
+            del made["whole-attract"]
         runs, game_over = list(made.values()), made[GAME_OVER_RUN]
     if args.replay:
         # The recording's own pages: it loads into the replay's buffer, and
@@ -506,7 +528,7 @@ def main():
     sink = pages_of(*SPRITE_PATTERNS)
     ram, read = {}, {}
     for s in SCENES:
-        ram[s] = scenes.ram[s] | runtime_written
+        ram[s] = scenes.ram[s] | runtime_written | pages_of(*HIGH_SCORES)
         read[s] = scenes.read[s] | runtime_read
         if s != "menus":
             ram[s] |= scenes.ram["gameover"] | pages_of(*OBJECT_POOL)
@@ -523,6 +545,14 @@ def main():
     entry = {s: (ram[s] - ram[START_SCENE]) | (ram[s] & shared) for s in SCENES}
     print(f"RAM: {max(slot.values()) + 1} slots of the pool's {rp_image.SPARE} for "
           f"{len(slot)} pages, {len(shared)} sharing theirs")
+    # The read-only pages more than one scene reads go into COMMON, and every
+    # scene's table maps them: a scene may read one its runs never did.
+    readers = {}
+    for s in SCENES:
+        for p in read[s]:
+            readers.setdefault(p, set()).add(s)
+    common_pages = sorted(p for p, r in readers.items() if len(r) > 1)
+    common_at = {p: k * PAGE for k, p in enumerate(common_pages)}
     # The host's model of the scene changes (xl_host.c's XL_SCENES).
     with open(os.path.join(args.out, "scenes.txt"), "w") as f:
         f.write("# rp_store.py: the scenes' RAM pages and their slots (xl_host.c's XL_SCENES)\n")
@@ -532,12 +562,18 @@ def main():
         for k, scene in enumerate(SCENES):
             for p in sorted(ram[scene]):
                 f.write(f"page {k} {p} {slot[p]} {int(p in entry[scene])}\n")
-    readers = {}
-    for s in SCENES:
-        for p in read[s]:
-            readers.setdefault(p, set()).add(s)
-    common_pages = sorted(p for p, r in readers.items() if len(r) > 1)
-    common_at = {p: k * PAGE for k, p in enumerate(common_pages)}
+        # Where the scene's other pages are (rp_image.write_image's table), so
+        # the host can tell an access the RP would lose: the read-only ones in
+        # flash, the text plane's screen lines in its packed area, the sinks
+        # (written, never read back) and every other page in the spare page.
+        shown = {p for p in text if rp_image.text_page_at(p) is not None}
+        for k, scene in enumerate(SCENES):
+            sinks = sink | gvram | (pages_of(*BG_MAPS) if scene != "menus" else set())
+            flash = read[scene] | (set(common_pages) - ram[scene])
+            for kind, pages in (("flash", flash), ("text", shown - ram[scene]),
+                                ("sink", sinks - ram[scene] - read[scene])):
+                for lo, hi in page_ranges(pages):
+                    f.write(f"kind {k} {kind} {lo} {hi}\n")
     data = rp_image.swapped(b"".join(memory[p * PAGE:(p + 1) * PAGE] for p in common_pages))
     with open(os.path.join(work, "common", "xl_common_data.c"), "w") as f:
         f.write("/* Generated by tools/xlat/rp_store.py from the user's copy of the program:\n"
@@ -578,8 +614,7 @@ def main():
         if s == START_SCENE:
             bench_state = {"state": state, "sprites": sprites}
         order, figures = rp_image.write_image(out, memory, {p: slot[p] for p in ram[s]},
-                                              read[s] - set(common_at),
-                                              {p: common_at[p] for p in read[s] & set(common_at)},
+                                              read[s] - set(common_at), common_at,
                                               boot_memory, entry[s], bench_state)
         if s == START_SCENE:
             pages, rows = rp_image.write_start(

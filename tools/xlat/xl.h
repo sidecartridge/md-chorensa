@@ -148,6 +148,10 @@ void xl_patch_samples_loaded(void);
  * with the live stick, every other read with nothing pressed). */
 int xl_live_input(void);
 void xl_live_read(int on);
+/* Whether the game records the player's game over the demo's replay (the
+ * buffer the attract demo plays, 128 KB): the RP never does (it keeps the
+ * buffer in flash); the host when it saves a recording (XL_SAVE_REPLAY_AT). */
+int xl_record(void);
 
 /* Enter the code at a 68000 address: the translated function that starts
  * there; returns the address its RTS (or RTE) popped. Unknown: fatal. */

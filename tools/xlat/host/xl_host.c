@@ -153,6 +153,29 @@ static uint8_t *s_scene_init;
 static uint32_t s_slot_owner[POOL_SLOTS];
 static int s_scene = -1, s_scenes_on;
 
+/* Where each of a scene's pages is on the RP (the file's "page" and "kind
+ * lines"), so the model can report an access the RP would get wrong: a write
+ * into a page it keeps in flash (lost), a read of one whose content is not
+ * the images' any more (stale: written by another scene, or loaded from a
+ * file), an access to the spare page every
+ * page no run touched shares (another stray page's bytes), a sink read (its
+ * writes go to the spare page), the text plane past the 32 bytes of a line
+ * the RP keeps. Each (scene, page, kind of problem) once, as it happens:
+ * "xl: outside" lines, and outside.txt at the end. */
+enum { PAGE_SPARE, PAGE_RAM, PAGE_FLASH, PAGE_TEXT, PAGE_SINK };
+enum { OUT_FLASH_WRITE = 1, OUT_SPARE_READ = 2, OUT_SPARE_WRITE = 4, OUT_SINK_READ = 8,
+       OUT_TEXT_PAST = 16, OUT_FLASH_STALE = 32 };
+static uint8_t s_page_kind[SCENES_MAX][XL_MEMORY >> 8];
+/* Written since its last comparison with the memory the images hold (the
+ * file's dump): a flash page read with other content is stale on the RP. */
+static uint8_t s_page_dirty[XL_MEMORY >> 8];
+static uint8_t s_outside_seen[SCENES_MAX][XL_MEMORY >> 8];
+#define OUTSIDE_NOTES 4096
+static struct {
+  uint32_t scene, frame, address, kind, function;
+} s_outside[OUTSIDE_NOTES];
+static uint32_t s_outside_count;
+
 static void scenes_read(void) {
   const char *path = getenv("XL_SCENES");
   for (uint32_t k = 0; k <= PHASES; k++) s_scene_of_phase[k] = -1;
@@ -177,6 +200,13 @@ static void scenes_read(void) {
       s_scenes[a].page[k] = (uint16_t)b;
       s_scenes[a].slot[k] = (uint16_t)c;
       s_scenes[a].entry[k] = (uint8_t)d;
+      s_page_kind[a][b & ((XL_MEMORY >> 8) - 1u)] = PAGE_RAM;
+    } else if (sscanf(line, "kind %u %15s %u %u", &a, name, &b, &c) == 4 && a < SCENES_MAX &&
+               c < (XL_MEMORY >> 8)) {
+      uint8_t kind = strcmp(name, "flash") == 0 ? PAGE_FLASH
+                     : strcmp(name, "text") == 0 ? PAGE_TEXT
+                     : strcmp(name, "sink") == 0 ? PAGE_SINK : PAGE_SPARE;
+      for (uint32_t p = b; p <= c; p++) s_page_kind[a][p] = kind;
     }
   }
   fclose(f);
@@ -206,6 +236,66 @@ static void scene_enter(int scene) {
   printf("xl: scene %d from frame %u: %u pages set from the boot, %u of them not the boot's%s\n",
          scene, s_frame_count, set, changed, list);
   s_scene = scene;
+}
+
+static uint32_t current_function(void);
+
+/* An access of the game's (xl_memmap_access) against the scene's pages. */
+static void outside_check(uint32_t a, int size, int write) {
+  if (!s_scenes_on || s_scene < 0) return;
+  for (int k = 0; k < size; k++) {
+    uint32_t b = (a + (uint32_t)k) & (XL_MEMORY - 1u), page = b >> 8;
+    if (write) s_page_dirty[page] = 1;
+    if (write == 2) continue; /* 2: the host's own loads, the files the game reads */
+    uint32_t kind = 0;
+    switch (s_page_kind[s_scene][page]) {
+      case PAGE_FLASH:
+        if (write) {
+          kind = OUT_FLASH_WRITE;
+        } else if (s_page_dirty[page]) {
+          s_page_dirty[page] = 0;
+          if (memcmp(xl_mem + (page << 8), s_scene_init + (page << 8), 256) != 0) kind = OUT_FLASH_STALE;
+        }
+        break;
+      case PAGE_SPARE: kind = write ? OUT_SPARE_WRITE : OUT_SPARE_READ; break;
+      case PAGE_SINK: kind = write ? 0 : OUT_SINK_READ; break;
+      case PAGE_TEXT: kind = (b - 0xE00000u) % 128u >= 32u ? OUT_TEXT_PAST : 0; break;
+      default: break;
+    }
+    if (kind == 0 || (s_outside_seen[s_scene][page] & kind)) continue;
+    s_outside_seen[s_scene][page] |= (uint8_t)kind;
+    uint32_t function = current_function();
+    printf("xl: outside: scene %d frame %u %s at %06X (%s) in %06X\n", s_scene, s_frame_count,
+           write ? "write" : "read", b,
+           kind == OUT_FLASH_WRITE ? "flash"
+           : kind == OUT_FLASH_STALE ? "flash, stale"
+           : kind == OUT_SINK_READ ? "a sink"
+           : kind == OUT_TEXT_PAST ? "text past 32" : "spare",
+           function);
+    if (s_outside_count < OUTSIDE_NOTES) {
+      s_outside[s_outside_count].scene = (uint32_t)s_scene;
+      s_outside[s_outside_count].frame = s_frame_count;
+      s_outside[s_outside_count].address = b;
+      s_outside[s_outside_count].kind = kind;
+      s_outside[s_outside_count].function = function;
+      s_outside_count++;
+    }
+  }
+}
+
+static void write_outside(const char *out_dir) {
+  if (!s_scenes_on) return;
+  char path[1024];
+  snprintf(path, sizeof path, "%s/outside.txt", out_dir);
+  FILE *f = fopen(path, "w");
+  if (f == NULL) return;
+  fprintf(f, "# scene frame address kind function (kind: 1 flash write, 2 spare read, "
+             "4 spare write, 8 sink read, 16 text past 32, 32 stale flash read)\n");
+  for (uint32_t k = 0; k < s_outside_count; k++) {
+    fprintf(f, "%u %u %06X %u %06X\n", s_outside[k].scene, s_outside[k].frame,
+            s_outside[k].address, s_outside[k].kind, s_outside[k].function);
+  }
+  fclose(f);
 }
 
 /* The functions on the stack when a phase starts: they run on in it, though
@@ -275,6 +365,15 @@ void xl_trace_enter(uint32_t entry) {
   t[0] = 0;
   t[1] = entry;
   t[2] = A(7);
+}
+
+/* The function entered last (the trace's), or 0 in a build without it. */
+static uint32_t current_function(void) {
+  for (uint32_t k = 1; k <= TRACE_RING; k++) {
+    uint32_t *t = s_trace[(s_trace_next - k) % TRACE_RING];
+    if (t[0] == 0 && t[1]) return t[1];
+  }
+  return 0;
 }
 
 void xl_trace_return(uint32_t at, uint32_t to) {
@@ -399,6 +498,9 @@ static void text_scroll_note(void) {
 void xl_memmap_access(uint32_t a, int size, int write) {
   if (s_memmap_paused) return;
   a &= 0xFFFFFFu;
+#ifdef XL_TRACE
+  outside_check(a, size, write);
+#endif
   uint32_t block = a >> 8;
   if (write) {
     if (s_block_writes[block]++ == 0) s_block_first[block] = s_frame_count;
@@ -876,6 +978,8 @@ int xl_live_input(void) {
 }
 
 void xl_live_read(int on) { s_live_read = on; }
+
+int xl_record(void) { return getenv("XL_SAVE_REPLAY_AT") != NULL; }
 
 /* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
  * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
@@ -1788,6 +1892,7 @@ static void on_stop(int sig) {
   if (s_out_dir) {
     write_coverage(s_out_dir);
     write_stack_phases(s_out_dir);
+    write_outside(s_out_dir);
   }
 #endif
   fprintf(stderr, "xl: stopped at frame %u\n", s_frame_count);
@@ -1880,6 +1985,7 @@ int main(int argc, char **argv) {
 #ifdef XL_TRACE
   write_coverage(s_out_dir);
   write_stack_phases(s_out_dir);
+  write_outside(s_out_dir);
 #endif
   printf("xl: %s after %u frames, %u checkpoints, %u VBLs\n",
          s_exit_reason == 1 ? "frame limit" : "the game exited", s_frame_count,
