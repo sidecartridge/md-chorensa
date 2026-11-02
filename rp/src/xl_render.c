@@ -85,20 +85,70 @@ static inline void put_pair(uint8_t *d, uint32_t b) {
   d[1] = (uint8_t)(b & 15u);
 }
 
-/* Page 1 two bytes (four pixels) a store: the band's lines are word-aligned,
- * and the RP and the host little-endian, the left pixel in the low byte. */
+/* Page 1, read once a frame, through the flash's no-allocate alias on the RP
+ * (XIP_NOALLOC: a miss is read without taking a cache line), so it does not
+ * evict the code and the patterns; a word (eight pixels) a read. */
+#if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
+#define XIP_FLASH_BASE 0x10000000u
+#define XIP_NOALLOC_BASE 0x11000000u
+static inline const uint32_t *page1_words(const uint8_t *p) {
+  uintptr_t a = (uintptr_t)p;
+  if ((a >> 24) == (XIP_FLASH_BASE >> 24)) a = a - XIP_FLASH_BASE + XIP_NOALLOC_BASE;
+  return (const uint32_t *)a;
+}
+/* Page 0's line record (n, n pairs of x and length - 1, then each run's
+ * pixels from a byte boundary: byte-packed, at any address) through the same
+ * alias, a word at a time into `buf` (PAGE0_RECORD bytes, word-aligned): the
+ * record there. At most 128 runs (apart, in 256 pixels): their pixels take at
+ * most 128 bytes and half a byte each; more stay where they are. */
+#define PAGE0_RUNS 128u
+#define PAGE0_RECORD (1u + 2u * PAGE0_RUNS + XL_RENDER_W / 2u + PAGE0_RUNS / 2u + 8u)
+static const uint8_t *page0_record(const uint8_t *rec, uint8_t *buf) {
+  uintptr_t a = (uintptr_t)rec;
+  if ((a >> 24) != (XIP_FLASH_BASE >> 24)) return rec;
+  a = a - XIP_FLASH_BASE + XIP_NOALLOC_BASE;
+  const uint32_t *src = (const uint32_t *)(a & ~3u);
+  uint32_t *dst = (uint32_t *)buf, off = a & 3u, have = 0;
+  dst[have++] = src[0];
+  uint32_t n = buf[off];
+  if (n > PAGE0_RUNS) return rec;
+  uint32_t need = off + 1u + 2u * n;
+  while (4u * have < need) dst[have] = src[have], have++;
+  for (uint32_t k = 0; k < n; k++) need += (buf[off + 2u + 2u * k] + 2u) >> 1;
+  while (4u * have < need) dst[have] = src[have], have++;
+  return buf + off;
+}
+#else
+static inline const uint32_t *page1_words(const uint8_t *p) { return (const uint32_t *)p; }
+#define PAGE0_RECORD 4u
+static inline const uint8_t *page0_record(const uint8_t *rec, uint8_t *buf) {
+  (void)buf;
+  return rec;
+}
+#endif
+
+/* Page 1 a word (eight pixels) a read, four pixels a store: its lines and the
+ * band's are word-aligned, and the RP and the host little-endian, the left
+ * pixel in the low byte. */
 static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const xl_store_art_t *art = f->art;
   uint32_t lines = art->page_lines;
+  uint32_t record[(PAGE0_RECORD + 3u) / 4u];
   for (int y = y0; y < y1; y++) {
     uint8_t *d = band + (y - y0) * XL_RENDER_W;
-    const uint8_t *src = art->page1 + ((f->page1_y + (uint32_t)y) % lines) * (XL_RENDER_W / 2u);
+    const uint32_t *src = page1_words(art->page1 + ((f->page1_y + (uint32_t)y) % lines) *
+                                                       (XL_RENDER_W / 2u));
     uint32_t *quad = (uint32_t *)d;
-    for (uint32_t x = 0; x < XL_RENDER_W / 2u; x += 2u) {
-      uint32_t w = src[x] | (uint32_t)src[x + 1u] << 16;
-      *quad++ = ((w >> 4) & 0x000F000Fu) | ((w & 0x000F000Fu) << 8);
+    for (uint32_t x = 0; x < XL_RENDER_W / 8u; x++) {
+      uint32_t s = src[x];
+      uint32_t w = (s & 0xFFu) | (s & 0xFF00u) << 8;
+      quad[0] = ((w >> 4) & 0x000F000Fu) | ((w & 0x000F000Fu) << 8);
+      w = (s >> 16 & 0xFFu) | (s >> 8 & 0xFF0000u);
+      quad[1] = ((w >> 4) & 0x000F000Fu) | ((w & 0x000F000Fu) << 8);
+      quad += 2;
     }
-    const uint8_t *rec = art->page0_runs + art->page0_index[(f->page0_y + (uint32_t)y) % lines];
+    const uint8_t *rec = page0_record(
+        art->page0_runs + art->page0_index[(f->page0_y + (uint32_t)y) % lines], (uint8_t *)record);
     uint32_t n = rec[0];
     const uint8_t *pix = rec + 1u + 2u * n;
     for (uint32_t k = 0; k < n; k++) {

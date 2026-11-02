@@ -66,11 +66,14 @@ typedef struct {
 
 /* The held frame (benchPlayHoldAt) drawn again, unshown, BENCH_HOLD_DRAWS
  * times whole and without each part: the mean of each, in microseconds,
- * the c2p included (swd.py play --hold prints the parts). */
+ * the c2p included, and the flash cache's misses, both cores' (swd.py play
+ * --hold prints the parts). In order: whole, without the sprites, without
+ * the text, without the background. */
 #define BENCH_HOLD_DRAWS 16u
 typedef struct {
   uint32_t frame, sprites;
-  uint32_t all_us, no_sprites_us, no_text_us, no_pages_us;
+  uint32_t us[4];
+  uint32_t misses[4];
 } bench_hold_times_t;
 
 /* The play mode's frames, readable over SWD (tools/dev/swd.py play). */

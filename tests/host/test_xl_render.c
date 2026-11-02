@@ -134,7 +134,7 @@ static void ref_frame(uint8_t *out, const xl_render_frame_t *f) {
 
 /* --- A random scene --------------------------------------------------------- */
 
-static uint8_t s_page1[LINES * XL_RENDER_W / 2];
+static uint8_t s_page1[LINES * XL_RENDER_W / 2] __attribute__((aligned(4)));
 static uint8_t s_runs[LINES * 400];
 static uint32_t s_index[LINES];
 static uint8_t s_patterns[PATTERNS * 128];

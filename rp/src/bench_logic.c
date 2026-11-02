@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "debug.h"
+#include "hardware/structs/xip_ctrl.h"
 #include "pico/time.h"
 
 #ifdef XL_STORE
@@ -342,16 +343,18 @@ static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
 static void hold_times(void) {
   static const uint32_t skips[4] = {0, XL_RENDER_SKIP_SPRITES, XL_RENDER_SKIP_TEXT,
                                     XL_RENDER_SKIP_PAGES};
-  uint32_t us[4];
+  bench_hold_times_t t = {benchPlayHoldAt, s_frame.sprite_count, {0}, {0}};
   for (uint32_t k = 0; k < 4; k++) {
     s_frame.skip = skips[k];
+    xip_ctrl_hw->ctr_hit = 0; /* a write clears either counter */
+    xip_ctrl_hw->ctr_acc = 0;
     uint32_t t0 = time_us_32();
     for (uint32_t n = 0; n < BENCH_HOLD_DRAWS; n++) fb_draw_banded(draw_band, &s_frame);
-    us[k] = (time_us_32() - t0) / BENCH_HOLD_DRAWS;
+    t.us[k] = (time_us_32() - t0) / BENCH_HOLD_DRAWS;
+    t.misses[k] = (xip_ctrl_hw->ctr_acc - xip_ctrl_hw->ctr_hit) / BENCH_HOLD_DRAWS;
   }
   s_frame.skip = 0;
-  benchHoldTimes = (bench_hold_times_t){benchPlayHoldAt, s_frame.sprite_count, us[0], us[1],
-                                        us[2], us[3]};
+  benchHoldTimes = t;
 }
 
 /* Play mode: the frame the game has just finished, drawn and converted in

@@ -973,13 +973,15 @@ def play_hold(elf: str, args: argparse.Namespace) -> int:
         _frame, fb, pal = grab_frames(elf, 1, True)[0]
         times = elf_symbols(elf, "benchHoldTimes").get("benchHoldTimes")
         if times:
-            frame, sprites, every, no_sprites, no_text, no_pages = struct.unpack(
-                "<6I", read_memory(times[0], 24))
+            words = struct.unpack(f"<{times[1] // 4}I", read_memory(times[0], times[1]))
+            frame, sprites = words[0], words[1]
+            us, misses = words[2:6], words[6:10] if len(words) >= 10 else (0, 0, 0, 0)
             if frame == args.hold:
-                print(f"frame {frame}, {sprites} sprites: drawn and converted in {every} us; "
-                      f"the sprites {every - no_sprites}, the text {every - no_text}, "
-                      f"the background {every - no_pages}, the rest (the c2p, the bands) "
-                      f"{every - (every - no_sprites) - (every - no_text) - (every - no_pages)} us")
+                parts = ("the sprites", "the text", "the background")
+                print(f"frame {frame}, {sprites} sprites: drawn and converted in {us[0]} us, "
+                      f"{misses[0]} flash cache misses; " + ", ".join(
+                          f"{name} {us[0] - us[k + 1]} us, {misses[0] - misses[k + 1]} misses"
+                          for k, name in enumerate(parts)))
     finally:
         openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlayHoldAt'][0]:08x} 0")
     image = st_words(fb) if natural else image_from_cart_fb(defs, fb)

@@ -3,7 +3,7 @@
 // The global settings are Booster's: it writes them and this app only reads
 // them. These defaults show only for a key missing from flash, so they match
 // Booster's own (booster/src/gconfig.c in Booster v2.4.1), in the same order.
-static SettingsConfigEntry defaultEntries[] = {
+static const SettingsConfigEntry defaultEntries[] = {
     {PARAM_APPS_FOLDER, SETTINGS_TYPE_STRING, "/apps"},
     {PARAM_APPS_CATALOG_URL, SETTINGS_TYPE_STRING,
      "https://md-store.sidecartridge.com/atari-st/apps.json"},
@@ -52,12 +52,10 @@ static SettingsContext gSettingsCtx;
 int gconfig_init(const char *currentAppName) {
   DPRINTF("Initializing settings\n");
 
-  // If we know the number of default entries in advance, we can use it
-  // uint16_t entriesCount = sizeof(defaultEntries) / sizeof(defaultEntries[0]);
-
-  // If we don't know the number of default entries in advance, we can use the
-  // max value of entries in the flash.
-  uint16_t entriesCount = CONFIG_BUFFER_SIZE / sizeof(SettingsConfigEntry);
+  // The defaults are the array's entries: the count of the flash's slots
+  // made the loader read past the array (it has no empty entry to stop at),
+  // into whatever followed it.
+  uint16_t entriesCount = sizeof(defaultEntries) / sizeof(defaultEntries[0]);
 
   int err = settings_init(&gSettingsCtx, defaultEntries, entriesCount,
                           (unsigned int)&_global_config_flash_start - XIP_BASE,
