@@ -19,6 +19,7 @@
 
 uint8_t *xl_mem;
 #ifdef XL_PAGED
+void xl_stray_write(uint32_t address) { (void)address; }
 /* The RP's page table over one flat area: every page in place. */
 uint8_t **xl_regions[256];
 static uint8_t *s_rows[256][256];

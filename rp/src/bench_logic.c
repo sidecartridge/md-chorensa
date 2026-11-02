@@ -160,6 +160,9 @@ static void stop(int state, const char *what, uint32_t address) {
 
 void xl_fatal(const char *what, uint32_t address) { stop(BENCH_LOGIC_ERROR, what, address); }
 void xl_divide_by_zero(uint32_t pc) { xl_fatal("divide by zero", pc); }
+/* A write into a page the scene keeps in flash (xl.h's accessors): the game
+ * stops with the address it wrote. */
+void xl_stray_write(uint32_t address) { xl_fatal("a write into a page in flash", address); }
 void xl_stop(uint32_t sr, uint32_t pc) {
   (void)sr;
   xl_fatal("STOP", pc);
@@ -231,7 +234,7 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_patch_samples_loaded, (const void *)xl_live_input,
     (const void *)xl_live_read,     (const void *)xl_record,
     (const void *)&xl,              (const void *)xl_regions,
-    (const void *)&xl_mem,
+    (const void *)&xl_mem,          (const void *)xl_stray_write,
 };
 
 /* --- Frames --------------------------------------------------------------- */
