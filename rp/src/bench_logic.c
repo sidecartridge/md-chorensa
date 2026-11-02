@@ -15,6 +15,7 @@
 #include "bench_logic.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "debug.h"
@@ -98,6 +99,94 @@ volatile uint32_t benchPlayHoldAt;
 volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
 bench_hold_times_t benchHoldTimes;
+
+/* A script for stick 1 on the card (XL_STORE_INPUT_FILE, rp_store.py
+ * --input), when the start file says so: the game played as the host's
+ * XL_INPUT plays it (tools/xlat/host/xl_host.c input_scripted), so the
+ * bench compares a mortal game's checkpoints with the host's. Lines "FRAME
+ * MASK" in frame order (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40
+ * button B), the stick from that frame on, or "auto", the host's scripted
+ * player; '#' starts a comment; the host reads 256 steps at most. Read from
+ * the card a step at a time as the frames reach it. A frame that reads the
+ * stick more than 64 times lets the buttons go, as the host's does. */
+#define INPUT_STEPS 256u
+#define INPUT_AUTO 0xFFFFFFFFu
+static int s_scripted; /* the start file's XL_STORE_START_SCRIPTED */
+static void card_path(char *out, const char *name);
+#define INPUT_LINE 64u
+static FIL s_input_file; /* static: a FIL does not belong on core 0's stack */
+static struct {
+  int on, ahead;           /* the script is open; the next step is read */
+  uint32_t steps;          /* read so far */
+  uint32_t mask;           /* the stick's now */
+  uint32_t next_frame, next_mask;
+  uint32_t reads_frame, reads;
+} s_input;
+
+static void input_close(void) {
+  if (s_input.on) f_close(&s_input_file);
+  s_input.on = 0;
+}
+
+/* The script's next step into next_frame and next_mask; 0 at its end. */
+static int input_step(void) {
+  char line[INPUT_LINE];
+  while (s_input.steps < INPUT_STEPS) {
+    uint32_t n = 0;
+    UINT got = 0;
+    char c = 0;
+    while (f_read(&s_input_file, &c, 1, &got) == FR_OK && got == 1 && c != '\n') {
+      if (n < INPUT_LINE - 1u) line[n++] = c;
+    }
+    if (n == 0 && got == 0) return 0;
+    line[n] = 0;
+    char *hash = strchr(line, '#');
+    if (hash) *hash = 0;
+    unsigned frame;
+    char word[16];
+    if (sscanf(line, "%u %15s", &frame, word) != 2) continue;
+    s_input.next_frame = frame;
+    s_input.next_mask = strcmp(word, "auto") == 0 ? INPUT_AUTO
+                                                  : (uint32_t)strtoul(word, NULL, 16) & 0xFFu;
+    s_input.steps++;
+    return 1;
+  }
+  return 0;
+}
+
+static void input_open(void) {
+  char path[PATH_BYTES];
+  input_close();
+  memset(&s_input, 0, sizeof s_input);
+  s_input.reads_frame = 0xFFFFFFFFu;
+  if (!s_scripted) return;
+  card_path(path, XL_STORE_INPUT_FILE);
+  if (f_open(&s_input_file, path, FA_READ) != FR_OK) return;
+  s_input.on = 1;
+  s_input.ahead = input_step();
+}
+
+/* The host's scripted player (xl_host.c scripted_stick): left and right a
+ * second each, the shot held, the bomb a moment every six seconds. */
+static uint32_t scripted_stick(void) {
+  uint32_t closed = ((s_frame_count / 55u) & 1u) ? 0x08u : 0x04u;
+  closed |= 0x20u;
+  if (s_frame_count % 330u < 3u) closed |= 0x40u;
+  return 0xFFFFFF00u | (~closed & 0xFFu);
+}
+
+static uint32_t input_joyget(void) {
+  while (s_input.ahead && s_input.next_frame <= s_frame_count) {
+    s_input.mask = s_input.next_mask;
+    s_input.ahead = input_step();
+  }
+  s_input.reads = s_frame_count == s_input.reads_frame ? s_input.reads + 1u : 0u;
+  s_input.reads_frame = s_frame_count;
+  uint32_t joyget = s_input.mask == INPUT_AUTO ? scripted_stick()
+                                               : (0xFFFFFF00u | (~s_input.mask & 0xFFu));
+  if (s_input.reads > 64u) joyget |= 0x60u;
+  return joyget;
+}
 
 /* The player: joystick 1, the cursor keys and the space bar, as _JOYGET
  * reports them to every read of the game's, as on the X68000 (closed
@@ -497,7 +586,10 @@ static void present(uint32_t game_us) {
                       ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
                       ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
                       ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
-  if (s_stick) s_live = 1;
+  if (s_stick) {
+    s_live = 1;
+    input_close(); /* the player takes over from a script */
+  }
   if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
     hold_times();
     benchPlayHeld = benchPlayHoldAt;
@@ -603,8 +695,12 @@ static void iocs(uint32_t pc) {
     case 0x04: /* _BITSNS: no key held */
       D(0) = 0;
       return;
-    case 0x3B: /* _JOYGET: the player's stick */
-      D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
+    case 0x3B: /* _JOYGET: the script's (stick 1 only, as the host's), or the player's stick */
+      if (s_input.on) {
+        D(0) = (D(1) & 0xFFu) == 0 ? input_joyget() : 0xFFFFFFFFu;
+      } else {
+        D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
+      }
       return;
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
@@ -997,7 +1093,8 @@ static void dos_name(char *out, uint32_t name) {
 static uint32_t dos_open(uint32_t name, BYTE mode) {
   char base[DOS_NAME], path[PATH_BYTES];
   dos_name(base, name);
-  if (strcmp(base, "DEMO.REP") == 0) return DOS_DROPPED;
+  /* A scripted game is a test: the card's files stay the player's. */
+  if (strcmp(base, "DEMO.REP") == 0 || s_scripted) return DOS_DROPPED;
   if (s_dos_open) return (uint32_t)-4; /* too many files open */
   card_path(path, base);
   if (f_open(&s_dos_file, path, mode) != FR_OK) return (uint32_t)-2;
@@ -1261,6 +1358,7 @@ static const xl_store_entry_t *in_scene(uint32_t address) {
   if (e == NULL) {
     uint32_t kind = scene_of(address);
     if (kind == 0 || kind == s_stage->kind) xl_fatal("no translated code", address);
+    benchLogicResult.scene_address = address;
     scene_change(kind);
     e = find(s_stage, address);
     if (e == NULL) xl_fatal("not in its scene's image", address);
@@ -1284,6 +1382,7 @@ static const char *read_start(void) {
   }
   s_last_frame = h.last_frame;
   s_invincible = (h.flags & XL_STORE_START_INVINCIBLE) != 0;
+  s_scripted = (h.flags & XL_STORE_START_SCRIPTED) != 0;
   for (uint32_t k = 0; !problem && k < h.ram_count; k++) {
     void *page = pool_page(s_stage->ram_list[k].slot);
     if (store_read(page, 1u << XL_PAGE_BITS) != (int)(1u << XL_PAGE_BITS)) problem = "a short start file";
@@ -1400,7 +1499,8 @@ static void run(int drawn) {
       break;
     }
     restore();
-    load_scores();
+    if (!s_scripted) load_scores(); /* a scripted game starts as the host's does */
+    input_open();
     benchLogicResult.first_frame = s_frame_count;
     benchLogicResult.state = BENCH_LOGIC_IDLE;
     DPRINTF("logic: from frame %lu%s\n", (unsigned long)s_frame_count, drawn ? ", playing" : "");

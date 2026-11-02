@@ -46,14 +46,16 @@ The images are a player's: from the title, the loaded demo as the attract
 demo, a game started with the stick that runs as long as it does. With
 --replay they are the development bench's: a recorded game as the attract
 demo (--invincible if it was played so), played to its end and checked
-against the host's checkpoints all the way.
+against the host's checkpoints all the way. With --input SCRIPT (a script
+for stick 1, inputs/*.txt) the RP plays that script as the host does, its
+checkpoints compared with the host's (a mortal game from any stage).
 
 Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
 usage: rp_store.py --firmware ELF [--frame 100] [--runs RUN ... --game-over RUN]
-                   [--replay FILE [--invincible]] [--bench-frames N] [--palettes DIR]
-                   [--out DIR]
+                   [--replay FILE [--invincible]] [--input SCRIPT] [--bench-frames N]
+                   [--palettes DIR] [--out DIR]
 """
 
 import argparse
@@ -96,6 +98,8 @@ BENCH_LAST = 12000
 # (XL_SAVE_REPLAY_AT), and the bench's run with it.
 REPLAY_LAST = 149000
 START_INVINCIBLE = 1  # xl_store.h's XL_STORE_START_INVINCIBLE
+START_SCRIPTED = 2    # its XL_STORE_START_SCRIPTED
+INPUT_FILE = "INPUT.TXT"  # its XL_STORE_INPUT_FILE
 PLAY_LAST = 0xFFFFFFFF  # a player's: a last frame no run reaches
 
 # The phases (XL_PHASES, numbered from 1 in this order; 0 the boot): the
@@ -463,6 +467,9 @@ def main():
                     "attract demo plays, for the bench to play the whole of it")
     ap.add_argument("--invincible", action="store_true",
                     help="the recording was played invincible (the host's XL_INVINCIBLE)")
+    ap.add_argument("--input", help="a script for stick 1 (inputs/*.txt, the host's XL_INPUT) the "
+                    "RP plays as the host does, its checkpoints compared with the host's: on the "
+                    f"card as {INPUT_FILE}")
     ap.add_argument("--bench-frames", type=int,
                     help=f"the frames the host's checkpoints cover (default {BENCH_LAST}); with "
                     f"--replay also where the bench's run ends (default {REPLAY_LAST}); without "
@@ -505,8 +512,9 @@ def main():
                               **play_env}, check=False))
     snap = host_run(f"store-snap{args.frame}", ["--snapshot", str(args.frame),
                                                  "--frames", str(args.frame + 2)] + play, play_env)
+    checks_env = {**play_env, **({"XL_INPUT": os.path.abspath(args.input)} if args.input else {})}
     checks = host_run("store-checkpoints", ["--resume", snap, "--frames", str(bench_frames)],
-                      play_env, check=False)
+                      checks_env, check=False)
     # The memory there too, as a plain dump: what a scene change sets a page
     # to when its slot changed hands (the snapshot's own memory, after the boot).
     boot_run = host_run("store-boot", ["--frames", str(args.frame + 1)] + play,
@@ -648,7 +656,7 @@ def main():
         if s == START_SCENE:
             pages, rows = rp_image.write_start(
                 os.path.join(args.out, "START.STA"), memory, order, SCENE_KIND[s], fw_id,
-                START_INVINCIBLE if args.invincible else 0,
+                (START_INVINCIBLE if args.invincible else 0) | (START_SCRIPTED if args.input else 0),
                 bench_frames if args.replay else PLAY_LAST)
             data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
             n = rp_image.write_checks(os.path.join(args.out, "CHECKS.DAT"),
@@ -687,6 +695,11 @@ def main():
         print(f"{name}: {len(data)} bytes, CRC {struct.unpack_from('<I', data, CRC_OFFSET)[0]:08X}, "
               f"for {fw_id}")
     shutil.copyfile(os.path.join(snap, "effects.bin"), os.path.join(args.out, "EFFECTS.SE8"))
+    input_copy = os.path.join(args.out, INPUT_FILE)
+    if args.input:
+        shutil.copyfile(args.input, input_copy)
+    elif os.path.exists(input_copy):
+        os.remove(input_copy)
     print(f"EFFECTS.SE8: {os.path.getsize(os.path.join(args.out, 'EFFECTS.SE8'))} bytes")
 
 

@@ -817,7 +817,8 @@ def cmd_scene(args: argparse.Namespace) -> int:
 LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl_sum", "vbl_max",
                 "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us",
                 "load_common", "load_stage", "load_common_us", "load_stage_us",
-                "scene_changes", "scene_kind", "scene_frame", "scene_us", "scene_pages")
+                "scene_changes", "scene_kind", "scene_frame", "scene_us", "scene_pages",
+                "scene_address")
 LOAD_STATES = ("copied", "already in the store", "no file", "not an image", "card error",
                "bad CRC", "made for another firmware")  # store.h's STORE_*
 LOGIC_STATES = ("idle", "done", "error", "no translation", "loading")
@@ -886,7 +887,7 @@ def cmd_logic(args: argparse.Namespace) -> int:
         kind = "the menus" if r["scene_kind"] == 8 else f"stage {r['scene_kind']}"
         print(f"scene changes {r['scene_changes']}, the last into {kind} at frame "
               f"{r['scene_frame']}: {r['scene_us'] / 1000:.0f} ms, {r['scene_pages']} pages set "
-              "from the boot")
+              f"from the boot, called at {r['scene_address']:06X}")
     frames = r["frames"]
     if not frames:
         return 1

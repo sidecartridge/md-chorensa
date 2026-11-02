@@ -57,6 +57,7 @@ typedef struct {
   uint32_t scene_frame;     /* the frame it started at */
   uint32_t scene_us;        /* how long it took: the copy and the pages set */
   uint32_t scene_pages;     /* the pages set to their content after the boot */
+  uint32_t scene_address;   /* the call into the other scene's image that made it */
   char error[48];
 } bench_logic_result_t;
 

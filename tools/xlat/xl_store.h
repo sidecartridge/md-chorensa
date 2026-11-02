@@ -196,6 +196,9 @@ typedef struct {
 } xl_store_start_t;
 #define XL_STORE_START_INVINCIBLE 1u /* the game keeps the player invincible (a recording of
                                         such a game, the host's XL_INVINCIBLE) */
+#define XL_STORE_START_SCRIPTED 2u   /* stick 1 plays XL_STORE_INPUT_FILE's script, as the
+                                        host's XL_INPUT (rp_store.py --input) */
+#define XL_STORE_INPUT_FILE "INPUT.TXT"
 
 /* The host's checkpoints of the same run, which the bench compares its own
  * with (every XL_STORE_CHECK_FRAMES frames), on the card: this header,
