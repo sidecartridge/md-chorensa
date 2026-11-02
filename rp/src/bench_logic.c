@@ -1511,6 +1511,8 @@ static void run(int drawn) {
     }
     if (drawn) benchPlayStats.laps++;
   } while (drawn && benchPlay && benchLogicResult.state == BENCH_LOGIC_DONE);
+  input_close(); /* the card's files free again (swd.py sd-put) */
+  dos_close();
   if (drawn) {
     song_stop();
     effects_close();

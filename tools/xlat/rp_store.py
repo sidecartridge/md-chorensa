@@ -121,6 +121,10 @@ RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         # entry) are the stage's own; its save on a card without SCORE.DAT yet,
         # the C library's create path, as the RP's first save.
         (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {"XL_FRESH_CARD": "1"})
+        for n in range(1, 8)) + tuple(
+        # The same at every stage's boss (the hidden menu's BOSS_ONLY): the boss-only start
+        # reads pages the stage's own start does not.
+        (f"whole-boss{n}", 12000, f"mortal-boss{n}.txt", {"XL_FRESH_CARD": "1"})
         for n in range(1, 8))
 GAME_OVER_RUN = "whole-gameover"
 INPUTS = os.path.join(HERE, "inputs")
