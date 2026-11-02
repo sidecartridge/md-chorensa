@@ -25,6 +25,7 @@ entries (a build folder of its own).
 import argparse
 import datetime
 import glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -71,7 +72,12 @@ def build(cfg, out, rebuild, resume=None, art=None):
         sources += [os.path.join(RP_SRC, "xl_render.c"), os.path.join(art, "xl_stage_art.c"), common]
         flags += ["-DXL_RP_RENDER", "-I", os.path.join(RP_SRC, "include")]
     for c in sources:
-        o = os.path.join(out, os.path.basename(c)[:-2] + ".o")
+        name = os.path.basename(c)[:-2]
+        if art and os.path.dirname(c) != out:
+            # Another scene's art has the same file names: the object names
+            # its folder too, so it is compiled again.
+            name += "-" + hashlib.sha1(os.path.abspath(c).encode()).hexdigest()[:8]
+        o = os.path.join(out, name + ".o")
         objects.append(o)
         if stale or not os.path.exists(o) or os.path.getmtime(c) > os.path.getmtime(o):
             jobs.append(subprocess.Popen(["cc", *flags, "-I", HERE, "-I", out, "-c", c, "-o", o]))

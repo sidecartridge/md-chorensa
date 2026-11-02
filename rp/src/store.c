@@ -118,6 +118,17 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
   return store_header(base) ? STORE_COPIED : STORE_BAD_CRC;
 }
 
+int store_read_open(const char *path) { return f_open(&s_file, path, FA_READ) == FR_OK ? 0 : -1; }
+
+int store_read(void *dst, uint32_t length) {
+  UINT got = 0;
+  return f_read(&s_file, dst, length, &got) == FR_OK ? (int)got : -1;
+}
+
+int store_read_seek(uint32_t offset) { return f_lseek(&s_file, offset) == FR_OK ? 0 : -1; }
+
+void store_read_close(void) { f_close(&s_file); }
+
 int store_put(const char *path, uint32_t offset, const uint8_t *data, uint32_t length) {
   BYTE mode = offset == 0 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_EXISTING);
   if (f_open(&s_file, path, mode) != FR_OK) return -1;

@@ -175,6 +175,7 @@ static uint8_t *s_audio_buf;
 static volatile audio_out_t s_out;
 static bool s_prefer_ym;
 static bool s_st_silent; /* audio_silence_st() */
+static volatile bool s_paused; /* audio_pause(): the writer holds the level */
 static uint32_t s_hellos_seen;
 
 /* The app's source: YM pairs at AUDIO_YM_SOURCE_RATE_HZ, or PCM at a rate. */
@@ -542,6 +543,18 @@ void audio_silence_st(bool silent) {
           silent ? "plays nothing" : "plays");
 }
 
+void audio_pause(bool paused) {
+  s_paused = paused;
+  if (!paused) return;
+  /* The whole ring at the level last played: the ST may play past what the
+   * writer reaches while the RP's interrupts are off (a flash erase). */
+  if (s_out == AUDIO_OUT_DMA) {
+    memset(s_audio_buf, (uint8_t)s_dma_hold, CART_AUDIO_DMA_RING_BYTES);
+  } else if (s_out == AUDIO_OUT_YM) {
+    for (uint32_t at = 0; at < AUDIO_YM_RING; at += AUDIO_YM_SAMPLE_BYTES) ym_put(at, s_hold);
+  }
+}
+
 void audio_prefer_ym(bool prefer) {
   s_prefer_ym = prefer;
   write_audio_out();
@@ -797,8 +810,9 @@ static void __not_in_flash_func(ym_writer)(void) {
   uint32_t front = s_ym_front;
   uint32_t tail = s_ym_tail;
   uint32_t head = s_ym_head;
+  bool paused = s_paused;
   for (uint32_t i = 0; i < n; i += AUDIO_YM_SAMPLE_BYTES) {
-    if (tail != head) {
+    if (tail != head && !paused) {
       const uint8_t *volumes = &s_ym_fifo[(tail % AUDIO_YM_FIFO_SAMPLES) * AUDIO_YM_VOICES];
       for (uint32_t v = 0; v < AUDIO_YM_VOICES; v++) s_hold[v] = volumes[v];
       tail++;
@@ -811,7 +825,7 @@ static void __not_in_flash_func(ym_writer)(void) {
   }
   s_ym_tail = tail;
   s_ym_front = front;
-  if (held && source_set()) audioUnderruns++;
+  if (held && !paused && source_set()) audioUnderruns++;
 }
 
 /* The DMA chip: at each report the ST has just copied the mirror up to
@@ -850,8 +864,9 @@ static void __not_in_flash_func(dma_writer)(void) {
   uint32_t front = s_dma_front;
   uint32_t tail = s_dma_tail;
   uint32_t head = s_dma_head;
+  bool paused = s_paused;
   for (uint32_t i = 0; i < n; i++) {
-    if (tail != head) {
+    if (tail != head && !paused) {
       s_dma_hold = s_dma_fifo[tail % AUDIO_DMA_FIFO_BYTES];
       tail++;
     } else {
@@ -862,7 +877,7 @@ static void __not_in_flash_func(dma_writer)(void) {
   }
   s_dma_tail = tail;
   s_dma_front = front;
-  if (held && source_set()) audioUnderruns++;
+  if (held && !paused && source_set()) audioUnderruns++;
 }
 
 /* Every AUDIO_WRITER_PERIOD_US in a timer interrupt. Everything it touches

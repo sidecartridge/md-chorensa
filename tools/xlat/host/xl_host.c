@@ -132,6 +132,208 @@ static void write_coverage(const char *out_dir) {
 static void memmap_phase_end(uint32_t phase);
 #endif
 
+/* XL_SCENES=FILE (tools/xlat/rp_store.py's scenes.txt): the RP's scene
+ * changes, modelled. Each scene keeps its RAM pages in pool slots chosen once
+ * for every scene; entering a scene, a page marked ENTRY whose slot holds
+ * another page (or none yet) is set to its content after the boot (the
+ * file's memory dump), as the RP's change does; the first scene's are the
+ * start's. A run with it against one without tells whether
+ * the pages lost that way matter to the game. The file: "memory PATH",
+ * "phase N SCENE" and "page SCENE PAGE SLOT ENTRY" lines. */
+#define SCENES_MAX 16
+#define SCENE_PAGES 512
+#define POOL_SLOTS 1024
+static struct {
+  uint16_t page[SCENE_PAGES], slot[SCENE_PAGES];
+  uint8_t entry[SCENE_PAGES];
+  uint32_t count;
+} s_scenes[SCENES_MAX];
+static int s_scene_of_phase[PHASES + 1];
+static uint8_t *s_scene_init;
+static uint32_t s_slot_owner[POOL_SLOTS];
+static int s_scene = -1, s_scenes_on;
+
+/* Where each of a scene's pages is on the RP (the file's "page" and "kind
+ * lines"), so the model can report an access the RP would get wrong: a write
+ * into a page it keeps in flash (lost), a read of one whose content is not
+ * the images' any more (stale: written by another scene, or loaded from a
+ * file), an access to the spare page every
+ * page no run touched shares (another stray page's bytes), a sink read (its
+ * writes go to the spare page), the text plane past the 32 bytes of a line
+ * the RP keeps. Each (scene, page, kind of problem) once, as it happens:
+ * "xl: outside" lines, and outside.txt at the end. */
+enum { PAGE_SPARE, PAGE_RAM, PAGE_FLASH, PAGE_TEXT, PAGE_SINK };
+enum { OUT_FLASH_WRITE = 1, OUT_SPARE_READ = 2, OUT_SPARE_WRITE = 4, OUT_SINK_READ = 8,
+       OUT_TEXT_PAST = 16, OUT_FLASH_STALE = 32 };
+static uint8_t s_page_kind[SCENES_MAX][XL_MEMORY >> 8];
+/* Written since its last comparison with the memory the images hold (the
+ * file's dump): a flash page read with other content is stale on the RP. */
+static uint8_t s_page_dirty[XL_MEMORY >> 8];
+static uint8_t s_outside_seen[SCENES_MAX][XL_MEMORY >> 8];
+#define OUTSIDE_NOTES 4096
+static struct {
+  uint32_t scene, frame, address, kind, function;
+} s_outside[OUTSIDE_NOTES];
+static uint32_t s_outside_count;
+
+static void scenes_read(void) {
+  const char *path = getenv("XL_SCENES");
+  for (uint32_t k = 0; k <= PHASES; k++) s_scene_of_phase[k] = -1;
+  if (path == NULL) return;
+  FILE *f = fopen(path, "r");
+  if (f == NULL) xl_fatal("no XL_SCENES file", 0);
+  char line[1200], name[1024];
+  unsigned a, b, c, d;
+  while (fgets(line, sizeof line, f)) {
+    if (sscanf(line, "memory %1023s", name) == 1) {
+      FILE *m = fopen(name, "rb");
+      s_scene_init = malloc(XL_MEMORY);
+      if (m == NULL || s_scene_init == NULL || fread(s_scene_init, 1, XL_MEMORY, m) != XL_MEMORY) {
+        xl_fatal("XL_SCENES: no memory dump", 0);
+      }
+      fclose(m);
+    } else if (sscanf(line, "phase %u %u", &a, &b) == 2 && a <= PHASES && b < SCENES_MAX) {
+      s_scene_of_phase[a] = (int)b;
+    } else if (sscanf(line, "page %u %u %u %u", &a, &b, &c, &d) == 4 && a < SCENES_MAX &&
+               s_scenes[a].count < SCENE_PAGES && c < POOL_SLOTS) {
+      uint32_t k = s_scenes[a].count++;
+      s_scenes[a].page[k] = (uint16_t)b;
+      s_scenes[a].slot[k] = (uint16_t)c;
+      s_scenes[a].entry[k] = (uint8_t)d;
+      s_page_kind[a][b & ((XL_MEMORY >> 8) - 1u)] = PAGE_RAM;
+    } else if (sscanf(line, "kind %u %15s %u %u", &a, name, &b, &c) == 4 && a < SCENES_MAX &&
+               c < (XL_MEMORY >> 8)) {
+      uint8_t kind = strcmp(name, "flash") == 0 ? PAGE_FLASH
+                     : strcmp(name, "text") == 0 ? PAGE_TEXT
+                     : strcmp(name, "sink") == 0 ? PAGE_SINK : PAGE_SPARE;
+      for (uint32_t p = b; p <= c; p++) s_page_kind[a][p] = kind;
+    }
+  }
+  fclose(f);
+  if (s_scene_init == NULL) xl_fatal("XL_SCENES: no memory line", 0);
+  for (uint32_t k = 0; k < POOL_SLOTS; k++) s_slot_owner[k] = 0xFFFFFFFFu;
+  s_scenes_on = 1;
+}
+
+static void scene_enter(int scene) {
+  uint32_t set = 0, changed = 0;
+  char list[256] = "";
+  for (uint32_t k = 0; k < s_scenes[scene].count; k++) {
+    uint32_t page = s_scenes[scene].page[k], slot = s_scenes[scene].slot[k];
+    if (s_scene >= 0 && s_scenes[scene].entry[k] && s_slot_owner[slot] != page) {
+      /* Set back: a page whose content was not the boot's any more is the
+       * game's state lost, unless the scene writes it before reading it. */
+      if (memcmp(xl_mem + (page << 8), s_scene_init + (page << 8), 256) != 0) {
+        size_t n = strlen(list);
+        if (n < sizeof list - 8) snprintf(list + n, sizeof list - n, " %06X", page << 8);
+        changed++;
+      }
+      memcpy(xl_mem + (page << 8), s_scene_init + (page << 8), 256);
+      set++;
+    }
+    s_slot_owner[slot] = page;
+  }
+  printf("xl: scene %d from frame %u: %u pages set from the boot, %u of them not the boot's%s\n",
+         scene, s_frame_count, set, changed, list);
+  s_scene = scene;
+}
+
+static uint32_t current_function(void);
+
+/* An access of the game's (xl_memmap_access) against the scene's pages. */
+static void outside_check(uint32_t a, int size, int write) {
+  if (!s_scenes_on || s_scene < 0) return;
+  for (int k = 0; k < size; k++) {
+    uint32_t b = (a + (uint32_t)k) & (XL_MEMORY - 1u), page = b >> 8;
+    if (write) s_page_dirty[page] = 1;
+    if (write == 2) continue; /* 2: the host's own loads, the files the game reads */
+    uint32_t kind = 0;
+    switch (s_page_kind[s_scene][page]) {
+      case PAGE_FLASH:
+        if (write) {
+          kind = OUT_FLASH_WRITE;
+        } else if (s_page_dirty[page]) {
+          s_page_dirty[page] = 0;
+          if (memcmp(xl_mem + (page << 8), s_scene_init + (page << 8), 256) != 0) kind = OUT_FLASH_STALE;
+        }
+        break;
+      case PAGE_SPARE: kind = write ? OUT_SPARE_WRITE : OUT_SPARE_READ; break;
+      case PAGE_SINK: kind = write ? 0 : OUT_SINK_READ; break;
+      case PAGE_TEXT: kind = (b - 0xE00000u) % 128u >= 32u ? OUT_TEXT_PAST : 0; break;
+      default: break;
+    }
+    if (kind == 0 || (s_outside_seen[s_scene][page] & kind)) continue;
+    s_outside_seen[s_scene][page] |= (uint8_t)kind;
+    uint32_t function = current_function();
+    printf("xl: outside: scene %d frame %u %s at %06X (%s) in %06X\n", s_scene, s_frame_count,
+           write ? "write" : "read", b,
+           kind == OUT_FLASH_WRITE ? "flash"
+           : kind == OUT_FLASH_STALE ? "flash, stale"
+           : kind == OUT_SINK_READ ? "a sink"
+           : kind == OUT_TEXT_PAST ? "text past 32" : "spare",
+           function);
+    if (s_outside_count < OUTSIDE_NOTES) {
+      s_outside[s_outside_count].scene = (uint32_t)s_scene;
+      s_outside[s_outside_count].frame = s_frame_count;
+      s_outside[s_outside_count].address = b;
+      s_outside[s_outside_count].kind = kind;
+      s_outside[s_outside_count].function = function;
+      s_outside_count++;
+    }
+  }
+}
+
+static void write_outside(const char *out_dir) {
+  if (!s_scenes_on) return;
+  char path[1024];
+  snprintf(path, sizeof path, "%s/outside.txt", out_dir);
+  FILE *f = fopen(path, "w");
+  if (f == NULL) return;
+  fprintf(f, "# scene frame address kind function (kind: 1 flash write, 2 spare read, "
+             "4 spare write, 8 sink read, 16 text past 32, 32 stale flash read)\n");
+  for (uint32_t k = 0; k < s_outside_count; k++) {
+    fprintf(f, "%u %u %06X %u %06X\n", s_outside[k].scene, s_outside[k].frame,
+            s_outside[k].address, s_outside[k].kind, s_outside[k].function);
+  }
+  fclose(f);
+}
+
+/* The functions on the stack when a phase starts: they run on in it, though
+ * they were entered in the one before (the game's loop, entered once from
+ * the title). Every long on the 68000 stack that could be a return address
+ * into the code, by phase: stack_phases.txt at the end ("PHASE ADDRESS";
+ * tools/xlat/rp_store.py keeps the ones that follow a call). */
+#define STACK_NOTES 4096
+static uint32_t s_stack_notes[STACK_NOTES][2];
+static uint32_t s_stack_note_count;
+
+static void note_stack(uint32_t phase) {
+  for (uint32_t at = A(7); at + 4 <= A(7) + 0x10000u && at + 4 <= XL_MEMORY; at += 2) {
+    uint32_t v = ((uint32_t)xl_mem[at] << 24) | ((uint32_t)xl_mem[at + 1] << 16) |
+                 ((uint32_t)xl_mem[at + 2] << 8) | xl_mem[at + 3];
+    if (v < XL_LOAD || v >= XL_BSS || (v & 1u)) continue;
+    uint32_t k = 0;
+    while (k < s_stack_note_count && !(s_stack_notes[k][0] == phase && s_stack_notes[k][1] == v)) k++;
+    if (k == s_stack_note_count && k < STACK_NOTES) {
+      s_stack_notes[k][0] = phase;
+      s_stack_notes[k][1] = v;
+      s_stack_note_count++;
+    }
+  }
+}
+
+static void write_stack_phases(const char *out_dir) {
+  char path[1024];
+  snprintf(path, sizeof path, "%s/stack_phases.txt", out_dir);
+  FILE *f = fopen(path, "w");
+  if (f == NULL) return;
+  fprintf(f, "# phase address: a long on the stack when the phase started\n");
+  for (uint32_t k = 0; k < s_stack_note_count; k++) {
+    fprintf(f, "%u %06X\n", s_stack_notes[k][0], s_stack_notes[k][1]);
+  }
+  fclose(f);
+}
+
 void xl_trace_enter(uint32_t entry) {
   for (uint32_t n = 0; n < s_phase_count; n++) {
     if (s_phase_entries[n] == entry && s_phase != n + 1) {
@@ -139,11 +341,15 @@ void xl_trace_enter(uint32_t entry) {
       memmap_phase_end(s_phase);
 #endif
       s_phase = n + 1;
+      note_stack(s_phase);
       uint32_t patterns = 0;
       for (uint32_t k = 0; k < sizeof s_phase_patterns; k++) patterns += s_phase_patterns[k];
       memset(s_phase_patterns, 0, sizeof s_phase_patterns);
       printf("xl: phase %u from frame %u, score %u (the phase before drew %u patterns)\n", s_phase,
              s_frame_count, rd32(XL_PLAYER_SCORE), patterns);
+      if (s_scenes_on && s_scene_of_phase[s_phase] >= 0 && s_scene_of_phase[s_phase] != s_scene) {
+        scene_enter(s_scene_of_phase[s_phase]);
+      }
     }
   }
   uint32_t k = (entry * 2654435761u) >> 20;
@@ -159,6 +365,15 @@ void xl_trace_enter(uint32_t entry) {
   t[0] = 0;
   t[1] = entry;
   t[2] = A(7);
+}
+
+/* The function entered last (the trace's), or 0 in a build without it. */
+static uint32_t current_function(void) {
+  for (uint32_t k = 1; k <= TRACE_RING; k++) {
+    uint32_t *t = s_trace[(s_trace_next - k) % TRACE_RING];
+    if (t[0] == 0 && t[1]) return t[1];
+  }
+  return 0;
 }
 
 void xl_trace_return(uint32_t at, uint32_t to) {
@@ -283,6 +498,9 @@ static void text_scroll_note(void) {
 void xl_memmap_access(uint32_t a, int size, int write) {
   if (s_memmap_paused) return;
   a &= 0xFFFFFFu;
+#ifdef XL_TRACE
+  outside_check(a, size, write);
+#endif
   uint32_t block = a >> 8;
   if (write) {
     if (s_block_writes[block]++ == 0) s_block_first[block] = s_frame_count;
@@ -427,7 +645,11 @@ static void run_vbl(void) {
 }
 
 static void write_screen(uint32_t frame);
-static void write_snapshot(void);
+/* Where a run resumed from a snapshot goes on: after the frame wait it was
+ * taken at, XSP_VSYNC's (the stages) or WAIT_VBL's (the menus). */
+#define XSP_VSYNC_RESUME 0x02021Au
+#define WAIT_VBL_RESUME 0x022CB4u
+static void write_snapshot(uint32_t resume);
 static uint32_t s_snapshot_frame;
 
 /* As the port's measurement runs: a screen is due every N frames, at the
@@ -471,6 +693,19 @@ static void frame_wait_end(void) {
     memcpy(c + 16, xl_mem + XL_PLAYER_INFO_STRUCT, 14);
   }
   text_scroll_note();
+  /* XL_MEMORY_AT=F: the memory at frame F's end, memory.bin (rp_store.py's
+   * contents after the boot, for the pages a scene change sets). */
+  static long memory_at = -2;
+  if (memory_at == -2) memory_at = getenv("XL_MEMORY_AT") ? atol(getenv("XL_MEMORY_AT")) : -1;
+  if (memory_at >= 0 && s_frame_count == (uint32_t)memory_at) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/memory.bin", s_out_dir);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+      fwrite(xl_mem, 1, XL_MEMORY, f);
+      fclose(f);
+    }
+  }
   keep_invincible();
   save_replay();
   /* XL_SPRITE_FRAMES=A-B: the sprites drawn each frame from A to B (as the
@@ -505,7 +740,7 @@ void xl_patch_xsp_vsync(void) {
   xl.c = 0;
   if (s_snapshot_frame && s_frame_count >= s_snapshot_frame) {
     s_snapshot_frame = 0;
-    write_snapshot();
+    write_snapshot(XSP_VSYNC_RESUME);
   }
 }
 
@@ -520,6 +755,10 @@ void xl_patch_wait_vbl(void) {
     for (uint32_t k = 0; k <= ticks; k++) run_vbl();
   }
   frame_wait_end();
+  if (s_snapshot_frame && s_frame_count >= s_snapshot_frame) {
+    s_snapshot_frame = 0;
+    write_snapshot(WAIT_VBL_RESUME);
+  }
 }
 
 /* XSP_OUT: the game's sprite list (8 bytes a sprite) is the frame's; counted,
@@ -739,6 +978,8 @@ int xl_live_input(void) {
 }
 
 void xl_live_read(int on) { s_live_read = on; }
+
+int xl_record(void) { return getenv("XL_SAVE_REPLAY_AT") != NULL; }
 
 /* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
  * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
@@ -1101,11 +1342,48 @@ static uint32_t nameck(uint32_t name, uint32_t buffer) {
 }
 
 static uint8_t s_unimplemented_dos[512];
+#define DOS_LOG_LINES 20000u
 
 void xl_linef(uint32_t word, uint32_t pc) {
   s_calls_linef[word & 0x1FFu]++;
   uint32_t args = A(7);
   uint32_t r = 0;
+#ifdef XL_TRACE
+  /* Every DOS call ("xl: dos" lines: what the RP would have to serve), a
+   * file's name for the calls that take one. */
+  /* Capped: a game that loops on a call (waiting for a key after a failed
+   * save) would fill the disk. */
+  static uint32_t s_dos_lines;
+  if ((word & 0xFF00u) == 0xFF00u && ++s_dos_lines <= DOS_LOG_LINES) {
+    if (s_dos_lines == DOS_LOG_LINES) printf("xl: dos: the log stops here\n");
+    printf("xl: dos $%04X frame %u phase %u from %06X", word, s_frame_count, s_phase, pc);
+    if (word == 0xFF3Cu || word == 0xFF3Du || word == 0xFF41u) {
+      printf(" ");
+      for (uint32_t p = rd32(args), k = 0; rd8(p) && k < 80u; p++, k++) putchar((int)rd8(p));
+    }
+    if (word == 0xFF3Fu || word == 0xFF40u) printf(" handle %u, %u bytes", rd16(args), rd32(args + 6));
+    printf("\n");
+  }
+#endif
+  /* XL_DISCARD_FILES: after the boot, the file calls as the RP answers them
+   * until the game's files live on the card (bench_logic.c xl_linef): every
+   * save succeeds and its bytes are dropped (_NAMECK served as usual). */
+  static int discard = -1;
+  if (discard < 0) discard = getenv("XL_DISCARD_FILES") != NULL;
+  if (discard && s_frame_count > 1u &&
+      (word == 0xFF36u || word == 0xFF3Cu || word == 0xFF3Du || word == 0xFF41u ||
+       word == 0xFF3Eu || word == 0xFF3Fu || word == 0xFF40u || word == 0xFF42u)) {
+    r = word == 0xFF36u                     ? 10000000u
+        : word == 0xFF3Cu || word == 0xFF3Du ? 5u
+        : word == 0xFF40u                    ? rd32(args + 6) & 0x7FFFFFFFu
+                                             : 0u;
+    D(0) = r;
+    xl.n = (r >> 31) & 1u;
+    xl.z = r == 0;
+    xl.v = 0;
+    xl.c = 0;
+    return;
+  }
   switch (word) {
     case 0xFE00: /* __LMUL */
       r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));
@@ -1357,7 +1635,8 @@ static void write_entries(uint32_t frame) {
 #ifdef XL_RP_RENDER
 static void write_rp_screen(uint32_t frame) {
   static uint8_t fb[XL_RENDER_W * XL_RENDER_H];
-  uint16_t st[16];
+  /* The ST's colours stay as they are until the RP works them out again. */
+  static uint16_t st[16];
   s_rp_frame.art = &xl_stage_art;
   xl_render_prepare(&s_rp_frame);
   xl_render_band(fb, &s_rp_frame, 0, XL_RENDER_H);
@@ -1453,25 +1732,24 @@ static void write_screen(uint32_t frame) {
 
 /* --- Snapshots: the game resumed where it waited for a frame -------------- */
 
-/* Taken at the end of XSP_VSYNC's wait, so a resumed run goes on at the
- * instruction the patch continues at (xlat.py PATCHES), returning into the
+/* Taken at the end of a frame wait (XSP_VSYNC's or WAIT_VBL's), so a resumed
+ * run goes on at the instruction the patch continues at (xlat.py PATCHES), returning into the
  * callers through the return addresses on the 68000 stack. snapshot.bin:
  * 'XLSN', the resume address, the CPU (d0-d7, a0-a7, n z v c x, the system
  * byte), the frame and VBL counts, the sprite counts, the effect's end tick,
  * whether the samples are decoded, the sprite list's count, the checkpoints'
  * count (all u32 little-endian), the sprite list, the checkpoints so far,
  * then the 16 MB of memory. */
-#define XSP_VSYNC_RESUME 0x02021Au
 #define SNAPSHOT_WORDS 32
 
-static void write_snapshot(void) {
+static void write_snapshot(uint32_t resume) {
   for (int k = 0; k < FILE_HANDLES; k++) {
-    if (s_files[k]) xl_fatal("a snapshot with a file open", XSP_VSYNC_RESUME);
+    if (s_files[k]) xl_fatal("a snapshot with a file open", resume);
   }
   MEMMAP_PAUSE(1);
   uint32_t w[SNAPSHOT_WORDS], n = 0;
   w[n++] = 0x4E534C58u; /* 'XLSN' */
-  w[n++] = XSP_VSYNC_RESUME;
+  w[n++] = resume;
   for (int k = 0; k < 8; k++) w[n++] = xl.d[k];
   for (int k = 0; k < 8; k++) w[n++] = xl.a[k];
   w[n++] = xl.n;
@@ -1491,7 +1769,7 @@ static void write_snapshot(void) {
   char path[1024];
   snprintf(path, sizeof path, "%s/snapshot.bin", s_out_dir);
   FILE *f = fopen(path, "wb");
-  if (f == NULL) xl_fatal("cannot write snapshot.bin", XSP_VSYNC_RESUME);
+  if (f == NULL) xl_fatal("cannot write snapshot.bin", resume);
   for (uint32_t k = 0; k < n; k++) {
     uint8_t b[4] = {(uint8_t)w[k], (uint8_t)(w[k] >> 8), (uint8_t)(w[k] >> 16), (uint8_t)(w[k] >> 24)};
     fwrite(b, 1, 4, f);
@@ -1506,8 +1784,8 @@ static void write_snapshot(void) {
    * xlat.py keeps those that follow a call. */
   snprintf(path, sizeof path, "%s/resume.txt", s_out_dir);
   f = fopen(path, "w");
-  if (f == NULL) xl_fatal("cannot write resume.txt", XSP_VSYNC_RESUME);
-  fprintf(f, "%06X # where the run resumes\n", XSP_VSYNC_RESUME);
+  if (f == NULL) xl_fatal("cannot write resume.txt", resume);
+  fprintf(f, "%06X # where the run resumes\n", resume);
   for (uint32_t at = A(7); at + 4 <= A(7) + 0x10000u && at + 4 <= XL_MEMORY; at += 2) {
     uint32_t v = rd32(at);
     if (v >= XL_LOAD && v < XL_BSS && !(v & 1u)) fprintf(f, "?%06X # at %06X\n", v, at);
@@ -1648,7 +1926,11 @@ static void write_graphics(void) {
 static void on_stop(int sig) {
   (void)sig;
 #ifdef XL_TRACE
-  if (s_out_dir) write_coverage(s_out_dir);
+  if (s_out_dir) {
+    write_coverage(s_out_dir);
+    write_stack_phases(s_out_dir);
+    write_outside(s_out_dir);
+  }
 #endif
   fprintf(stderr, "xl: stopped at frame %u\n", s_frame_count);
   _exit(3);
@@ -1703,10 +1985,15 @@ int main(int argc, char **argv) {
 
 #ifdef XL_TRACE
   read_phases();
+  scenes_read();
 #endif
   if (getenv("XL_MUSIC")) mcdrv_install();
   uint32_t start = XL_ENTRY;
   if (resume_path) start = read_snapshot(resume_path);
+#ifdef XL_RP_RENDER
+  /* The RP's renderer's list from the snapshot's, as the RP takes it. */
+  if (resume_path) xl_render_take_sprites(&s_rp_frame, XL_SPRITE_DATA_TABLE, s_sprite_list_count);
+#endif
 
   if (setjmp(s_exit) == 0) {
     uint32_t r = xl_call(start);
@@ -1734,6 +2021,8 @@ int main(int argc, char **argv) {
   }
 #ifdef XL_TRACE
   write_coverage(s_out_dir);
+  write_stack_phases(s_out_dir);
+  write_outside(s_out_dir);
 #endif
   printf("xl: %s after %u frames, %u checkpoints, %u VBLs\n",
          s_exit_reason == 1 ? "frame limit" : "the game exited", s_frame_count,

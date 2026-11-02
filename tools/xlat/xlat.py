@@ -76,12 +76,13 @@ PATCHES_BEFORE = {
     # routines of the stick's directions and buttons read the stick, as when
     # they record (their argument forced to 0), and return what they read
     # without recording it; only those reads see the live stick
-    # (xl_live_read), the demo's own check for a press does not.
+    # (xl_live_read), the demo's own check for a press does not. A player's
+    # game is not recorded either, unless the runtime records (xl_record).
     0x239E6: "if (xl_live_input()) { wr16(A(7) + 6u, 0u); xl_live_read(1); }",
-    0x23A14: "if (xl_live_input()) { xl_live_read(0); D(0) = sx16(D(1) & M16); "
+    0x23A14: "if (xl_live_input() || !xl_record()) { xl_live_read(0); D(0) = sx16(D(1) & M16); "
              "{ uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
     0x23AF8: "if (xl_live_input()) { wr16(A(7) + 10u, 0u); xl_live_read(1); }",
-    0x23B28: "if (xl_live_input()) { xl_live_read(0); D(0) = sx16(D(2) & M16); "
+    0x23B28: "if (xl_live_input() || !xl_record()) { xl_live_read(0); D(0) = sx16(D(2) & M16); "
              "D(3) = rd32(A(7)); A(7) += 4; { uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
 }
 # The program's variables the runtime reads or writes, by the listing's names.

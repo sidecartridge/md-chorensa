@@ -2,14 +2,14 @@
  * File: bench_logic.h
  * Description: The bench's logic run: the ported game's own code, translated
  *              to C by tools/xlat, played on the RP from a snapshot the host
- *              took after the attract demo's stage load, and timed frame by
- *              frame.
+ *              took at the title after the boot, and timed frame by frame.
  *
  * A store build (XLAT_STORE=1) carries no game code: the run copies the
- * images on the SD card (COMMON.IMG and STAGE1.IMG in the app's folder, made
- * by tools/xlat/rp_store.py from the user's copy of the game) into the flash
- * store (store.h) unless the store holds them already, timing it, and runs
- * from there. Other builds report that they have no translation. The
+ * images on the SD card (COMMON.IMG and MENUS.IMG in the app's folder, made
+ * by tools/xlat/rp_store.py from the user's copy of the game, and each
+ * scene's image when the game enters it: STAGE1.IMG..STAGE7.IMG) into the
+ * flash store (store.h) unless the store holds them already, timing it, and
+ * runs from there. Other builds report that they have no translation. The
  * game's memory is the snapshot's, in pages of 256 bytes (xl.h's XL_PAGED
  * accessors): the pages the game writes in RAM (a pool: the chunky
  * buffer's part a banded frame leaves, an array of the firmware's,
@@ -52,8 +52,29 @@ typedef struct {
   uint32_t total_us;
   uint32_t load_status[2];  /* the common and stage images: store.h's STORE_* */
   uint32_t load_us[2];      /* how long each copy took (or its check) */
+  uint32_t scene_changes;   /* the slot loaded with another scene, in the run */
+  uint32_t scene_kind;      /* the last one's (xl_store.h's kinds) */
+  uint32_t scene_frame;     /* the frame it started at */
+  uint32_t scene_us;        /* how long it took: the copy and the pages set */
+  uint32_t scene_pages;     /* the pages set to their content after the boot */
   char error[48];
 } bench_logic_result_t;
+
+#define BENCH_SONG_LOG 24u /* a whole game's 21 songs and the start */
+#define BENCH_SCENE_KINDS 9u /* xl_store.h's kinds: 1-7 the stages, 8 the menus */
+#define BENCH_SONG_MISSED 0x80u
+
+/* The held frame (benchPlayHoldAt) drawn again, unshown, BENCH_HOLD_DRAWS
+ * times whole and without each part: the mean of each, in microseconds,
+ * the c2p included, and the flash cache's misses, both cores' (swd.py play
+ * --hold prints the parts). In order: whole, without the sprites, without
+ * the text, without the background. */
+#define BENCH_HOLD_DRAWS 16u
+typedef struct {
+  uint32_t frame, sprites;
+  uint32_t us[4];
+  uint32_t misses[4];
+} bench_hold_times_t;
 
 /* The play mode's frames, readable over SWD (tools/dev/swd.py play). */
 typedef struct {
@@ -62,7 +83,20 @@ typedef struct {
   uint32_t draw_sum, draw_max; /* the picture on both cores and the palette */
   uint32_t publish_sum, publish_max; /* the c2p and the wait for the ST's copy */
   uint32_t audio_sum, audio_max; /* the sound: the song's and the effect's reads and the mix */
+  uint32_t songs, fades;       /* MCDRV's plays and fades while it played */
+  uint32_t song_log[BENCH_SONG_LOG]; /* the first plays: frame << 8 | BENCH_SONG_MISSED if the
+                                        card had none | the song (the common image's table) */
+  uint32_t effects, effects_missed; /* _ADPCMOUT's samples; of them, none in the card's bank */
+  /* Frames shown more than BENCH_LATE_US after the one before (a VBL late or
+   * more), by scene kind (xl_store.h's: 1-7 the stages, 8 the menus); gaps
+   * over a second (a scene change, a hold) left out. */
+  uint32_t late[BENCH_SCENE_KINDS];
+  /* Bands whose page 1 lines were streamed ahead (both cores), and the
+   * others, which read them from the flash as they drew. */
+  uint32_t streamed_bands, unstreamed_bands;
+  uint32_t stream_timeouts; /* streams stopped unfinished (the band read the flash) */
 } bench_play_t;
+#define BENCH_LATE_US 30000u
 
 enum {
   BENCH_LOGIC_IDLE,
@@ -77,7 +111,7 @@ enum {
 bool bench_logic_available(void);
 /* Called every bench frame: serves the host's writes to the card, runs the
  * logic if the host asked for it, and plays (benchPlay, 1 from boot in a
- * store build: the attract demo's stage from the snapshot, drawn and shown
+ * store build: the attract demo from the title's snapshot, drawn and shown
  * at one game frame a VBL, until the host writes 0). True when it took the
  * screen: the bench sets its palette again. */
 bool bench_logic_poll(void);

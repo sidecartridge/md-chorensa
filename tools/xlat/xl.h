@@ -74,8 +74,22 @@ XL_INLINE uint32_t rd32(uint32_t a) {
   const uint16_t *p = (const uint16_t *)xl_at(a);
   return ((uint32_t)p[0] << 16) | p[1];
 }
-XL_INLINE void wr8(uint32_t a, uint32_t v) { *xl_at(a ^ 1u) = (uint8_t)v; }
-XL_INLINE void wr16(uint32_t a, uint32_t v) { *(uint16_t *)xl_at(a) = (uint16_t)v; }
+/* A page the scene only reads is in flash, below the RAM: a write there
+ * would be lost, so it stops the game with its address (xl_stray_write). */
+#define XL_RAM_START 0x20000000u
+#define XL_CHECK_WRITE(p, a) \
+  if ((uintptr_t)(p) < XL_RAM_START) xl_stray_write(a)
+void xl_stray_write(uint32_t address);
+XL_INLINE void wr8(uint32_t a, uint32_t v) {
+  uint8_t *p = xl_at(a ^ 1u);
+  XL_CHECK_WRITE(p, a);
+  *p = (uint8_t)v;
+}
+XL_INLINE void wr16(uint32_t a, uint32_t v) {
+  uint16_t *p = (uint16_t *)xl_at(a);
+  XL_CHECK_WRITE(p, a);
+  *p = (uint16_t)v;
+}
 XL_INLINE void wr32(uint32_t a, uint32_t v) {
   if (XL_STRADDLES(a)) {
     wr16(a, v >> 16);
@@ -83,6 +97,7 @@ XL_INLINE void wr32(uint32_t a, uint32_t v) {
     return;
   }
   uint16_t *p = (uint16_t *)xl_at(a);
+  XL_CHECK_WRITE(p, a);
   p[0] = (uint16_t)(v >> 16);
   p[1] = (uint16_t)v;
 }
@@ -148,6 +163,10 @@ void xl_patch_samples_loaded(void);
  * with the live stick, every other read with nothing pressed). */
 int xl_live_input(void);
 void xl_live_read(int on);
+/* Whether the game records the player's game over the demo's replay (the
+ * buffer the attract demo plays, 128 KB): the RP never does (it keeps the
+ * buffer in flash); the host when it saves a recording (XL_SAVE_REPLAY_AT). */
+int xl_record(void);
 
 /* Enter the code at a 68000 address: the translated function that starts
  * there; returns the address its RTS (or RTE) popped. Unknown: fatal. */

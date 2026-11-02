@@ -64,7 +64,6 @@ extern void fb_c2p_half(uint16_t *dst,
 #define FB_PLANAR_HALF_LINES (CART_FB_LINES / 2u)
 static uint16_t *s_planar_bottom = FB_PLANAR_BOTTOM;
 
-#define FB_BAND_BYTES (FB_BAND_LINES * FB_CHUNKED_W)
 _Static_assert((FB_CHUNKED_H / 2) % FB_BAND_LINES == 0, "a half is whole bands");
 _Static_assert(FB_C2P_HALF_SRC_BYTES / 2u == FB_PLANAR_HALF_LINES * CART_FB_LINE_BYTES,
                "a half's planes are half its chunky bytes");

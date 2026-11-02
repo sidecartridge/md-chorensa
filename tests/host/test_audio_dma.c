@@ -432,6 +432,42 @@ static void test_resampling(void) {
   CHECK(all);
 }
 
+/* A pause (audio_pause) over a long stall of the main loop, with the
+ * writer's interrupt off for eight VBLs among it (a flash erase): past the
+ * samples the ST had copied, it plays one level, nothing is counted an
+ * underrun, and afterwards the source goes on in order. */
+static void test_pause(void) {
+  start(0x11);
+  /* 120 VBLs in all: the chip's counter (16.16) holds 65,536 samples. */
+  for (int i = 0; i < 20; i++) frame(true, false);
+  uint32_t under0 = audioUnderruns;
+  audio_pause(true);
+  uint32_t paused_from = n_played;
+  for (int i = 0; i < 60; i++) {
+    if (i >= 10 && i < 18) {
+      st_vbl_dma(false);
+      now_us += VBL_US;
+      chip_play(chip_q16 + CHIP_PER_VBL_Q16);
+    } else {
+      frame(false, false);
+    }
+  }
+  audio_pause(false);
+  uint32_t resumed_from = n_played;
+  for (int i = 0; i < 40; i++) frame(true, false);
+  int8_t level = played[paused_from + FIVE_VBLS];
+  bool flat = true;
+  for (uint32_t i = paused_from + FIVE_VBLS; i < resumed_from; i++) flat = flat && played[i] == level;
+  CHECK(flat);
+  CHECK_EQ(audioUnderruns, under0);
+  uint32_t at = resumed_from + FIVE_VBLS, repeats, best = 0;
+  for (uint32_t k = 0; k < PATTERN; k++) {
+    uint32_t n = follows(at, k, false, &repeats);
+    if (n > best) best = n;
+  }
+  CHECK_EQ(best, n_played - at);
+}
+
 int main(void) {
   make_pattern();
   audio_init();
@@ -444,5 +480,6 @@ int main(void) {
   test_pcm_source_on_ym();
   test_prefer_ym();
   test_resampling();
+  test_pause();
   TEST_END();
 }

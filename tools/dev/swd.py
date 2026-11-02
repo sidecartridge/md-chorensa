@@ -816,7 +816,8 @@ def cmd_scene(args: argparse.Namespace) -> int:
 
 LOGIC_FIELDS = ("state", "first_frame", "frames", "logic_sum", "logic_max", "vbl_sum", "vbl_max",
                 "checkpoints", "mismatches", "first_mismatch", "error_address", "total_us",
-                "load_common", "load_stage", "load_common_us", "load_stage_us")
+                "load_common", "load_stage", "load_common_us", "load_stage_us",
+                "scene_changes", "scene_kind", "scene_frame", "scene_us", "scene_pages")
 LOAD_STATES = ("copied", "already in the store", "no file", "not an image", "card error",
                "bad CRC", "made for another firmware")  # store.h's STORE_*
 LOGIC_STATES = ("idle", "done", "error", "no translation", "loading")
@@ -881,6 +882,11 @@ def cmd_logic(args: argparse.Namespace) -> int:
         status = r[f"load_{name}"]
         label = LOAD_STATES[status] if status < len(LOAD_STATES) else str(status)
         print(f"{name} image: {label}, {r[f'load_{name}_us'] / 1000:.0f} ms")
+    if r["scene_changes"]:
+        kind = "the menus" if r["scene_kind"] == 8 else f"stage {r['scene_kind']}"
+        print(f"scene changes {r['scene_changes']}, the last into {kind} at frame "
+              f"{r['scene_frame']}: {r['scene_us'] / 1000:.0f} ms, {r['scene_pages']} pages set "
+              "from the boot")
     frames = r["frames"]
     if not frames:
         return 1
@@ -918,6 +924,27 @@ def cmd_logic(args: argparse.Namespace) -> int:
 
 PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
                "publish_sum", "publish_max", "audio_sum", "audio_max")
+PLAY_SONG_LOG = 24     # bench_logic.h's BENCH_SONG_LOG
+PLAY_SONG_MISSED = 0x80
+PLAY_KINDS = 9         # xl_store.h's kinds: 1-7 the stages, 8 the menus
+
+
+def play_stats(raw: bytes) -> dict:
+    """bench_play_t: the frames' costs, then (newer builds) the songs and the
+    effects."""
+    n = len(PLAY_FIELDS)
+    words = struct.unpack(f"<{len(raw) // 4}I", raw)
+    r = dict(zip(PLAY_FIELDS, words[:n]))
+    if len(words) >= n + 2 + PLAY_SONG_LOG + 2:
+        r["songs"], r["fades"] = words[n], words[n + 1]
+        r["song_log"] = words[n + 2:n + 2 + PLAY_SONG_LOG]
+        r["effects"], r["effects_missed"] = words[n + 2 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG]
+    if len(words) >= n + 4 + PLAY_SONG_LOG + PLAY_KINDS:
+        r["late"] = words[n + 4 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG + PLAY_KINDS]
+    if len(words) >= n + 7 + PLAY_SONG_LOG + PLAY_KINDS:
+        r["streamed"], r["unstreamed"], r["timeouts"] = words[n + 4 + PLAY_SONG_LOG + PLAY_KINDS:
+                                                              n + 7 + PLAY_SONG_LOG + PLAY_KINDS]
+    return r
 
 
 def image_numbers(image: list[int], width: int = 256, height: int = 256) -> bytes:
@@ -947,6 +974,17 @@ def play_hold(elf: str, args: argparse.Namespace) -> int:
             time.sleep(0.5)
         natural = read_word(sym["fbLayoutNatural"][0]) != 0
         _frame, fb, pal = grab_frames(elf, 1, True)[0]
+        times = elf_symbols(elf, "benchHoldTimes").get("benchHoldTimes")
+        if times:
+            words = struct.unpack(f"<{times[1] // 4}I", read_memory(times[0], times[1]))
+            frame, sprites = words[0], words[1]
+            us, misses = words[2:6], words[6:10] if len(words) >= 10 else (0, 0, 0, 0)
+            if frame == args.hold:
+                parts = ("the sprites", "the text", "the background")
+                print(f"frame {frame}, {sprites} sprites: drawn and converted in {us[0]} us, "
+                      f"{misses[0]} flash cache misses; " + ", ".join(
+                          f"{name} {us[0] - us[k + 1]} us, {misses[0] - misses[k + 1]} misses"
+                          for k, name in enumerate(parts)))
     finally:
         openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlayHoldAt'][0]:08x} 0")
     image = st_words(fb) if natural else image_from_cart_fb(defs, fb)
@@ -1007,7 +1045,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     base, size = sym["benchPlayStats"]
 
     def read():
-        return dict(zip(PLAY_FIELDS, struct.unpack(f"<{len(PLAY_FIELDS)}I", read_memory(base, size))))
+        return play_stats(read_memory(base, size))
 
     a = read()
     time.sleep(args.seconds)
@@ -1019,6 +1057,21 @@ def cmd_play(args: argparse.Namespace) -> int:
         for name in ("game", "draw", "publish", "audio"):
             mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
             print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
+    if "streamed" in b and b["streamed"] + b["unstreamed"]:
+        print(f"bands with page 1 streamed ahead: {b['streamed']} of "
+              f"{b['streamed'] + b['unstreamed']} since the start, {b['timeouts']} streams "
+              f"stopped unfinished")
+    if "late" in b:
+        print("frames a VBL late or more (since the start): " + ", ".join(
+            f"{'menus' if k == 8 else f'stage {k}'} {b['late'][k]}" for k in range(1, PLAY_KINDS)))
+    if "songs" in b:
+        print(f"songs {b['songs']}, fades {b['fades']}, effects {b['effects']} "
+              f"({b['effects_missed']} not in the card's bank) since the start")
+        for e in b["song_log"][:min(b["songs"], PLAY_SONG_LOG)]:
+            song = e & 0x7F
+            print(f"  frame {e >> 8}: " + ("none" if song == 0x7F else f"song {song}")
+                  + (" (not played: no file on the card)" if e & PLAY_SONG_MISSED and song != 0x7F
+                     else ""))
     return 0
 
 

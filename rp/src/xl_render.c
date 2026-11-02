@@ -85,14 +85,73 @@ static inline void put_pair(uint8_t *d, uint32_t b) {
   d[1] = (uint8_t)(b & 15u);
 }
 
-static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
+/* Page 1, read once a frame, through the flash's no-allocate alias on the RP
+ * (XIP_NOALLOC: a miss is read without taking a cache line), so it does not
+ * evict the code and the patterns; a word (eight pixels) a read. */
+#if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
+#define XIP_FLASH_BASE 0x10000000u
+#define XIP_NOALLOC_BASE 0x11000000u
+static inline const uint32_t *page1_words(const uint8_t *p) {
+  uintptr_t a = (uintptr_t)p;
+  if ((a >> 24) == (XIP_FLASH_BASE >> 24)) a = a - XIP_FLASH_BASE + XIP_NOALLOC_BASE;
+  return (const uint32_t *)a;
+}
+/* Page 0's line record (n, n pairs of x and length - 1, then each run's
+ * pixels from a byte boundary: byte-packed, at any address) through the same
+ * alias, a word at a time into `buf` (PAGE0_RECORD bytes, word-aligned): the
+ * record there. At most 128 runs (apart, in 256 pixels): their pixels take at
+ * most 128 bytes and half a byte each; more stay where they are. */
+#define PAGE0_RUNS 128u
+#define PAGE0_RECORD (1u + 2u * PAGE0_RUNS + XL_RENDER_W / 2u + PAGE0_RUNS / 2u + 8u)
+static const uint8_t *page0_record(const uint8_t *rec, uint8_t *buf) {
+  uintptr_t a = (uintptr_t)rec;
+  if ((a >> 24) != (XIP_FLASH_BASE >> 24)) return rec;
+  a = a - XIP_FLASH_BASE + XIP_NOALLOC_BASE;
+  const uint32_t *src = (const uint32_t *)(a & ~3u);
+  uint32_t *dst = (uint32_t *)buf, off = a & 3u, have = 0;
+  dst[have++] = src[0];
+  uint32_t n = buf[off];
+  if (n > PAGE0_RUNS) return rec;
+  uint32_t need = off + 1u + 2u * n;
+  while (4u * have < need) dst[have] = src[have], have++;
+  for (uint32_t k = 0; k < n; k++) need += (buf[off + 2u + 2u * k] + 2u) >> 1;
+  while (4u * have < need) dst[have] = src[have], have++;
+  return buf + off;
+}
+#else
+static inline const uint32_t *page1_words(const uint8_t *p) { return (const uint32_t *)p; }
+#define PAGE0_RECORD 4u
+static inline const uint8_t *page0_record(const uint8_t *rec, uint8_t *buf) {
+  (void)buf;
+  return rec;
+}
+#endif
+
+/* Page 1 a word (eight pixels) a read, four pixels a store: its lines and the
+ * band's are word-aligned, and the RP and the host little-endian, the left
+ * pixel in the low byte. */
+static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1,
+                       const uint8_t *page1_lines) {
   const xl_store_art_t *art = f->art;
   uint32_t lines = art->page_lines;
+  uint32_t record[(PAGE0_RECORD + 3u) / 4u];
   for (int y = y0; y < y1; y++) {
     uint8_t *d = band + (y - y0) * XL_RENDER_W;
-    const uint8_t *src = art->page1 + ((f->page1_y + (uint32_t)y) % lines) * (XL_RENDER_W / 2u);
-    for (uint32_t x = 0; x < XL_RENDER_W / 2u; x++) put_pair(d + 2u * x, src[x]);
-    const uint8_t *rec = art->page0_runs + art->page0_index[(f->page0_y + (uint32_t)y) % lines];
+    const uint32_t *src =
+        page1_lines ? (const uint32_t *)(page1_lines + (uint32_t)(y - y0) * (XL_RENDER_W / 2u))
+                    : page1_words(art->page1 + ((f->page1_y + (uint32_t)y) % lines) *
+                                                   (XL_RENDER_W / 2u));
+    uint32_t *quad = (uint32_t *)d;
+    for (uint32_t x = 0; x < XL_RENDER_W / 8u; x++) {
+      uint32_t s = src[x];
+      uint32_t w = (s & 0xFFu) | (s & 0xFF00u) << 8;
+      quad[0] = ((w >> 4) & 0x000F000Fu) | ((w & 0x000F000Fu) << 8);
+      w = (s >> 16 & 0xFFu) | (s >> 8 & 0xFF0000u);
+      quad[1] = ((w >> 4) & 0x000F000Fu) | ((w & 0x000F000Fu) << 8);
+      quad += 2;
+    }
+    const uint8_t *rec = page0_record(
+        art->page0_runs + art->page0_index[(f->page0_y + (uint32_t)y) % lines], (uint8_t *)record);
     uint32_t n = rec[0];
     const uint8_t *pix = rec + 1u + 2u * n;
     for (uint32_t k = 0; k < n; k++) {
@@ -105,75 +164,148 @@ static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1
   }
 }
 
+/* A byte of the text plane, its planes' bits as eight pixels. */
+static inline void put_text_byte(uint8_t *d, const uint8_t *colour, uint32_t p0, uint32_t p1,
+                                 uint32_t p2, uint32_t p3) {
+  for (uint32_t k = 0; k < 8; k++) {
+    uint32_t bit = 7u - k;
+    uint32_t c = (((p3 >> bit) & 1u) << 3) | (((p2 >> bit) & 1u) << 2) |
+                 (((p1 >> bit) & 1u) << 1) | ((p0 >> bit) & 1u);
+    if (c) d[k] = colour[c];
+  }
+}
+
+/* The byte at an address is at its address ^ TEXT_SWAP from its page's
+ * pointer: the RP keeps each word in its own byte order (xl.h). */
+#ifdef XL_PAGED
+#define TEXT_SWAP 1u
+#else
+#define TEXT_SWAP 0u
+#endif
+
 /* Four planes of 1024 x 1024, colour 0 clear, palette block 0; the
- * horizontal scroll in whole bytes, as the port applies it. */
+ * horizontal scroll in whole bytes, as the port applies it. A line's shown
+ * bytes inside its 128 (no wrap) and from a word boundary are read from
+ * each plane's line at once (a line lies in one page), four bytes of the
+ * four planes tested together; otherwise a byte at a time. */
 static void draw_text(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const uint8_t *colour = f->art->entry_colour + ENTRY_SPRITE;
-  uint32_t column = f->text_x >> 3;
+  uint32_t column = (f->text_x >> 3) & (TEXT_LINE - 1u);
+  int whole = (column & 3u) == 0 && column + XL_RENDER_W / 8u <= TEXT_LINE;
   for (int y = y0; y < y1; y++) {
     uint32_t line = TEXT_VRAM + ((f->text_y + (uint32_t)y) & 1023u) * TEXT_LINE;
     uint8_t *d = band + (y - y0) * XL_RENDER_W;
+    if (whole) {
+      const uint8_t *q0 = xl_at(line), *q1 = xl_at(line + TEXT_PLANE),
+                    *q2 = xl_at(line + 2u * TEXT_PLANE), *q3 = xl_at(line + 3u * TEXT_PLANE);
+      for (uint32_t b = 0; b < XL_RENDER_W / 8u; b += 4u) {
+        uint32_t at = column + b;
+        if ((*(const uint32_t *)(q0 + at) | *(const uint32_t *)(q1 + at) |
+             *(const uint32_t *)(q2 + at) | *(const uint32_t *)(q3 + at)) == 0) {
+          continue;
+        }
+        for (uint32_t i = 0; i < 4u; i++) {
+          uint32_t k = (at + i) ^ TEXT_SWAP;
+          uint32_t p0 = q0[k], p1 = q1[k], p2 = q2[k], p3 = q3[k];
+          if (p0 | p1 | p2 | p3) put_text_byte(d + 8u * (b + i), colour, p0, p1, p2, p3);
+        }
+      }
+      continue;
+    }
     for (uint32_t b = 0; b < XL_RENDER_W / 8u; b++) {
       uint32_t at = line + ((column + b) & (TEXT_LINE - 1u));
       uint32_t p0 = rd8(at), p1 = rd8(at + TEXT_PLANE), p2 = rd8(at + 2u * TEXT_PLANE),
                p3 = rd8(at + 3u * TEXT_PLANE);
-      if ((p0 | p1 | p2 | p3) == 0) continue;
-      for (uint32_t k = 0; k < 8; k++) {
-        uint32_t bit = 7u - k;
-        uint32_t c = (((p3 >> bit) & 1u) << 3) | (((p2 >> bit) & 1u) << 2) |
-                     (((p1 >> bit) & 1u) << 1) | ((p0 >> bit) & 1u);
-        if (c) d[8u * b + k] = colour[c];
-      }
+      if (p0 | p1 | p2 | p3) put_text_byte(d + 8u * b, colour, p0, p1, p2, p3);
     }
   }
 }
 
 /* 16 x 16 at 4 bits a pixel in rows of 8 bytes; attributes bits 11-8 the
- * palette block, 14 a horizontal and 15 a vertical flip. */
+ * palette block, 14 a horizontal and 15 a vertical flip. Each band walks the
+ * whole list, so a sprite outside it is dropped on its y alone; a sprite
+ * wholly inside the screen's width is drawn a byte (two pixels) at a time,
+ * its flip chosen once, a clear byte skipped. */
 static void draw_sprites(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
   const xl_store_art_t *art = f->art;
   for (uint32_t k = 0; k < f->sprite_count; k++) {
     const uint16_t *s = sprite_words(f, f->order[k]);
-    uint32_t sx = s[0], sy = s[1], pattern = s[2], attr = s[3];
-    if (sx > SPRITE_LIMIT || sy > SPRITE_LIMIT || pattern >= art->pattern_count) continue;
+    uint32_t sy = s[1];
+    int y = (int)sy - SPRITE_GUARD;
+    if (y >= y1 || y + 16 <= y0 || sy > SPRITE_LIMIT) continue;
+    uint32_t sx = s[0], pattern = s[2], attr = s[3];
+    int x = (int)sx - SPRITE_GUARD;
+    if (sx > SPRITE_LIMIT || x <= -16 || x >= XL_RENDER_W || pattern >= art->pattern_count) {
+      continue;
+    }
     uint32_t at = art->pattern_index[pattern];
     if (at == XL_STORE_NO_PATTERN) continue;
-    int x = (int)sx - SPRITE_GUARD, y = (int)sy - SPRITE_GUARD;
     int r0 = y0 > y ? y0 - y : 0, r1 = y1 < y + 16 ? y1 - y : 16;
-    if (r0 >= r1 || x <= -16 || x >= XL_RENDER_W) continue;
     const uint8_t *lut = art->entry_colour + ENTRY_SPRITE + ((attr >> 8) & 15u) * 16u;
     const uint8_t *data = (at & XL_STORE_COMMON_PATTERN)
                               ? art->common_patterns + (at & ~XL_STORE_COMMON_PATTERN) * 128u
                               : art->patterns + at * 128u;
     int hflip = (attr & 0x4000u) != 0, vflip = (attr & 0x8000u) != 0;
-    for (int r = r0; r < r1; r++) {
+    uint8_t *d = band + (y + r0 - y0) * XL_RENDER_W + x;
+    if (x >= 0 && x <= XL_RENDER_W - 16) {
+      for (int r = r0; r < r1; r++, d += XL_RENDER_W) {
+        const uint8_t *row = data + (vflip ? 15 - r : r) * 8;
+        if (hflip) {
+          for (int b = 0; b < 8; b++) {
+            uint32_t v = row[b];
+            if (v == 0) continue;
+            if (v >> 4) d[15 - 2 * b] = lut[v >> 4];
+            if (v & 15u) d[14 - 2 * b] = lut[v & 15u];
+          }
+        } else {
+          for (int b = 0; b < 8; b++) {
+            uint32_t v = row[b];
+            if (v == 0) continue;
+            if (v >> 4) d[2 * b] = lut[v >> 4];
+            if (v & 15u) d[2 * b + 1] = lut[v & 15u];
+          }
+        }
+      }
+      continue;
+    }
+    for (int r = r0; r < r1; r++, d += XL_RENDER_W) {
       const uint8_t *row = data + (vflip ? 15 - r : r) * 8;
-      uint8_t *d = band + (y + r - y0) * XL_RENDER_W;
       for (int c = 0; c < 16; c++) {
         uint32_t v = (c & 1) ? (row[c >> 1] & 15u) : (row[c >> 1] >> 4);
         if (v == 0) continue;
         int px = x + (hflip ? 15 - c : c);
-        if (px >= 0 && px < XL_RENDER_W) d[px] = lut[v];
+        if (px >= 0 && px < XL_RENDER_W) d[px - x] = lut[v];
       }
     }
   }
 }
 
 void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
+  xl_render_band_page1(band, f, y0, y1, NULL);
+}
+
+void xl_render_band_page1(uint8_t *band, const xl_render_frame_t *f, int y0, int y1,
+                          const uint8_t *page1_lines) {
   if (y0 < 0 || y1 > XL_RENDER_H || y0 >= y1) return;
-  draw_pages(band, f, y0, y1);
+  int pages = !(f->skip & XL_RENDER_SKIP_PAGES), text = !(f->skip & XL_RENDER_SKIP_TEXT),
+      sprites = !(f->skip & XL_RENDER_SKIP_SPRITES);
+  if (pages) draw_pages(band, f, y0, y1, page1_lines);
   if (f->text_in_front) {
-    draw_sprites(band, f, y0, y1);
-    draw_text(band, f, y0, y1);
+    if (sprites) draw_sprites(band, f, y0, y1);
+    if (text) draw_text(band, f, y0, y1);
   } else {
-    draw_text(band, f, y0, y1);
-    draw_sprites(band, f, y0, y1);
+    if (text) draw_text(band, f, y0, y1);
+    if (sprites) draw_sprites(band, f, y0, y1);
   }
 }
 
+/* The palette's words the last colours were worked out from. */
+static uint16_t s_seen[ENTRIES];
+static int s_valid;
+
+void xl_render_palette_forget(void) { s_valid = 0; }
+
 int xl_render_palette(const xl_store_art_t *art, uint16_t out[16]) {
-  static uint16_t s_seen[ENTRIES];
-  static int s_valid;
   int changed = !s_valid;
   for (uint32_t e = 0; e < ENTRIES; e++) {
     uint16_t w = (uint16_t)rd16(PALETTES + 2u * e);

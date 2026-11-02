@@ -92,6 +92,13 @@ void audio_prefer_ym(bool prefer);
  * the YM's ring all the same. Default: false. */
 void audio_silence_st(bool silent);
 
+/* Pause the sound (true) and go on (false): the ST plays the level it last
+ * played, the whole of its ring, and the app's source is not read; on going
+ * on it plays from where it stopped. For a long stall that blocks the main
+ * loop, a flash erase with the interrupts off among it (the game's scene
+ * change). */
+void audio_pause(bool paused);
+
 /* True when the ST plays through the DMA chip (as of its last boot). */
 bool audio_uses_dma(void);
 
