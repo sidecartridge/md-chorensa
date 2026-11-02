@@ -1342,6 +1342,7 @@ static uint32_t nameck(uint32_t name, uint32_t buffer) {
 }
 
 static uint8_t s_unimplemented_dos[512];
+#define DOS_LOG_LINES 20000u
 
 void xl_linef(uint32_t word, uint32_t pc) {
   s_calls_linef[word & 0x1FFu]++;
@@ -1350,7 +1351,11 @@ void xl_linef(uint32_t word, uint32_t pc) {
 #ifdef XL_TRACE
   /* Every DOS call ("xl: dos" lines: what the RP would have to serve), a
    * file's name for the calls that take one. */
-  if ((word & 0xFF00u) == 0xFF00u) {
+  /* Capped: a game that loops on a call (waiting for a key after a failed
+   * save) would fill the disk. */
+  static uint32_t s_dos_lines;
+  if ((word & 0xFF00u) == 0xFF00u && ++s_dos_lines <= DOS_LOG_LINES) {
+    if (s_dos_lines == DOS_LOG_LINES) printf("xl: dos: the log stops here\n");
     printf("xl: dos $%04X frame %u phase %u from %06X", word, s_frame_count, s_phase, pc);
     if (word == 0xFF3Cu || word == 0xFF3Du || word == 0xFF41u) {
       printf(" ");
@@ -1360,6 +1365,25 @@ void xl_linef(uint32_t word, uint32_t pc) {
     printf("\n");
   }
 #endif
+  /* XL_DISCARD_FILES: after the boot, the file calls as the RP answers them
+   * until the game's files live on the card (bench_logic.c xl_linef): every
+   * save succeeds and its bytes are dropped (_NAMECK served as usual). */
+  static int discard = -1;
+  if (discard < 0) discard = getenv("XL_DISCARD_FILES") != NULL;
+  if (discard && s_frame_count > 1u &&
+      (word == 0xFF36u || word == 0xFF3Cu || word == 0xFF3Du || word == 0xFF41u ||
+       word == 0xFF3Eu || word == 0xFF3Fu || word == 0xFF40u || word == 0xFF42u)) {
+    r = word == 0xFF36u                     ? 10000000u
+        : word == 0xFF3Cu || word == 0xFF3Du ? 5u
+        : word == 0xFF40u                    ? rd32(args + 6) & 0x7FFFFFFFu
+                                             : 0u;
+    D(0) = r;
+    xl.n = (r >> 31) & 1u;
+    xl.z = r == 0;
+    xl.v = 0;
+    xl.c = 0;
+    return;
+  }
   switch (word) {
     case 0xFE00: /* __LMUL */
       r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));

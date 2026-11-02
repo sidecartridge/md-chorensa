@@ -892,9 +892,79 @@ void xl_trap(uint32_t n, uint32_t pc) {
   }
 }
 
+/* _NAMECK: a file's name taken apart into `buffer` (91 bytes: the drive,
+ * the path from 2, the name from 67, the extension from 86), as the host's
+ * runtime does it (tools/xlat/host/xl_host.c nameck). */
+static void nameck(uint32_t name, uint32_t buffer) {
+  for (uint32_t k = 0; k < 91; k++) wr8(buffer + k, 0);
+  uint32_t s = name;
+  wr8(buffer, 'A');
+  wr8(buffer + 1, ':');
+  if (rd8(s) && rd8(s + 1) == ':') {
+    wr8(buffer, rd8(s));
+    s += 2;
+  }
+  uint32_t file = s;
+  for (uint32_t p = s; rd8(p); p++) {
+    if (rd8(p) == '\\' || rd8(p) == '/') file = p + 1;
+  }
+  uint32_t out = buffer + 2;
+  wr8(out++, '\\');
+  for (uint32_t p = s, n = 0; p < file && n < 63; p++, n++) {
+    uint32_t ch = rd8(p) == '/' ? '\\' : rd8(p);
+    if (ch == '\\' && rd8(out - 1) == '\\') continue;
+    wr8(out++, ch);
+  }
+  if (rd8(out - 1) != '\\') wr8(out++, '\\');
+  out = buffer + 67;
+  uint32_t p = file;
+  for (int n = 0; n < 18 && rd8(p) && rd8(p) != '.'; n++) wr8(out++, rd8(p++));
+  while (rd8(p) && rd8(p) != '.') p++;
+  if (rd8(p) == '.') {
+    out = buffer + 86;
+    for (int n = 0; n < 4 && rd8(p); n++) wr8(out++, rd8(p++));
+  }
+}
+
+/* The DOS calls the game makes after its boot (tools/xlat/host/xl_host.c's
+ * "xl: dos" log): the ones the host answers with 0, _SUPER among them (a
+ * palette register written in supervisor mode on the continue and game-over
+ * screens), and the file calls of its saves (the high scores at a game over
+ * and from CONFIG, the replay at a new top score). A save that fails makes
+ * the game wait for a key for ever, so until the game's files live on the
+ * card every save succeeds and its bytes are dropped. Anything else stops
+ * the run. The flags as a move of the result, as the port returns them. */
+#define DISCARD_HANDLE 5u
 void xl_linef(uint32_t word, uint32_t pc) {
-  (void)word;
-  xl_fatal("a DOS or FLOAT call", pc);
+  uint32_t args = A(7), r;
+  switch (word) {
+    case 0xFE0D: case 0xFF0D: case 0xFF20: case 0xFF21: case 0xFF23: case 0xFF25: case 0xFF44:
+    case 0xFF3E: case 0xFF41: case 0xFF42: /* _CLOSE, _DELETE, _SEEK: to the start */
+    case 0xFF3F:                           /* _READ: nothing */
+      r = 0;
+      break;
+    case 0xFF36: /* _DSKFRE */
+      r = 10000000u;
+      break;
+    case 0xFF37: /* _NAMECK */
+      nameck(rd32(args), rd32(args + 4u));
+      r = 0;
+      break;
+    case 0xFF3C: case 0xFF3D: /* _CREATE, _OPEN */
+      r = DISCARD_HANDLE;
+      break;
+    case 0xFF40: /* _WRITE: all of it */
+      r = rd32(args + 6u) & 0x7FFFFFFFu;
+      break;
+    default:
+      xl_fatal("a DOS or FLOAT call", pc);
+      return;
+  }
+  D(0) = r;
+  xl.n = (r >> 31) & 1u;
+  xl.z = r == 0;
+  xl.v = 0;
+  xl.c = 0;
 }
 
 /* --- The run --------------------------------------------------------------- */
