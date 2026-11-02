@@ -106,18 +106,31 @@ RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         ("whole-kakusi", 6000, "menu-kakusi-play.txt", {}),
         ("whole-attract", 150000, None, {})) + tuple(
         # A game over in every stage: its writes (the high scores, the name
-        # entry) are the stage's own.
-        (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {}) for n in range(1, 8))
+        # entry) are the stage's own; its save on a card without SCORE.DAT yet,
+        # the C library's create path, as the RP's first save.
+        (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {"XL_FRESH_CARD": "1"})
+        for n in range(1, 8))
 GAME_OVER_RUN = "whole-gameover"
 INPUTS = os.path.join(HERE, "inputs")
 PAGE = rp_image.PAGE
 # The game's object pool (LONG_0009C8E4, its table, and L_0009CEE4, 48 KB):
 # a stage uses any of its slots, so every stage keeps all of it in RAM.
 OBJECT_POOL = (0x9C8E4, 0xA8EE4)
-# The high score table (WORD_0008D994, 240 bytes): the game
-# updates it the moment a player passes a score in it, in any stage, and at
-# the game over; every scene keeps it in RAM.
-HIGH_SCORES = (0x8D994, 0x8DA84)
+# The high score table (WORD_0008D994, 240 bytes) and the top score
+# (GAME_HIGHSCORE): the game updates them the moment a player passes a score
+# in the table, in any stage, and at the game over, and the RP sets them from
+# the card at the start; every scene keeps them in RAM.
+HIGH_SCORE_BYTES = 240
+# A save (the high scores at any game over, the replay at a new top score)
+# reads its file's name and mode, in the program's data, and writes the C
+# library's file buffer, which the library takes from the program's heap as a
+# file opens: the same pages every time (the boot's reads at $111880, the
+# saves' writes to $111CFF, xl_host.c's XL_SCENES report). Every scene maps
+# the strings and keeps the buffer's pages in RAM.
+SAVE_STRINGS = ("SCORE_DAT_FILENAME", "DEMO_REP_FILENAME", "L_000248E2", "L_00023732",
+                "REPLAY_FILE_OPEN_PARAMETER")
+SAVE_STRING_BYTES = 20
+FILE_BUFFERS = (0x111800, 0x111D00)
 # The X68000's sprite patterns and BG maps: the port shows neither; nothing
 # reads the patterns back, and only the menus the maps (through IOCS $CE).
 SPRITE_PATTERNS = (0xEB8000, 0xEBC000)
@@ -126,10 +139,11 @@ BG_MAPS = (0xEBC000, 0xEC0000)
 # game starts, and nothing reads them back (the RP draws the scene's art).
 GVRAM = (0xC00000, 0xE00000)
 
-HEADER_SIZE = 156         # sizeof(xl_store_header_t)
+HEADER_SIZE = 164         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
-          "SIN_COS_TABLES_START", "INVINCIBILITY_MODE")  # xl_store.h's XL_LAYOUT_* order
+          "SIN_COS_TABLES_START", "INVINCIBILITY_MODE", "WORD_0008D994",
+          "GAME_HIGHSCORE")  # xl_store.h's XL_LAYOUT_* order
 SIZE_OFFSET, CRC_OFFSET = 12, 16
 
 CFLAGS = ["-mcpu=cortex-m0plus", "-mthumb", "-Os", "-std=c11", "-w", "-ffunction-sections",
@@ -531,10 +545,14 @@ def main():
     text = set(rp_image.text_pages())
     gvram = pages_of(*GVRAM)
     sink = pages_of(*SPRITE_PATTERNS)
+    save_strings = set().union(*(pages_of(layout[n], layout[n] + SAVE_STRING_BYTES)
+                                 for n in SAVE_STRINGS))
+    high_scores = (pages_of(layout["WORD_0008D994"], layout["WORD_0008D994"] + HIGH_SCORE_BYTES)
+                   | pages_of(layout["GAME_HIGHSCORE"], layout["GAME_HIGHSCORE"] + 4))
     ram, read = {}, {}
     for s in SCENES:
-        ram[s] = scenes.ram[s] | runtime_written | pages_of(*HIGH_SCORES)
-        read[s] = scenes.read[s] | runtime_read
+        ram[s] = scenes.ram[s] | runtime_written | high_scores | pages_of(*FILE_BUFFERS)
+        read[s] = scenes.read[s] | runtime_read | save_strings
         if s != "menus":
             ram[s] |= scenes.ram["gameover"] | pages_of(*OBJECT_POOL)
             read[s] |= scenes.read["gameover"]

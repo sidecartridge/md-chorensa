@@ -56,7 +56,7 @@
 #define XL_STORE_TEXT_BYTES 0x8060u         /* four planes and the overlap */
 
 #define XL_STORE_MAGIC 0x58535432u   /* 'XST2' */
-#define XL_STORE_VERSION 9u          /* 8: the start's memory on the card; 9: a whole game's bench */
+#define XL_STORE_VERSION 10u         /* 9: a whole game's bench; 10: the high scores' words */
 #define XL_STORE_KIND_COMMON 0u      /* 1..7 a stage's */
 #define XL_STORE_KIND_MENUS 8u
 #define XL_STORE_FIRMWARE_ID 32u     /* bytes of the build ID kept */
@@ -73,6 +73,8 @@ enum {
   XL_LAYOUT_PLAYER_INFO_STRUCT,
   XL_LAYOUT_SIN_COS_TABLES_START,
   XL_LAYOUT_INVINCIBILITY_MODE,
+  XL_LAYOUT_WORD_0008D994, /* the high score table, as SCORE.DAT holds it */
+  XL_LAYOUT_GAME_HIGHSCORE, /* the top score, the table's first long */
   XL_LAYOUT_WORDS
 };
 

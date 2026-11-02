@@ -65,6 +65,11 @@ PATCHES = {
     0x22C98: ("xl_patch_wait_vbl();", ("goto", 0x22CB4)),      # WAIT_VBL's wait
     0x277DC: ("D(0) = 1000u;", "rts"),                          # CALCULATE_CPU_POWER
     0x29222: ("xl_patch_sincos();", ("goto", 0x29408)),        # the sine and cosine tables
+    # SAVE_REPLAY_FILE's two calls, at a new top score and from the hidden
+    # menu: the game records no play (xl_record), so DEMO.REP stays the demo
+    # it loaded.
+    0x2483C: ("", ("goto", 0x24842)),
+    0x25C7E: ("", ("goto", 0x25C84)),
 }
 # Code the runtime runs just before an original instruction, which then runs
 # as usual (unless the code returns): the port decodes the ADPCM samples there
@@ -89,7 +94,12 @@ PATCHES_BEFORE = {
 EXPORTS = ("PCM_SAMPLE_INFO_TABLE", "PLAYER_SCORE", "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
            "VBL_VWAIT_COUNTER", "SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "NEW_STACK",
            "SIN_COS_TABLES_START", "SPRITE_DATA_ADDRESS", "DEMO_REPLAY_HEADER", "DEMO_REPLAY_DATA",
-           "CURRENT_DEMO_RECORD_POINTER", "CURRENT_DEMO_RECORD_END_POINTER", "INVINCIBILITY_MODE")
+           "CURRENT_DEMO_RECORD_POINTER", "CURRENT_DEMO_RECORD_END_POINTER", "INVINCIBILITY_MODE",
+           "WORD_0008D994", "GAME_HIGHSCORE",
+           # The saves' file names and modes (tools/xlat/rp_store.py maps their pages in every
+           # scene: a game over can save in any stage).
+           "SCORE_DAT_FILENAME", "DEMO_REP_FILENAME", "L_000248E2", "L_00023732",
+           "REPLAY_FILE_OPEN_PARAMETER")
 
 
 def hooked(address):

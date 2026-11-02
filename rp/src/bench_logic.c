@@ -968,17 +968,98 @@ static void nameck(uint32_t name, uint32_t buffer) {
   }
 }
 
+/* The game's files (its saves) in the app's folder on the card, by their
+ * names without the X68000's directory (ETC_DAT\SCORE.DAT is SCORE.DAT). One
+ * open at a time, as the game opens them, under the handle DOS_FILE.
+ * DEMO.REP's writes are dropped (DOS_DROPPED): the RP records no game, so the
+ * save would write the loaded demo back. */
+#define DOS_FILE 5u
+#define DOS_DROPPED 6u
+#define DOS_CHUNK 64u
+#define DOS_NAME 16u
+static FIL s_dos_file; /* static: a FIL does not belong on core 0's stack */
+static int s_dos_open;
+
+/* The base name of the 68000 string at `name`, upper case. */
+static void dos_name(char *out, uint32_t name) {
+  uint32_t from = name, n = 0;
+  for (uint32_t p = name; rd8(p); p++) {
+    uint32_t c = rd8(p);
+    if (c == '\\' || c == '/' || c == ':') from = p + 1;
+  }
+  for (uint32_t p = from; rd8(p) && n < DOS_NAME - 1u; p++) {
+    uint32_t c = rd8(p);
+    out[n++] = (char)(c >= 'a' && c <= 'z' ? c - 32u : c);
+  }
+  out[n] = 0;
+}
+
+static uint32_t dos_open(uint32_t name, BYTE mode) {
+  char base[DOS_NAME], path[PATH_BYTES];
+  dos_name(base, name);
+  if (strcmp(base, "DEMO.REP") == 0) return DOS_DROPPED;
+  if (s_dos_open) return (uint32_t)-4; /* too many files open */
+  card_path(path, base);
+  if (f_open(&s_dos_file, path, mode) != FR_OK) return (uint32_t)-2;
+  s_dos_open = 1;
+  return DOS_FILE;
+}
+
+static void dos_close(void) {
+  if (s_dos_open) f_close(&s_dos_file);
+  s_dos_open = 0;
+}
+
+/* _READ (`write` 0) or _WRITE: `length` bytes between the file and the game's
+ * memory at `buffer`, DOS_CHUNK at a time; a write of none truncates the file
+ * there, as on the X68000. */
+static uint32_t dos_transfer(int write, uint32_t buffer, uint32_t length) {
+  uint8_t chunk[DOS_CHUNK];
+  if (write && length == 0) return f_truncate(&s_dos_file) == FR_OK ? 0 : (uint32_t)-1;
+  uint32_t done = 0;
+  while (done < length) {
+    UINT want = length - done < DOS_CHUNK ? (UINT)(length - done) : DOS_CHUNK, got = 0;
+    if (write) {
+      for (UINT k = 0; k < want; k++) chunk[k] = (uint8_t)rd8(buffer + done + k);
+      if (f_write(&s_dos_file, chunk, want, &got) != FR_OK) return (uint32_t)-1;
+    } else {
+      if (f_read(&s_dos_file, chunk, want, &got) != FR_OK) return (uint32_t)-1;
+      for (UINT k = 0; k < got; k++) wr8(buffer + done + k, chunk[k]);
+    }
+    done += got;
+    if (got < want) break;
+  }
+  return done;
+}
+
+/* The high scores the card keeps (SCORE.DAT: the table as it is in memory),
+ * over the image's, and the top score from them, as the game's boot reads
+ * them; without the file the image's stay. */
+#define SCORE_BYTES 240u /* ten entries of 24 bytes */
+static void load_scores(void) {
+  char path[PATH_BYTES];
+  uint8_t table[SCORE_BYTES];
+  UINT got = 0;
+  dos_close();
+  card_path(path, "SCORE.DAT");
+  if (f_open(&s_dos_file, path, FA_READ) != FR_OK) return;
+  if (f_read(&s_dos_file, table, SCORE_BYTES, &got) == FR_OK && got == SCORE_BYTES) {
+    for (uint32_t k = 0; k < SCORE_BYTES; k++) wr8(GAME(WORD_0008D994) + k, table[k]);
+    wr32(GAME(GAME_HIGHSCORE), rd32(GAME(WORD_0008D994)));
+  }
+  f_close(&s_dos_file);
+}
+
 /* The DOS calls the game makes after its boot (tools/xlat/host/xl_host.c's
  * "xl: dos" log): the ones the host answers with 0, _SUPER among them (a
  * palette register written in supervisor mode on the continue and game-over
  * screens), and the file calls of its saves (the high scores at a game over
- * and from CONFIG, the replay at a new top score). A save that fails makes
- * the game wait for a key for ever, so until the game's files live on the
- * card every save succeeds and its bytes are dropped. The FLOAT library's
- * multiply and divide as the host serves them. Anything else stops the run. The flags as a move of the result, as the port returns them. */
-#define DISCARD_HANDLE 5u
+ * and from CONFIG, the replay at a new top score) on the card. The FLOAT
+ * library's multiply and divide as the host serves them. Anything else stops
+ * the run. The flags as a move of the result, as the port returns them. */
 void xl_linef(uint32_t word, uint32_t pc) {
   uint32_t args = A(7), r;
+  uint32_t handle = rd16(args);
   switch (word) {
     case 0xFE00: /* __LMUL (the C library's file writes) */
       r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));
@@ -988,8 +1069,6 @@ void xl_linef(uint32_t word, uint32_t pc) {
       r = (uint32_t)((int32_t)D(0) / (int32_t)D(1));
       break;
     case 0xFE0D: case 0xFF0D: case 0xFF20: case 0xFF21: case 0xFF23: case 0xFF25: case 0xFF44:
-    case 0xFF3E: case 0xFF41: case 0xFF42: /* _CLOSE, _DELETE, _SEEK: to the start */
-    case 0xFF3F:                           /* _READ: nothing */
       r = 0;
       break;
     case 0xFF36: /* _DSKFRE */
@@ -999,11 +1078,49 @@ void xl_linef(uint32_t word, uint32_t pc) {
       nameck(rd32(args), rd32(args + 4u));
       r = 0;
       break;
-    case 0xFF3C: case 0xFF3D: /* _CREATE, _OPEN */
-      r = DISCARD_HANDLE;
+    case 0xFF3C: /* _CREATE */
+      r = dos_open(rd32(args), FA_CREATE_ALWAYS | FA_READ | FA_WRITE);
       break;
-    case 0xFF40: /* _WRITE: all of it */
-      r = rd32(args + 6u) & 0x7FFFFFFFu;
+    case 0xFF3D: { /* _OPEN: an existing file; mode 0 read, 1 write, 2 both */
+      uint32_t mode = rd16(args + 4u) & 3u;
+      r = dos_open(rd32(args), mode == 0 ? FA_READ : mode == 1 ? FA_WRITE : FA_READ | FA_WRITE);
+      break;
+    }
+    case 0xFF3E: /* _CLOSE */
+      if (handle == DOS_FILE && s_dos_open) {
+        dos_close();
+        r = 0;
+      } else {
+        r = handle == DOS_DROPPED ? 0u : (uint32_t)-6;
+      }
+      break;
+    case 0xFF3F: case 0xFF40: { /* _READ, _WRITE */
+      uint32_t buffer = rd32(args + 2u), length = rd32(args + 6u) & 0x7FFFFFFFu;
+      if (handle == DOS_DROPPED) {
+        r = word == 0xFF40 ? length : 0u;
+      } else if (handle == DOS_FILE && s_dos_open) {
+        r = dos_transfer(word == 0xFF40, buffer, length);
+      } else {
+        r = (uint32_t)-6;
+      }
+      break;
+    }
+    case 0xFF41: { /* _DELETE */
+      char base[DOS_NAME], path[PATH_BYTES];
+      dos_name(base, rd32(args));
+      card_path(path, base);
+      r = strcmp(base, "DEMO.REP") == 0 || f_unlink(path) == FR_OK ? 0u : (uint32_t)-2;
+      break;
+    }
+    case 0xFF42: /* _SEEK: from the start, the position, the end; the new position */
+      if (handle == DOS_FILE && s_dos_open) {
+        uint32_t whence = rd16(args + 6u) & 3u;
+        FSIZE_t base = whence == 0 ? 0 : whence == 1 ? f_tell(&s_dos_file) : f_size(&s_dos_file);
+        FSIZE_t to = base + (FSIZE_t)(int32_t)rd32(args + 2u);
+        r = f_lseek(&s_dos_file, to) == FR_OK ? (uint32_t)f_tell(&s_dos_file) : (uint32_t)-1;
+      } else {
+        r = handle == DOS_DROPPED ? 0u : (uint32_t)-6;
+      }
       break;
     default:
       xl_fatal("a DOS or FLOAT call", pc);
@@ -1283,6 +1400,7 @@ static void run(int drawn) {
       break;
     }
     restore();
+    load_scores();
     benchLogicResult.first_frame = s_frame_count;
     benchLogicResult.state = BENCH_LOGIC_IDLE;
     DPRINTF("logic: from frame %lu%s\n", (unsigned long)s_frame_count, drawn ? ", playing" : "");
