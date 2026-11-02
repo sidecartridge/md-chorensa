@@ -1347,6 +1347,19 @@ void xl_linef(uint32_t word, uint32_t pc) {
   s_calls_linef[word & 0x1FFu]++;
   uint32_t args = A(7);
   uint32_t r = 0;
+#ifdef XL_TRACE
+  /* Every DOS call ("xl: dos" lines: what the RP would have to serve), a
+   * file's name for the calls that take one. */
+  if ((word & 0xFF00u) == 0xFF00u) {
+    printf("xl: dos $%04X frame %u phase %u from %06X", word, s_frame_count, s_phase, pc);
+    if (word == 0xFF3Cu || word == 0xFF3Du || word == 0xFF41u) {
+      printf(" ");
+      for (uint32_t p = rd32(args), k = 0; rd8(p) && k < 80u; p++, k++) putchar((int)rd8(p));
+    }
+    if (word == 0xFF3Fu || word == 0xFF40u) printf(" handle %u, %u bytes", rd16(args), rd32(args + 6));
+    printf("\n");
+  }
+#endif
   switch (word) {
     case 0xFE00: /* __LMUL */
       r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));
