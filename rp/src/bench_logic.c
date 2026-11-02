@@ -99,11 +99,13 @@ volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
 bench_hold_times_t benchHoldTimes;
 
-/* Live input (xlat.py's patches): from the first touch of joystick 1, its
- * fire, the cursor keys or the space bar, the player flies the demo's ship;
- * each lap starts as the demo again. The stick as _JOYGET reports it to the
- * player's reads (closed switches: bits 0-3 up, down, left, right, bit 5
- * button A, bit 6 button B). */
+/* The player: joystick 1, the cursor keys and the space bar, as _JOYGET
+ * reports them to every read of the game's, as on the X68000 (closed
+ * switches: bits 0-3 up, down, left, right, bit 5 button A, bit 6 button
+ * B): a press ends the attract demo, fire on the title's START starts a
+ * game. The demo's replay is not taken over (xlat.py's live-input patches
+ * stay off on the RP). From the first touch the game is the player's, not
+ * the host's: its checkpoints are no longer compared. */
 #define STICK_UP 0x01u
 #define STICK_DOWN 0x02u
 #define STICK_LEFT 0x04u
@@ -115,12 +117,12 @@ bench_hold_times_t benchHoldTimes;
 #define SC_LEFT 0x4Bu
 #define SC_RIGHT 0x4Du
 #define SC_SPACE 0x39u
-static int s_live, s_live_read;
+static int s_live;
 static uint8_t s_keys;  /* the stick's bits the keyboard holds */
 static uint8_t s_stick;
 
-int xl_live_input(void) { return s_live; }
-void xl_live_read(int on) { s_live_read = on; }
+int xl_live_input(void) { return 0; }
+void xl_live_read(int on) { (void)on; }
 int xl_record(void) { return 0; }
 
 /* The game's variables the runtime uses, from the common image's header. */
@@ -598,8 +600,8 @@ static void iocs(uint32_t pc) {
     case 0x04: /* _BITSNS: no key held */
       D(0) = 0;
       return;
-    case 0x3B: /* _JOYGET: nothing pressed, but to the player's reads */
-      D(0) = s_live_read ? (0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu)) : 0xFFFFFFFFu;
+    case 0x3B: /* _JOYGET: the player's stick */
+      D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
       return;
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
@@ -625,6 +627,39 @@ static void iocs(uint32_t pc) {
     case 0x81: /* _B_SUPER */
       D(0) = 0xFFFFFFFFu;
       return;
+    /* The rest as the host serves them (tools/xlat/host/xl_host.c iocs): the
+     * title's, the menus' and the continue screen's. */
+    case 0x92: { /* _VC_R1: d1.w the new R1, -1 reads it; returns the previous */
+      uint32_t prev = rd16(0xE82500u);
+      D(0) = prev;
+      if ((D(1) & 0xFFFFu) != 0xFFFFu) wr16(0xE82500u, D(1));
+      return;
+    }
+    case 0x14: { /* _TPALET2: d1 entry, d2 colour (negative: read) */
+      uint32_t at = 0xE82200u + (D(1) & 0xFu) * 2u;
+      D(0) = 0;
+      if ((int32_t)D(2) < 0) {
+        D(0) = rd16(at);
+      } else {
+        wr16(at, D(2));
+      }
+      return;
+    }
+    case 0x7F: /* _ONTIME: fixed, as the host's */
+      D(0) = 100u * 100u;
+      D(1) = 0;
+      return;
+    case 0xCF: { /* _SPALET: d1 entry, d2 block, d3 colour (negative: read) */
+      uint32_t index = (((D(2) & 0xFFFFu) << 4) + (D(1) & 0xFFFFu)) & 0xFFFFu;
+      uint32_t at = 0xE82200u + (uint32_t)(int32_t)(int16_t)index * 2u;
+      D(0) = 0;
+      if ((int32_t)D(3) < 0) {
+        D(0) = rd16(at);
+      } else {
+        wr16(at, D(3));
+      }
+      return;
+    }
     case 0xCE: { /* _BGTEXTGT: d1 page, d2 x, d3 y: the BG map's word */
       uint32_t at = 0xEB8000u + 0x4000u + (D(1) & 1u) * 0x2000u +
                     ((((D(3) & 63u) << 6) + (D(2) & 63u)) & 0xFFFFu) * 2u;
@@ -638,8 +673,12 @@ static void iocs(uint32_t pc) {
     case 0xC1: case 0xC2: case 0xCA:
       D(0) = 0;
       return;
-    default:
-      xl_fatal("an IOCS call the bench does not serve", pc);
+    default: {
+      static char what[48];
+      snprintf(what, sizeof what, "IOCS $%02X, which the bench does not serve",
+               (unsigned)(D(0) & 0xFFu));
+      xl_fatal(what, pc);
+    }
   }
 }
 
@@ -932,12 +971,19 @@ static void nameck(uint32_t name, uint32_t buffer) {
  * screens), and the file calls of its saves (the high scores at a game over
  * and from CONFIG, the replay at a new top score). A save that fails makes
  * the game wait for a key for ever, so until the game's files live on the
- * card every save succeeds and its bytes are dropped. Anything else stops
- * the run. The flags as a move of the result, as the port returns them. */
+ * card every save succeeds and its bytes are dropped. The FLOAT library's
+ * multiply and divide as the host serves them. Anything else stops the run. The flags as a move of the result, as the port returns them. */
 #define DISCARD_HANDLE 5u
 void xl_linef(uint32_t word, uint32_t pc) {
   uint32_t args = A(7), r;
   switch (word) {
+    case 0xFE00: /* __LMUL (the C library's file writes) */
+      r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));
+      break;
+    case 0xFE01: /* __LDIV */
+      if (D(1) == 0) xl_divide_by_zero(pc);
+      r = (uint32_t)((int32_t)D(0) / (int32_t)D(1));
+      break;
     case 0xFE0D: case 0xFF0D: case 0xFF20: case 0xFF21: case 0xFF23: case 0xFF25: case 0xFF44:
     case 0xFF3E: case 0xFF41: case 0xFF42: /* _CLOSE, _DELETE, _SEEK: to the start */
     case 0xFF3F:                           /* _READ: nothing */
@@ -1148,7 +1194,6 @@ static void restore(void) {
     song_play(s_stage->song_playing, s_stage->song_frames);
   }
   s_live = 0;
-  s_live_read = 0;
   for (int r = 0; r < 256; r++) xl_regions[r] = (uint8_t **)s_stage->regions[r];
   memset(pool_page(POOL_PAGES - 1u), 0, 1u << XL_PAGE_BITS); /* the spare */
   xl_render_palette_forget();

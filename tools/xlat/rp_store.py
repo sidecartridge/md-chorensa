@@ -46,7 +46,8 @@ Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
 usage: rp_store.py --firmware ELF [--frame 100] [--runs RUN ... --game-over RUN]
-                   [--replay FILE [--invincible]] [--bench-frames N] [--palettes DIR] [--out DIR]
+                   [--replay FILE [--invincible]] [--play] [--bench-frames N] [--palettes DIR]
+                   [--out DIR]
 """
 
 import argparse
@@ -87,6 +88,7 @@ BENCH_LAST = 12000
 # (XL_SAVE_REPLAY_AT).
 REPLAY_LAST = 149000
 START_INVINCIBLE = 1  # xl_store.h's XL_STORE_START_INVINCIBLE
+PLAY_LAST = 0xFFFFFFFF  # --play: a last frame no run reaches
 
 # The phases (XL_PHASES, numbered from 1 in this order; 0 the boot): the
 # stages' routines (the dispatcher's targets: STAGE_0, the seven stages,
@@ -439,6 +441,9 @@ def main():
                     "attract demo plays, for the bench to play the whole of it")
     ap.add_argument("--invincible", action="store_true",
                     help="the recording was played invincible (the host's XL_INVINCIBLE)")
+    ap.add_argument("--play", action="store_true",
+                    help="for a player: the bench's run never ends (a player's game lasts as "
+                    "long as it does); the checkpoints still go to --bench-frames")
     ap.add_argument("--bench-frames", type=int,
                     help=f"where the bench's run ends (default {BENCH_LAST}; with --replay, "
                     f"{REPLAY_LAST})")
@@ -619,7 +624,8 @@ def main():
         if s == START_SCENE:
             pages, rows = rp_image.write_start(
                 os.path.join(args.out, "START.STA"), memory, order, SCENE_KIND[s], fw_id,
-                START_INVINCIBLE if args.invincible else 0, bench_frames)
+                START_INVINCIBLE if args.invincible else 0,
+                PLAY_LAST if args.play else bench_frames)
             data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
             n = rp_image.write_checks(os.path.join(args.out, "CHECKS.DAT"),
                                       data[8:8 + 32 * struct.unpack(">I", data[4:8])[0]], fw_id)
