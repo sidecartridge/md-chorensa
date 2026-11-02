@@ -924,8 +924,9 @@ def cmd_logic(args: argparse.Namespace) -> int:
 
 PLAY_FIELDS = ("frames", "laps", "game_sum", "game_max", "draw_sum", "draw_max",
                "publish_sum", "publish_max", "audio_sum", "audio_max")
-PLAY_SONG_LOG = 32     # bench_logic.h's BENCH_SONG_LOG
+PLAY_SONG_LOG = 24     # bench_logic.h's BENCH_SONG_LOG
 PLAY_SONG_MISSED = 0x80
+PLAY_KINDS = 9         # xl_store.h's kinds: 1-7 the stages, 8 the menus
 
 
 def play_stats(raw: bytes) -> dict:
@@ -938,6 +939,8 @@ def play_stats(raw: bytes) -> dict:
         r["songs"], r["fades"] = words[n], words[n + 1]
         r["song_log"] = words[n + 2:n + 2 + PLAY_SONG_LOG]
         r["effects"], r["effects_missed"] = words[n + 2 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG]
+    if len(words) >= n + 4 + PLAY_SONG_LOG + PLAY_KINDS:
+        r["late"] = words[n + 4 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG + PLAY_KINDS]
     return r
 
 
@@ -968,6 +971,15 @@ def play_hold(elf: str, args: argparse.Namespace) -> int:
             time.sleep(0.5)
         natural = read_word(sym["fbLayoutNatural"][0]) != 0
         _frame, fb, pal = grab_frames(elf, 1, True)[0]
+        times = elf_symbols(elf, "benchHoldTimes").get("benchHoldTimes")
+        if times:
+            frame, sprites, every, no_sprites, no_text, no_pages = struct.unpack(
+                "<6I", read_memory(times[0], 24))
+            if frame == args.hold:
+                print(f"frame {frame}, {sprites} sprites: drawn and converted in {every} us; "
+                      f"the sprites {every - no_sprites}, the text {every - no_text}, "
+                      f"the background {every - no_pages}, the rest (the c2p, the bands) "
+                      f"{every - (every - no_sprites) - (every - no_text) - (every - no_pages)} us")
     finally:
         openocd(f"targets {CORES[0]}", f"mww 0x{sym['benchPlayHoldAt'][0]:08x} 0")
     image = st_words(fb) if natural else image_from_cart_fb(defs, fb)
@@ -1040,6 +1052,9 @@ def cmd_play(args: argparse.Namespace) -> int:
         for name in ("game", "draw", "publish", "audio"):
             mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
             print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
+    if "late" in b:
+        print("frames a VBL late or more (since the start): " + ", ".join(
+            f"{'menus' if k == 8 else f'stage {k}'} {b['late'][k]}" for k in range(1, PLAY_KINDS)))
     if "songs" in b:
         print(f"songs {b['songs']}, fades {b['fades']}, effects {b['effects']} "
               f"({b['effects_missed']} not in the card's bank) since the start")

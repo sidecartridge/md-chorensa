@@ -93,6 +93,7 @@ volatile uint32_t benchPlay = 1;  /* the host writes 0: back to the bench */
 volatile uint32_t benchPlayHoldAt;
 volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
+bench_hold_times_t benchHoldTimes;
 
 /* Live input (xlat.py's patches): from the first touch of joystick 1, its
  * fire, the cursor keys or the space bar, the player flies the demo's ship;
@@ -337,6 +338,22 @@ static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
   if (us > *max) *max = us;
 }
 
+/* The held frame drawn again with each part left out (benchHoldTimes). */
+static void hold_times(void) {
+  static const uint32_t skips[4] = {0, XL_RENDER_SKIP_SPRITES, XL_RENDER_SKIP_TEXT,
+                                    XL_RENDER_SKIP_PAGES};
+  uint32_t us[4];
+  for (uint32_t k = 0; k < 4; k++) {
+    s_frame.skip = skips[k];
+    uint32_t t0 = time_us_32();
+    for (uint32_t n = 0; n < BENCH_HOLD_DRAWS; n++) fb_draw_banded(draw_band, &s_frame);
+    us[k] = (time_us_32() - t0) / BENCH_HOLD_DRAWS;
+  }
+  s_frame.skip = 0;
+  benchHoldTimes = (bench_hold_times_t){benchPlayHoldAt, s_frame.sprite_count, us[0], us[1],
+                                        us[2], us[3]};
+}
+
 /* Play mode: the frame the game has just finished, drawn and converted in
  * bands on both cores (the chunky buffer's other part holds game pages) and
  * shown (fb_republish waits for the ST to have copied the last one: one
@@ -350,6 +367,13 @@ static void present(uint32_t game_us) {
   uint32_t t1 = time_us_32();
   fb_republish();
   uint32_t t2 = time_us_32();
+  static uint32_t s_shown_us;
+  uint32_t gap = t2 - s_shown_us;
+  if (s_shown_us && gap > BENCH_LATE_US && gap < 1000000u &&
+      s_stage->kind < BENCH_SCENE_KINDS) {
+    benchPlayStats.late[s_stage->kind]++;
+  }
+  s_shown_us = t2;
   audio_render_frame(); /* the music and the effects: song_samples */
   uint32_t t3 = time_us_32();
   ikbd_pump();
@@ -373,6 +397,7 @@ static void present(uint32_t game_us) {
                       ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
   if (s_stick) s_live = 1;
   if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
+    hold_times();
     benchPlayHeld = benchPlayHoldAt;
     while (benchPlayHoldAt == benchPlayHeld && benchPlay) {
       fb_pump_rom3();

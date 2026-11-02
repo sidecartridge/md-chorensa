@@ -13,8 +13,8 @@
  * number): the RP draws its frame in bands on two cores (fb_draw_banded).
  */
 
-#ifndef XL_RENDER_H
-#define XL_RENDER_H
+#ifndef XL_RENDER_HEADER
+#define XL_RENDER_HEADER
 
 #include <stdint.h>
 
@@ -43,7 +43,14 @@ typedef struct {
   uint16_t page0_y, page1_y;              /* the CRTC's vertical scrolls */
   uint16_t text_x, text_y;
   int text_in_front;                      /* R1: text over the sprites */
+  uint32_t skip;                          /* XL_RENDER_SKIP_*: parts left out (0: none) */
 } xl_render_frame_t;
+
+/* Parts of the picture a frame can leave out, to time the others (the
+ * bench's held frame). */
+#define XL_RENDER_SKIP_PAGES 1u
+#define XL_RENDER_SKIP_TEXT 2u
+#define XL_RENDER_SKIP_SPRITES 4u
 
 /* The sprite list, from the game's table at `table` (`count` entries). */
 void xl_render_take_sprites(xl_render_frame_t *f, uint32_t table, uint32_t count);
@@ -62,4 +69,4 @@ int xl_render_palette(const xl_store_art_t *art, uint16_t out[16]);
  * another scene's art (which a scene change puts where the last one was). */
 void xl_render_palette_forget(void);
 
-#endif /* XL_RENDER_H */
+#endif /* XL_RENDER_HEADER */

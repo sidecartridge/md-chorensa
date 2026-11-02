@@ -60,8 +60,18 @@ typedef struct {
   char error[48];
 } bench_logic_result_t;
 
-#define BENCH_SONG_LOG 32u
+#define BENCH_SONG_LOG 24u /* a whole game's 21 songs and the start */
+#define BENCH_SCENE_KINDS 9u /* xl_store.h's kinds: 1-7 the stages, 8 the menus */
 #define BENCH_SONG_MISSED 0x80u
+
+/* The held frame (benchPlayHoldAt) drawn again, unshown, BENCH_HOLD_DRAWS
+ * times whole and without each part: the mean of each, in microseconds,
+ * the c2p included (swd.py play --hold prints the parts). */
+#define BENCH_HOLD_DRAWS 16u
+typedef struct {
+  uint32_t frame, sprites;
+  uint32_t all_us, no_sprites_us, no_text_us, no_pages_us;
+} bench_hold_times_t;
 
 /* The play mode's frames, readable over SWD (tools/dev/swd.py play). */
 typedef struct {
@@ -74,7 +84,12 @@ typedef struct {
   uint32_t song_log[BENCH_SONG_LOG]; /* the first plays: frame << 8 | BENCH_SONG_MISSED if the
                                         card had none | the song (the common image's table) */
   uint32_t effects, effects_missed; /* _ADPCMOUT's samples; of them, none in the card's bank */
+  /* Frames shown more than BENCH_LATE_US after the one before (a VBL late or
+   * more), by scene kind (xl_store.h's: 1-7 the stages, 8 the menus); gaps
+   * over a second (a scene change, a hold) left out. */
+  uint32_t late[BENCH_SCENE_KINDS];
 } bench_play_t;
+#define BENCH_LATE_US 30000u
 
 enum {
   BENCH_LOGIC_IDLE,
