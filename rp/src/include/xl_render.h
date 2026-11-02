@@ -59,6 +59,12 @@ void xl_render_prepare(xl_render_frame_t *f);
 /* Draw the lines [y0, y1) of the frame at `band`: line y0's first pixel,
  * XL_RENDER_W bytes a line. */
 void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1);
+/* The same, with page 1's lines for the band already in RAM: y1 - y0 lines
+ * of XL_RENDER_W / 2 bytes, word-aligned, as page 1 holds them. They may lie
+ * in the band's own second half (from line (y1 - y0) / 2 on), which the
+ * drawing overwrites only after reading them; NULL: from the art. */
+void xl_render_band_page1(uint8_t *band, const xl_render_frame_t *f, int y0, int y1,
+                          const uint8_t *page1_lines);
 
 /* The 16 ST colours (0RRR0GGG0BBB) for the program's current palettes: per
  * colour, its entries' current colours weighted (palette_fit.py's

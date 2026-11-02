@@ -91,6 +91,10 @@ typedef struct {
    * more), by scene kind (xl_store.h's: 1-7 the stages, 8 the menus); gaps
    * over a second (a scene change, a hold) left out. */
   uint32_t late[BENCH_SCENE_KINDS];
+  /* Bands whose page 1 lines were streamed ahead (both cores), and the
+   * others, which read them from the flash as they drew. */
+  uint32_t streamed_bands, unstreamed_bands;
+  uint32_t stream_timeouts; /* streams stopped unfinished (the band read the flash) */
 } bench_play_t;
 #define BENCH_LATE_US 30000u
 

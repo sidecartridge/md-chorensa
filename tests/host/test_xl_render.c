@@ -261,16 +261,29 @@ static uint32_t first_difference(void) {
   return 0xFFFFFFFFu;
 }
 
-static int check_frame(const xl_render_frame_t *f, int band, const char *what) {
+/* With `in_band`, each band of an even height gets page 1's lines in its own
+ * second half first, as the RP streams them there (xl_render_band_page1). */
+static int check_frame(const xl_render_frame_t *f, int band, int in_band, const char *what) {
   memset(s_got, 0xEE, sizeof s_got);
   for (int y0 = 0; y0 < XL_RENDER_H; y0 += band) {
     int y1 = y0 + band < XL_RENDER_H ? y0 + band : XL_RENDER_H;
-    xl_render_band(s_got + y0 * XL_RENDER_W, f, y0, y1);
+    uint8_t *d = s_got + y0 * XL_RENDER_W;
+    if (in_band && (y1 - y0) % 2 == 0) {
+      uint8_t *lines = d + (y1 - y0) / 2 * XL_RENDER_W;
+      for (int y = y0; y < y1; y++) {
+        memcpy(lines + (y - y0) * (XL_RENDER_W / 2),
+               s_page1 + ((f->page1_y + (uint32_t)y) % LINES) * (XL_RENDER_W / 2), XL_RENDER_W / 2);
+      }
+      xl_render_band_page1(d, f, y0, y1, lines);
+    } else {
+      xl_render_band(d, f, y0, y1);
+    }
   }
   uint32_t at = first_difference();
   if (at != 0xFFFFFFFFu) {
-    printf("  %s, bands of %d: pixel (%u, %u) is %u, the reference's %u\n", what, band,
-           at % XL_RENDER_W, at / XL_RENDER_W, s_got[at], s_want[at]);
+    printf("  %s, bands of %d%s: pixel (%u, %u) is %u, the reference's %u\n", what, band,
+           in_band ? ", page 1 in the band" : "", at % XL_RENDER_W, at / XL_RENDER_W, s_got[at],
+           s_want[at]);
     return 1;
   }
   return 0;
@@ -299,7 +312,8 @@ int main(void) {
     snprintf(what, sizeof what, "scene %u (%u sprites, text %s)", scene, count,
              f.text_in_front ? "in front" : "behind");
     for (uint32_t b = 0; b < sizeof bands / sizeof bands[0]; b++) {
-      failures += check_frame(&f, bands[b], what);
+      failures += check_frame(&f, bands[b], 0, what);
+      failures += check_frame(&f, bands[b], 1, what);
     }
   }
   CHECK_EQ(failures, 0);

@@ -130,14 +130,17 @@ static inline const uint8_t *page0_record(const uint8_t *rec, uint8_t *buf) {
 /* Page 1 a word (eight pixels) a read, four pixels a store: its lines and the
  * band's are word-aligned, and the RP and the host little-endian, the left
  * pixel in the low byte. */
-static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
+static void draw_pages(uint8_t *band, const xl_render_frame_t *f, int y0, int y1,
+                       const uint8_t *page1_lines) {
   const xl_store_art_t *art = f->art;
   uint32_t lines = art->page_lines;
   uint32_t record[(PAGE0_RECORD + 3u) / 4u];
   for (int y = y0; y < y1; y++) {
     uint8_t *d = band + (y - y0) * XL_RENDER_W;
-    const uint32_t *src = page1_words(art->page1 + ((f->page1_y + (uint32_t)y) % lines) *
-                                                       (XL_RENDER_W / 2u));
+    const uint32_t *src =
+        page1_lines ? (const uint32_t *)(page1_lines + (uint32_t)(y - y0) * (XL_RENDER_W / 2u))
+                    : page1_words(art->page1 + ((f->page1_y + (uint32_t)y) % lines) *
+                                                   (XL_RENDER_W / 2u));
     uint32_t *quad = (uint32_t *)d;
     for (uint32_t x = 0; x < XL_RENDER_W / 8u; x++) {
       uint32_t s = src[x];
@@ -278,10 +281,15 @@ static void draw_sprites(uint8_t *band, const xl_render_frame_t *f, int y0, int 
 }
 
 void xl_render_band(uint8_t *band, const xl_render_frame_t *f, int y0, int y1) {
+  xl_render_band_page1(band, f, y0, y1, NULL);
+}
+
+void xl_render_band_page1(uint8_t *band, const xl_render_frame_t *f, int y0, int y1,
+                          const uint8_t *page1_lines) {
   if (y0 < 0 || y1 > XL_RENDER_H || y0 >= y1) return;
   int pages = !(f->skip & XL_RENDER_SKIP_PAGES), text = !(f->skip & XL_RENDER_SKIP_TEXT),
       sprites = !(f->skip & XL_RENDER_SKIP_SPRITES);
-  if (pages) draw_pages(band, f, y0, y1);
+  if (pages) draw_pages(band, f, y0, y1, page1_lines);
   if (f->text_in_front) {
     if (sprites) draw_sprites(band, f, y0, y1);
     if (text) draw_text(band, f, y0, y1);

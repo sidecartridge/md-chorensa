@@ -18,7 +18,10 @@
 #include <string.h>
 
 #include "debug.h"
+#include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
+#include "hardware/sync.h"
+#include "pico/multicore.h"
 #include "pico/time.h"
 
 #ifdef XL_STORE
@@ -330,8 +333,99 @@ static void checkpoint(void) {
 }
 
 /* A band of the frame (fb_draw_banded, on either core). */
+/* Page 1's lines for the next band, streamed from flash (the XIP stream,
+ * past the cache, at the flash's full rate) by DMA while this band draws,
+ * into the next band's second half: free until the next band, which widens
+ * them in place (xl_render_band_page1). One stream for both cores: a band
+ * whose stream finds it busy, a half's first band, and lines that wrap past
+ * page 1's end read the flash as they draw. Each core waits for its stream
+ * in its next band, and a half's last band starts none: no stream outlives
+ * a frame (a scene change writes the flash). */
+#define STREAM_WORDS (FB_BAND_LINES * XL_RENDER_W / 2u / 4u)
+#define STREAM_TIMEOUT_US 2000u
+static int s_stream_dma[2] = {-1, -1};
+static spin_lock_t *s_stream_lock;
+static int s_stream_owner = -1;  /* the core whose stream runs, under the lock */
+static int s_stream_band[2];     /* y0 + 1 of the band its lines are coming for */
+
+static void stream_init(void) {
+  if (s_stream_lock) return;
+  s_stream_lock = spin_lock_instance((uint)spin_lock_claim_unused(true));
+  s_stream_dma[0] = dma_claim_unused_channel(false);
+  s_stream_dma[1] = dma_claim_unused_channel(false);
+}
+
+static bool stream_start(uint core, uint8_t *dst, const uint8_t *src) {
+  int ch = s_stream_dma[core];
+  if (ch < 0 || ((uintptr_t)src >> 24) != (XIP_BASE >> 24) || ((uintptr_t)src & 3u)) return false;
+  /* Claimed and started under the lock: the other core sees a running DMA
+   * or none, never a claim whose DMA has not started yet. The other core's
+   * stream is waited for (it ends within ~50 us; drawing the lines from the
+   * flash takes longer), up to STREAM_TIMEOUT_US. */
+  uint32_t start = time_us_32(), save;
+  for (;;) {
+    save = spin_lock_blocking(s_stream_lock);
+    if (s_stream_owner < 0 || !dma_channel_is_busy((uint)s_stream_dma[s_stream_owner])) break;
+    spin_unlock(s_stream_lock, save);
+    if (time_us_32() - start > STREAM_TIMEOUT_US) return false;
+  }
+  s_stream_owner = (int)core;
+  while (!(xip_ctrl_hw->stat & XIP_STAT_FIFO_EMPTY)) (void)xip_ctrl_hw->stream_fifo;
+  xip_ctrl_hw->stream_addr = (uint32_t)(uintptr_t)src;
+  xip_ctrl_hw->stream_ctr = STREAM_WORDS;
+  dma_channel_config cfg = dma_channel_get_default_config((uint)ch);
+  channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+  channel_config_set_read_increment(&cfg, false);
+  channel_config_set_write_increment(&cfg, true);
+  channel_config_set_dreq(&cfg, DREQ_XIP_STREAM);
+  dma_channel_configure((uint)ch, &cfg, dst, (const void *)XIP_AUX_BASE, STREAM_WORDS, true);
+  spin_unlock(s_stream_lock, save);
+  return true;
+}
+
+/* Whether the core's stream arrived: one takes ~50 us; one not done in
+ * STREAM_TIMEOUT_US is stopped and the band reads the flash itself. */
+static bool stream_wait(uint core) {
+  uint ch = (uint)s_stream_dma[core];
+  uint32_t start = time_us_32();
+  bool done = true;
+  while (dma_channel_is_busy(ch)) {
+    if (time_us_32() - start > STREAM_TIMEOUT_US) {
+      done = false;
+      break;
+    }
+  }
+  uint32_t save = spin_lock_blocking(s_stream_lock);
+  if (!done) {
+    dma_channel_abort(ch);
+    xip_ctrl_hw->stream_ctr = 0;
+    while (!(xip_ctrl_hw->stat & XIP_STAT_FIFO_EMPTY)) (void)xip_ctrl_hw->stream_fifo;
+    benchPlayStats.stream_timeouts++;
+  }
+  if (s_stream_owner == (int)core) s_stream_owner = -1;
+  spin_unlock(s_stream_lock, save);
+  return done;
+}
+
 static void draw_band(uint8_t *band, const void *arg, int y0, int y1) {
-  xl_render_band(band, (const xl_render_frame_t *)arg, y0, y1);
+  const xl_render_frame_t *f = (const xl_render_frame_t *)arg;
+  uint core = get_core_num();
+  const uint8_t *lines = NULL;
+  if (s_stream_band[core] == y0 + 1 && stream_wait(core)) {
+    lines = band + FB_BAND_BYTES / 2u;
+    benchPlayStats.streamed_bands++;
+  } else {
+    benchPlayStats.unstreamed_bands++;
+  }
+  s_stream_band[core] = 0;
+  if (y1 % (FB_CHUNKED_H / 2) != 0) {
+    uint32_t first = (f->page1_y + (uint32_t)y1) % f->art->page_lines;
+    if (first + FB_BAND_LINES <= f->art->page_lines &&
+        stream_start(core, band + FB_BAND_BYTES, f->art->page1 + first * (XL_RENDER_W / 2u))) {
+      s_stream_band[core] = y1 + 1;
+    }
+  }
+  xl_render_band_page1(band, f, y0, y1, lines);
 }
 
 static void note(uint32_t *sum, uint32_t *max, uint32_t us) {
@@ -1021,6 +1115,7 @@ void bench_logic_run(void) { run(0); }
 static void run(int drawn) {
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
   memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
+  stream_init();
   /* Called from the main loop, which joins every core 1 job before it goes
    * on (fb_chunked.c): core 1 is parked in RAM, the flash may be written. */
   benchLogicResult.state = BENCH_LOGIC_LOADING;

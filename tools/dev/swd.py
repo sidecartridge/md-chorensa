@@ -941,6 +941,9 @@ def play_stats(raw: bytes) -> dict:
         r["effects"], r["effects_missed"] = words[n + 2 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG]
     if len(words) >= n + 4 + PLAY_SONG_LOG + PLAY_KINDS:
         r["late"] = words[n + 4 + PLAY_SONG_LOG:n + 4 + PLAY_SONG_LOG + PLAY_KINDS]
+    if len(words) >= n + 7 + PLAY_SONG_LOG + PLAY_KINDS:
+        r["streamed"], r["unstreamed"], r["timeouts"] = words[n + 4 + PLAY_SONG_LOG + PLAY_KINDS:
+                                                              n + 7 + PLAY_SONG_LOG + PLAY_KINDS]
     return r
 
 
@@ -1054,6 +1057,10 @@ def cmd_play(args: argparse.Namespace) -> int:
         for name in ("game", "draw", "publish", "audio"):
             mean = (b[f"{name}_sum"] - a[f"{name}_sum"]) / frames
             print(f"  {name}: mean {mean:.0f} us, max {b[f'{name}_max']} us (since the start)")
+    if "streamed" in b and b["streamed"] + b["unstreamed"]:
+        print(f"bands with page 1 streamed ahead: {b['streamed']} of "
+              f"{b['streamed'] + b['unstreamed']} since the start, {b['timeouts']} streams "
+              f"stopped unfinished")
     if "late" in b:
         print("frames a VBL late or more (since the start): " + ", ".join(
             f"{'menus' if k == 8 else f'stage {k}'} {b['late'][k]}" for k in range(1, PLAY_KINDS)))

@@ -67,6 +67,10 @@ void __not_in_flash_func(fb_core1_wait)(void);
  * FB_BANDED_BYTES on is the caller's until the next full-frame drawing
  * (fb_publish(), the font and blit calls). */
 #define FB_BAND_LINES 16
+/* A band's chunky lines; the next band's start FB_BAND_BYTES / 2 on (its
+ * planes follow this band's), so while a band draws, the next band's second
+ * half is free (the last band of a half has none). */
+#define FB_BAND_BYTES (FB_BAND_LINES * FB_CHUNKED_W)
 #define FB_BANDED_HALF_BYTES (FB_CHUNKED_SIZE / 4 + FB_BAND_LINES * FB_CHUNKED_W / 2)
 #define FB_BANDED_BYTES (2 * FB_BANDED_HALF_BYTES) /* 36 KB */
 typedef void (*fb_band_draw_t)(uint8_t *band, const void *arg, int y0, int y1);
