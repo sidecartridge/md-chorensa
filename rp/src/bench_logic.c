@@ -15,6 +15,7 @@
 #include "bench_logic.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "debug.h"
@@ -99,6 +100,94 @@ volatile uint32_t benchPlayHeld;
 bench_play_t benchPlayStats;
 bench_hold_times_t benchHoldTimes;
 
+/* A script for stick 1 on the card (XL_STORE_INPUT_FILE, rp_store.py
+ * --input), when the start file says so: the game played as the host's
+ * XL_INPUT plays it (tools/xlat/host/xl_host.c input_scripted), so the
+ * bench compares a mortal game's checkpoints with the host's. Lines "FRAME
+ * MASK" in frame order (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40
+ * button B), the stick from that frame on, or "auto", the host's scripted
+ * player; '#' starts a comment; the host reads 256 steps at most. Read from
+ * the card a step at a time as the frames reach it. A frame that reads the
+ * stick more than 64 times lets the buttons go, as the host's does. */
+#define INPUT_STEPS 256u
+#define INPUT_AUTO 0xFFFFFFFFu
+static int s_scripted; /* the start file's XL_STORE_START_SCRIPTED */
+static void card_path(char *out, const char *name);
+#define INPUT_LINE 64u
+static FIL s_input_file; /* static: a FIL does not belong on core 0's stack */
+static struct {
+  int on, ahead;           /* the script is open; the next step is read */
+  uint32_t steps;          /* read so far */
+  uint32_t mask;           /* the stick's now */
+  uint32_t next_frame, next_mask;
+  uint32_t reads_frame, reads;
+} s_input;
+
+static void input_close(void) {
+  if (s_input.on) f_close(&s_input_file);
+  s_input.on = 0;
+}
+
+/* The script's next step into next_frame and next_mask; 0 at its end. */
+static int input_step(void) {
+  char line[INPUT_LINE];
+  while (s_input.steps < INPUT_STEPS) {
+    uint32_t n = 0;
+    UINT got = 0;
+    char c = 0;
+    while (f_read(&s_input_file, &c, 1, &got) == FR_OK && got == 1 && c != '\n') {
+      if (n < INPUT_LINE - 1u) line[n++] = c;
+    }
+    if (n == 0 && got == 0) return 0;
+    line[n] = 0;
+    char *hash = strchr(line, '#');
+    if (hash) *hash = 0;
+    unsigned frame;
+    char word[16];
+    if (sscanf(line, "%u %15s", &frame, word) != 2) continue;
+    s_input.next_frame = frame;
+    s_input.next_mask = strcmp(word, "auto") == 0 ? INPUT_AUTO
+                                                  : (uint32_t)strtoul(word, NULL, 16) & 0xFFu;
+    s_input.steps++;
+    return 1;
+  }
+  return 0;
+}
+
+static void input_open(void) {
+  char path[PATH_BYTES];
+  input_close();
+  memset(&s_input, 0, sizeof s_input);
+  s_input.reads_frame = 0xFFFFFFFFu;
+  if (!s_scripted) return;
+  card_path(path, XL_STORE_INPUT_FILE);
+  if (f_open(&s_input_file, path, FA_READ) != FR_OK) return;
+  s_input.on = 1;
+  s_input.ahead = input_step();
+}
+
+/* The host's scripted player (xl_host.c scripted_stick): left and right a
+ * second each, the shot held, the bomb a moment every six seconds. */
+static uint32_t scripted_stick(void) {
+  uint32_t closed = ((s_frame_count / 55u) & 1u) ? 0x08u : 0x04u;
+  closed |= 0x20u;
+  if (s_frame_count % 330u < 3u) closed |= 0x40u;
+  return 0xFFFFFF00u | (~closed & 0xFFu);
+}
+
+static uint32_t input_joyget(void) {
+  while (s_input.ahead && s_input.next_frame <= s_frame_count) {
+    s_input.mask = s_input.next_mask;
+    s_input.ahead = input_step();
+  }
+  s_input.reads = s_frame_count == s_input.reads_frame ? s_input.reads + 1u : 0u;
+  s_input.reads_frame = s_frame_count;
+  uint32_t joyget = s_input.mask == INPUT_AUTO ? scripted_stick()
+                                               : (0xFFFFFF00u | (~s_input.mask & 0xFFu));
+  if (s_input.reads > 64u) joyget |= 0x60u;
+  return joyget;
+}
+
 /* The player: joystick 1, the cursor keys and the space bar, as _JOYGET
  * reports them to every read of the game's, as on the X68000 (closed
  * switches: bits 0-3 up, down, left, right, bit 5 button A, bit 6 button
@@ -117,6 +206,65 @@ bench_hold_times_t benchHoldTimes;
 #define SC_LEFT 0x4Bu
 #define SC_RIGHT 0x4Du
 #define SC_SPACE 0x39u
+#define SC_ALT 0x38u /* the shot, for a player without a joystick */
+/* The keys the game reads as the X68000's (IOCS _BITSNS: a byte of 8 key
+ * codes a group): ESC its pause, 1, TAB, SHIFT and CTRL the hidden debug
+ * mode's. While the game waits in its pause, G leaves to GEM and B to
+ * Booster. On the title K opens the hidden menu (xl_kakusi_key). */
+#define SC_ESC 0x01u
+#define SC_1 0x02u
+#define SC_TAB 0x0Fu
+#define SC_CTRL 0x1Du
+#define SC_LSHIFT 0x2Au
+#define SC_RSHIFT 0x36u
+#define SC_G 0x22u
+#define SC_B 0x30u
+#define SC_K 0x25u
+#define X68_KEY_GROUPS 16u
+static uint8_t s_x68_keys[X68_KEY_GROUPS]; /* held, by the X68000's key codes */
+static uint32_t s_paused_frame = UINT32_MAX; /* the last frame the game waited in its pause */
+#define KAKUSI_KEY_US 100000u               /* how long a K press stays new */
+static uint32_t s_kakusi_us;                  /* when K was last pressed */
+static bool s_kakusi_key;                     /* and not yet seen by the title */
+
+/* The X68000's key code for an ST scancode, or 0: none the game reads. */
+static uint32_t x68_key(uint32_t scancode) {
+  switch (scancode) {
+    case SC_ESC: return 0x01u;
+    case SC_1: return 0x02u;
+    case SC_TAB: return 0x10u;
+    case SC_LSHIFT: case SC_RSHIFT: return 0x70u;
+    case SC_CTRL: return 0x71u;
+    default: return 0;
+  }
+}
+
+void xl_paused(void) { s_paused_frame = s_frame_count; }
+
+/* K pressed in the last moment (the title asks every frame): a press made
+ * during a game is old by the next title. */
+int xl_kakusi_key(void) {
+  bool now = s_kakusi_key && time_us_32() - s_kakusi_us < KAKUSI_KEY_US;
+  s_kakusi_key = false;
+  return now;
+}
+
+/* The ST to GEM (the cartridge's command word: userfw leaves at its next
+ * frame). */
+static void exit_to_gem(void) {
+  volatile uint32_t *sentinel =
+      (volatile uint32_t *)((uintptr_t)__rom_in_ram_start__ + CART_CMD_SENTINEL_OFFSET);
+  *sentinel = cart_asM68kLong(CART_CMD_BOOT_GEM);
+}
+
+/* The title's GEM DESKTOP and BOOSTER, as the pause's G and B. */
+void xl_leave(uint32_t to) {
+  if (to == 0) {
+    exit_to_gem();
+  } else {
+    st_session_return_to_booster();
+  }
+}
 static int s_live;
 static uint8_t s_keys;  /* the stick's bits the keyboard holds */
 static uint8_t s_stick;
@@ -235,6 +383,8 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_live_read,     (const void *)xl_record,
     (const void *)&xl,              (const void *)xl_regions,
     (const void *)&xl_mem,          (const void *)xl_stray_write,
+    (const void *)xl_paused,       (const void *)xl_kakusi_key,
+    (const void *)xl_leave,
 };
 
 /* --- Frames --------------------------------------------------------------- */
@@ -456,6 +606,60 @@ static void hold_times(void) {
   benchHoldTimes = t;
 }
 
+/* The player's keys and stick, from the ST's IKBD through the ROM3 ring:
+ * every frame, and from the game's own reads of them (_BITSNS, _JOYGET),
+ * which loop without a frame while they wait for a key to be let go or
+ * pressed (the pause). */
+static void poll_input(void) {
+  fb_pump_rom3();
+  ikbd_pump();
+  /* The ST started again (a reset, a return from GEM): the game starts over
+   * at its title, as the template's apps do, not on in a pause the new
+   * screen would not show. */
+  if (st_session_consume_boot()) stop(BENCH_LOGIC_DONE, "", 0);
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+    uint8_t bit = key.scancode == SC_UP      ? STICK_UP
+                  : key.scancode == SC_DOWN  ? STICK_DOWN
+                  : key.scancode == SC_LEFT  ? STICK_LEFT
+                  : key.scancode == SC_RIGHT ? STICK_RIGHT
+                  : key.scancode == SC_SPACE ? STICK_BOMB
+                  : key.scancode == SC_ALT   ? STICK_SHOT
+                                             : 0u;
+    s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
+    uint32_t code = x68_key(key.scancode);
+    if (code) {
+      uint8_t mask = (uint8_t)(1u << (code & 7u));
+      s_x68_keys[code >> 3] = key.is_press ? (uint8_t)(s_x68_keys[code >> 3] | mask)
+                                           : (uint8_t)(s_x68_keys[code >> 3] & ~mask);
+      if (key.is_press) bit = 1; /* a player's key: the game is the player's */
+    }
+    if (key.is_press && s_frame_count - s_paused_frame <= 2u) {
+      if (key.scancode == SC_G) exit_to_gem();
+      if (key.scancode == SC_B) st_session_return_to_booster();
+    }
+    if (key.is_press && key.scancode == SC_K) {
+      s_kakusi_key = true;
+      s_kakusi_us = time_us_32();
+    }
+    if (key.is_press && bit && !s_live) {
+      s_live = 1;
+      input_close();
+    }
+  }
+  ikbd_joystick_t stick;
+  ikbd_read_joystick(1, &stick);
+  s_stick = (uint8_t)(s_keys | ((stick.state & IKBD_JOY_UP) ? STICK_UP : 0u) |
+                      ((stick.state & IKBD_JOY_DOWN) ? STICK_DOWN : 0u) |
+                      ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
+                      ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
+                      ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
+  if (s_stick) {
+    s_live = 1;
+    input_close(); /* the player takes over from a script */
+  }
+}
+
 /* Play mode: the frame the game has just finished, drawn and converted in
  * bands on both cores (the chunky buffer's other part holds game pages) and
  * shown (fb_republish waits for the ST to have copied the last one: one
@@ -478,26 +682,8 @@ static void present(uint32_t game_us) {
   s_shown_us = t2;
   audio_render_frame(); /* the music and the effects: song_samples */
   uint32_t t3 = time_us_32();
-  ikbd_pump();
+  poll_input();
   select_poll();
-  ikbd_key_event_t key;
-  while (ikbd_pop_key(&key)) {
-    uint8_t bit = key.scancode == SC_UP      ? STICK_UP
-                  : key.scancode == SC_DOWN  ? STICK_DOWN
-                  : key.scancode == SC_LEFT  ? STICK_LEFT
-                  : key.scancode == SC_RIGHT ? STICK_RIGHT
-                  : key.scancode == SC_SPACE ? STICK_BOMB
-                                             : 0u;
-    s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
-  }
-  ikbd_joystick_t stick;
-  ikbd_read_joystick(1, &stick);
-  s_stick = (uint8_t)(s_keys | ((stick.state & IKBD_JOY_UP) ? STICK_UP : 0u) |
-                      ((stick.state & IKBD_JOY_DOWN) ? STICK_DOWN : 0u) |
-                      ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
-                      ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
-                      ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
-  if (s_stick) s_live = 1;
   if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
     hold_times();
     benchPlayHeld = benchPlayHoldAt;
@@ -600,11 +786,17 @@ static void effect_stop(void);
 
 static void iocs(uint32_t pc) {
   switch (D(0) & 0xFFu) {
-    case 0x04: /* _BITSNS: no key held */
-      D(0) = 0;
+    case 0x04: /* _BITSNS: d1 the group, the keys of it held */
+      if (s_playing) poll_input();
+      D(0) = s_x68_keys[D(1) & (X68_KEY_GROUPS - 1u)];
       return;
-    case 0x3B: /* _JOYGET: the player's stick */
-      D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
+    case 0x3B: /* _JOYGET: the script's (stick 1 only, as the host's), or the player's stick */
+      if (s_input.on) {
+        D(0) = (D(1) & 0xFFu) == 0 ? input_joyget() : 0xFFFFFFFFu;
+      } else {
+        if (s_playing) poll_input();
+        D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
+      }
       return;
     case 0x60: { /* _ADPCMOUT: d1 = rate << 8 | channels, d2 = bytes, a1 = the sample */
       uint32_t channels = D(1) & 3u, length = D(2);
@@ -968,17 +1160,99 @@ static void nameck(uint32_t name, uint32_t buffer) {
   }
 }
 
+/* The game's files (its saves) in the app's folder on the card, by their
+ * names without the X68000's directory (ETC_DAT\SCORE.DAT is SCORE.DAT). One
+ * open at a time, as the game opens them, under the handle DOS_FILE.
+ * DEMO.REP's writes are dropped (DOS_DROPPED): the RP records no game, so the
+ * save would write the loaded demo back. */
+#define DOS_FILE 5u
+#define DOS_DROPPED 6u
+#define DOS_CHUNK 64u
+#define DOS_NAME 16u
+static FIL s_dos_file; /* static: a FIL does not belong on core 0's stack */
+static int s_dos_open;
+
+/* The base name of the 68000 string at `name`, upper case. */
+static void dos_name(char *out, uint32_t name) {
+  uint32_t from = name, n = 0;
+  for (uint32_t p = name; rd8(p); p++) {
+    uint32_t c = rd8(p);
+    if (c == '\\' || c == '/' || c == ':') from = p + 1;
+  }
+  for (uint32_t p = from; rd8(p) && n < DOS_NAME - 1u; p++) {
+    uint32_t c = rd8(p);
+    out[n++] = (char)(c >= 'a' && c <= 'z' ? c - 32u : c);
+  }
+  out[n] = 0;
+}
+
+static uint32_t dos_open(uint32_t name, BYTE mode) {
+  char base[DOS_NAME], path[PATH_BYTES];
+  dos_name(base, name);
+  /* A scripted game is a test: the card's files stay the player's. */
+  if (strcmp(base, "DEMO.REP") == 0 || s_scripted) return DOS_DROPPED;
+  if (s_dos_open) return (uint32_t)-4; /* too many files open */
+  card_path(path, base);
+  if (f_open(&s_dos_file, path, mode) != FR_OK) return (uint32_t)-2;
+  s_dos_open = 1;
+  return DOS_FILE;
+}
+
+static void dos_close(void) {
+  if (s_dos_open) f_close(&s_dos_file);
+  s_dos_open = 0;
+}
+
+/* _READ (`write` 0) or _WRITE: `length` bytes between the file and the game's
+ * memory at `buffer`, DOS_CHUNK at a time; a write of none truncates the file
+ * there, as on the X68000. */
+static uint32_t dos_transfer(int write, uint32_t buffer, uint32_t length) {
+  uint8_t chunk[DOS_CHUNK];
+  if (write && length == 0) return f_truncate(&s_dos_file) == FR_OK ? 0 : (uint32_t)-1;
+  uint32_t done = 0;
+  while (done < length) {
+    UINT want = length - done < DOS_CHUNK ? (UINT)(length - done) : DOS_CHUNK, got = 0;
+    if (write) {
+      for (UINT k = 0; k < want; k++) chunk[k] = (uint8_t)rd8(buffer + done + k);
+      if (f_write(&s_dos_file, chunk, want, &got) != FR_OK) return (uint32_t)-1;
+    } else {
+      if (f_read(&s_dos_file, chunk, want, &got) != FR_OK) return (uint32_t)-1;
+      for (UINT k = 0; k < got; k++) wr8(buffer + done + k, chunk[k]);
+    }
+    done += got;
+    if (got < want) break;
+  }
+  return done;
+}
+
+/* The high scores the card keeps (SCORE.DAT: the table as it is in memory),
+ * over the image's, and the top score from them, as the game's boot reads
+ * them; without the file the image's stay. */
+#define SCORE_BYTES 240u /* ten entries of 24 bytes */
+static void load_scores(void) {
+  char path[PATH_BYTES];
+  uint8_t table[SCORE_BYTES];
+  UINT got = 0;
+  dos_close();
+  card_path(path, "SCORE.DAT");
+  if (f_open(&s_dos_file, path, FA_READ) != FR_OK) return;
+  if (f_read(&s_dos_file, table, SCORE_BYTES, &got) == FR_OK && got == SCORE_BYTES) {
+    for (uint32_t k = 0; k < SCORE_BYTES; k++) wr8(GAME(WORD_0008D994) + k, table[k]);
+    wr32(GAME(GAME_HIGHSCORE), rd32(GAME(WORD_0008D994)));
+  }
+  f_close(&s_dos_file);
+}
+
 /* The DOS calls the game makes after its boot (tools/xlat/host/xl_host.c's
  * "xl: dos" log): the ones the host answers with 0, _SUPER among them (a
  * palette register written in supervisor mode on the continue and game-over
  * screens), and the file calls of its saves (the high scores at a game over
- * and from CONFIG, the replay at a new top score). A save that fails makes
- * the game wait for a key for ever, so until the game's files live on the
- * card every save succeeds and its bytes are dropped. The FLOAT library's
- * multiply and divide as the host serves them. Anything else stops the run. The flags as a move of the result, as the port returns them. */
-#define DISCARD_HANDLE 5u
+ * and from CONFIG, the replay at a new top score) on the card. The FLOAT
+ * library's multiply and divide as the host serves them. Anything else stops
+ * the run. The flags as a move of the result, as the port returns them. */
 void xl_linef(uint32_t word, uint32_t pc) {
   uint32_t args = A(7), r;
+  uint32_t handle = rd16(args);
   switch (word) {
     case 0xFE00: /* __LMUL (the C library's file writes) */
       r = (uint32_t)((int32_t)D(0) * (int32_t)D(1));
@@ -988,8 +1262,6 @@ void xl_linef(uint32_t word, uint32_t pc) {
       r = (uint32_t)((int32_t)D(0) / (int32_t)D(1));
       break;
     case 0xFE0D: case 0xFF0D: case 0xFF20: case 0xFF21: case 0xFF23: case 0xFF25: case 0xFF44:
-    case 0xFF3E: case 0xFF41: case 0xFF42: /* _CLOSE, _DELETE, _SEEK: to the start */
-    case 0xFF3F:                           /* _READ: nothing */
       r = 0;
       break;
     case 0xFF36: /* _DSKFRE */
@@ -999,11 +1271,49 @@ void xl_linef(uint32_t word, uint32_t pc) {
       nameck(rd32(args), rd32(args + 4u));
       r = 0;
       break;
-    case 0xFF3C: case 0xFF3D: /* _CREATE, _OPEN */
-      r = DISCARD_HANDLE;
+    case 0xFF3C: /* _CREATE */
+      r = dos_open(rd32(args), FA_CREATE_ALWAYS | FA_READ | FA_WRITE);
       break;
-    case 0xFF40: /* _WRITE: all of it */
-      r = rd32(args + 6u) & 0x7FFFFFFFu;
+    case 0xFF3D: { /* _OPEN: an existing file; mode 0 read, 1 write, 2 both */
+      uint32_t mode = rd16(args + 4u) & 3u;
+      r = dos_open(rd32(args), mode == 0 ? FA_READ : mode == 1 ? FA_WRITE : FA_READ | FA_WRITE);
+      break;
+    }
+    case 0xFF3E: /* _CLOSE */
+      if (handle == DOS_FILE && s_dos_open) {
+        dos_close();
+        r = 0;
+      } else {
+        r = handle == DOS_DROPPED ? 0u : (uint32_t)-6;
+      }
+      break;
+    case 0xFF3F: case 0xFF40: { /* _READ, _WRITE */
+      uint32_t buffer = rd32(args + 2u), length = rd32(args + 6u) & 0x7FFFFFFFu;
+      if (handle == DOS_DROPPED) {
+        r = word == 0xFF40 ? length : 0u;
+      } else if (handle == DOS_FILE && s_dos_open) {
+        r = dos_transfer(word == 0xFF40, buffer, length);
+      } else {
+        r = (uint32_t)-6;
+      }
+      break;
+    }
+    case 0xFF41: { /* _DELETE */
+      char base[DOS_NAME], path[PATH_BYTES];
+      dos_name(base, rd32(args));
+      card_path(path, base);
+      r = strcmp(base, "DEMO.REP") == 0 || f_unlink(path) == FR_OK ? 0u : (uint32_t)-2;
+      break;
+    }
+    case 0xFF42: /* _SEEK: from the start, the position, the end; the new position */
+      if (handle == DOS_FILE && s_dos_open) {
+        uint32_t whence = rd16(args + 6u) & 3u;
+        FSIZE_t base = whence == 0 ? 0 : whence == 1 ? f_tell(&s_dos_file) : f_size(&s_dos_file);
+        FSIZE_t to = base + (FSIZE_t)(int32_t)rd32(args + 2u);
+        r = f_lseek(&s_dos_file, to) == FR_OK ? (uint32_t)f_tell(&s_dos_file) : (uint32_t)-1;
+      } else {
+        r = handle == DOS_DROPPED ? 0u : (uint32_t)-6;
+      }
       break;
     default:
       xl_fatal("a DOS or FLOAT call", pc);
@@ -1144,6 +1454,7 @@ static const xl_store_entry_t *in_scene(uint32_t address) {
   if (e == NULL) {
     uint32_t kind = scene_of(address);
     if (kind == 0 || kind == s_stage->kind) xl_fatal("no translated code", address);
+    benchLogicResult.scene_address = address;
     scene_change(kind);
     e = find(s_stage, address);
     if (e == NULL) xl_fatal("not in its scene's image", address);
@@ -1167,6 +1478,7 @@ static const char *read_start(void) {
   }
   s_last_frame = h.last_frame;
   s_invincible = (h.flags & XL_STORE_START_INVINCIBLE) != 0;
+  s_scripted = (h.flags & XL_STORE_START_SCRIPTED) != 0;
   for (uint32_t k = 0; !problem && k < h.ram_count; k++) {
     void *page = pool_page(s_stage->ram_list[k].slot);
     if (store_read(page, 1u << XL_PAGE_BITS) != (int)(1u << XL_PAGE_BITS)) problem = "a short start file";
@@ -1231,6 +1543,7 @@ static void run(int drawn);
 void bench_logic_run(void) { run(0); }
 
 static void run(int drawn) {
+  (void)st_session_consume_boot(); /* the ST's start before this run's */
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
   memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
   stream_init();
@@ -1283,6 +1596,8 @@ static void run(int drawn) {
       break;
     }
     restore();
+    if (!s_scripted) load_scores(); /* a scripted game starts as the host's does */
+    input_open();
     benchLogicResult.first_frame = s_frame_count;
     benchLogicResult.state = BENCH_LOGIC_IDLE;
     DPRINTF("logic: from frame %lu%s\n", (unsigned long)s_frame_count, drawn ? ", playing" : "");
@@ -1293,6 +1608,8 @@ static void run(int drawn) {
     }
     if (drawn) benchPlayStats.laps++;
   } while (drawn && benchPlay && benchLogicResult.state == BENCH_LOGIC_DONE);
+  input_close(); /* the card's files free again (swd.py sd-put) */
+  dos_close();
   if (drawn) {
     song_stop();
     effects_close();
@@ -1386,7 +1703,9 @@ static void play(void) {
     return;
   }
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
+  ikbd_set_esc_auto_exit(false);             /* ESC is the game's pause */
   run(1);
+  ikbd_set_esc_auto_exit(true);
   ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
   if (benchLogicResult.state != BENCH_LOGIC_DONE) benchPlay = 0;
 }

@@ -981,6 +981,12 @@ void xl_live_read(int on) { s_live_read = on; }
 
 int xl_record(void) { return getenv("XL_SAVE_REPLAY_AT") != NULL; }
 
+void xl_paused(void) {}
+
+int xl_kakusi_key(void) { return 0; }
+
+void xl_leave(uint32_t to) { (void)to; }
+
 /* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
  * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
  * seconds. */
@@ -1296,12 +1302,34 @@ static FILE **handle_slot(uint32_t handle) {
   return &s_files[h];
 }
 
+/* XL_FRESH_CARD: after the boot, as the RP's card before the game's first
+ * save: an existing file opens as missing until this run has created it, so
+ * a save takes the C library's create path (the RP's first save on a card
+ * without SCORE.DAT). */
+#define FRESH_FILES 8
+static char s_created[FRESH_FILES][64];
+static int s_created_count;
+
+static int fresh_card_hides(const char *path) {
+  static int fresh = -1;
+  if (fresh < 0) fresh = getenv("XL_FRESH_CARD") != NULL;
+  if (!fresh || s_frame_count <= 1u) return 0;
+  for (int k = 0; k < s_created_count; k++) {
+    if (strcmp(s_created[k], path + strlen(s_data_dir) + 1) == 0) return 0;
+  }
+  return 1;
+}
+
 static uint32_t open_file(uint32_t name, const char *mode) {
   int slot = 0;
   while (slot < FILE_HANDLES && s_files[slot] != NULL) slot++;
   if (slot == FILE_HANDLES) return (uint32_t)-4;
   char path[1024];
   host_path(path, sizeof path, name);
+  if (mode[0] == 'r' && fresh_card_hides(path)) return (uint32_t)-2;
+  if (mode[0] == 'w' && s_created_count < FRESH_FILES) {
+    snprintf(s_created[s_created_count++], sizeof s_created[0], "%s", path + strlen(s_data_dir) + 1);
+  }
   FILE *f = fopen(path, mode);
   if (f == NULL) return (uint32_t)-2;
   s_files[slot] = f;

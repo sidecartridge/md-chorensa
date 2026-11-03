@@ -42,12 +42,20 @@ rp/src/bench_logic.c). They go on the SD card
    files; beside them EFFECTS.SE8, the effects the host decoded (the
    snapshot run's effects.bin), which the RP plays from the card.
 
+The images are a player's: from the title, the loaded demo as the attract
+demo, a game started with the stick that runs as long as it does. With
+--replay they are the development bench's: a recorded game as the attract
+demo (--invincible if it was played so), played to its end and checked
+against the host's checkpoints all the way. With --input SCRIPT (a script
+for stick 1, inputs/*.txt) the RP plays that script as the host does, its
+checkpoints compared with the host's (a mortal game from any stage).
+
 Everything it writes is the game's: outside the repository (default
 ~/chorensa/xlat-store), never committed.
 
 usage: rp_store.py --firmware ELF [--frame 100] [--runs RUN ... --game-over RUN]
-                   [--replay FILE [--invincible]] [--play] [--bench-frames N] [--palettes DIR]
-                   [--out DIR]
+                   [--replay FILE [--invincible]] [--input SCRIPT] [--bench-frames N]
+                   [--palettes DIR] [--out DIR]
 """
 
 import argparse
@@ -83,12 +91,16 @@ START_SCENE = "menus"
 # the menus' on the title with its logo drawn (after the boot's frame 100).
 ART_FRAME = 650
 MENUS_ART_FRAME = 500
+# The checkpoints the host records for the bench to compare (the RP compares
+# them until the player first touches the stick).
 BENCH_LAST = 12000
 # A recording's (--replay): the recorded whole game ends at its frame 149,000
-# (XL_SAVE_REPLAY_AT).
+# (XL_SAVE_REPLAY_AT), and the bench's run with it.
 REPLAY_LAST = 149000
 START_INVINCIBLE = 1  # xl_store.h's XL_STORE_START_INVINCIBLE
-PLAY_LAST = 0xFFFFFFFF  # --play: a last frame no run reaches
+START_SCRIPTED = 2    # its XL_STORE_START_SCRIPTED
+INPUT_FILE = "INPUT.TXT"  # its XL_STORE_INPUT_FILE
+PLAY_LAST = 0xFFFFFFFF  # a player's: a last frame no run reaches
 
 # The phases (XL_PHASES, numbered from 1 in this order; 0 the boot): the
 # stages' routines (the dispatcher's targets: STAGE_0, the seven stages,
@@ -104,20 +116,41 @@ RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         ("whole-gameover", 30000, "whole-game.txt", {}),
         ("whole-config", 2500, "menu-config.txt", {}),
         ("whole-kakusi", 6000, "menu-kakusi-play.txt", {}),
+        # Every CONFIG and hidden-menu item changed once, then a game: the
+        # routines behind the items reach pages no other run does.
+        ("whole-config-on", 3200, "menu-config-on.txt", {}),
+        ("whole-kakusi-all", 4000, "menu-kakusi-all.txt", {}),
         ("whole-attract", 150000, None, {})) + tuple(
         # A game over in every stage: its writes (the high scores, the name
-        # entry) are the stage's own.
-        (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {}) for n in range(1, 8))
+        # entry) are the stage's own; its save on a card without SCORE.DAT yet,
+        # the C library's create path, as the RP's first save.
+        (f"whole-mortal{n}", 12000, f"mortal-stage{n}.txt", {"XL_FRESH_CARD": "1"})
+        for n in range(1, 8)) + tuple(
+        # The same at every stage's boss (the hidden menu's BOSS_ONLY): the boss-only start
+        # reads pages the stage's own start does not.
+        (f"whole-boss{n}", 12000, f"mortal-boss{n}.txt", {"XL_FRESH_CARD": "1"})
+        for n in range(1, 8))
 GAME_OVER_RUN = "whole-gameover"
 INPUTS = os.path.join(HERE, "inputs")
 PAGE = rp_image.PAGE
 # The game's object pool (LONG_0009C8E4, its table, and L_0009CEE4, 48 KB):
 # a stage uses any of its slots, so every stage keeps all of it in RAM.
 OBJECT_POOL = (0x9C8E4, 0xA8EE4)
-# The high score table (WORD_0008D994, 240 bytes): the game
-# updates it the moment a player passes a score in it, in any stage, and at
-# the game over; every scene keeps it in RAM.
-HIGH_SCORES = (0x8D994, 0x8DA84)
+# The high score table (WORD_0008D994, 240 bytes) and the top score
+# (GAME_HIGHSCORE): the game updates them the moment a player passes a score
+# in the table, in any stage, and at the game over, and the RP sets them from
+# the card at the start; every scene keeps them in RAM.
+HIGH_SCORE_BYTES = 240
+# A save (the high scores at any game over, the replay at a new top score)
+# reads its file's name and mode, in the program's data, and writes the C
+# library's file buffer, which the library takes from the program's heap as a
+# file opens: the same pages every time (the boot's reads at $111880, the
+# saves' writes to $111CFF, xl_host.c's XL_SCENES report). Every scene maps
+# the strings and keeps the buffer's pages in RAM.
+SAVE_STRINGS = ("SCORE_DAT_FILENAME", "DEMO_REP_FILENAME", "L_000248E2", "L_00023732",
+                "REPLAY_FILE_OPEN_PARAMETER")
+SAVE_STRING_BYTES = 20
+FILE_BUFFERS = (0x111800, 0x111D00)
 # The X68000's sprite patterns and BG maps: the port shows neither; nothing
 # reads the patterns back, and only the menus the maps (through IOCS $CE).
 SPRITE_PATTERNS = (0xEB8000, 0xEBC000)
@@ -126,10 +159,11 @@ BG_MAPS = (0xEBC000, 0xEC0000)
 # game starts, and nothing reads them back (the RP draws the scene's art).
 GVRAM = (0xC00000, 0xE00000)
 
-HEADER_SIZE = 156         # sizeof(xl_store_header_t)
+HEADER_SIZE = 164         # sizeof(xl_store_header_t)
 LAYOUT = ("SPRITE_DATA_TABLE", "CURRENT_SPRITE_DATA_ENTRY", "VBL_VWAIT_COUNTER", "PLAYER_SCORE",
           "WORD_00088E6C", "BACKGROUND_SCROLL_COUNTER", "PLAYER_INFO_STRUCT",
-          "SIN_COS_TABLES_START", "INVINCIBILITY_MODE")  # xl_store.h's XL_LAYOUT_* order
+          "SIN_COS_TABLES_START", "INVINCIBILITY_MODE", "WORD_0008D994",
+          "GAME_HIGHSCORE")  # xl_store.h's XL_LAYOUT_* order
 SIZE_OFFSET, CRC_OFFSET = 12, 16
 
 CFLAGS = ["-mcpu=cortex-m0plus", "-mthumb", "-Os", "-std=c11", "-w", "-ffunction-sections",
@@ -441,12 +475,13 @@ def main():
                     "attract demo plays, for the bench to play the whole of it")
     ap.add_argument("--invincible", action="store_true",
                     help="the recording was played invincible (the host's XL_INVINCIBLE)")
-    ap.add_argument("--play", action="store_true",
-                    help="for a player: the bench's run never ends (a player's game lasts as "
-                    "long as it does); the checkpoints still go to --bench-frames")
+    ap.add_argument("--input", help="a script for stick 1 (inputs/*.txt, the host's XL_INPUT) the "
+                    "RP plays as the host does, its checkpoints compared with the host's: on the "
+                    f"card as {INPUT_FILE}")
     ap.add_argument("--bench-frames", type=int,
-                    help=f"where the bench's run ends (default {BENCH_LAST}; with --replay, "
-                    f"{REPLAY_LAST})")
+                    help=f"the frames the host's checkpoints cover (default {BENCH_LAST}); with "
+                    f"--replay also where the bench's run ends (default {REPLAY_LAST}); without "
+                    "it the run never ends: a player's game lasts as long as it does")
     ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-store"))
     args = ap.parse_args()
     if bool(args.runs) != bool(args.game_over):
@@ -485,8 +520,9 @@ def main():
                               **play_env}, check=False))
     snap = host_run(f"store-snap{args.frame}", ["--snapshot", str(args.frame),
                                                  "--frames", str(args.frame + 2)] + play, play_env)
+    checks_env = {**play_env, **({"XL_INPUT": os.path.abspath(args.input)} if args.input else {})}
     checks = host_run("store-checkpoints", ["--resume", snap, "--frames", str(bench_frames)],
-                      play_env, check=False)
+                      checks_env, check=False)
     # The memory there too, as a plain dump: what a scene change sets a page
     # to when its slot changed hands (the snapshot's own memory, after the boot).
     boot_run = host_run("store-boot", ["--frames", str(args.frame + 1)] + play,
@@ -531,10 +567,14 @@ def main():
     text = set(rp_image.text_pages())
     gvram = pages_of(*GVRAM)
     sink = pages_of(*SPRITE_PATTERNS)
+    save_strings = set().union(*(pages_of(layout[n], layout[n] + SAVE_STRING_BYTES)
+                                 for n in SAVE_STRINGS))
+    high_scores = (pages_of(layout["WORD_0008D994"], layout["WORD_0008D994"] + HIGH_SCORE_BYTES)
+                   | pages_of(layout["GAME_HIGHSCORE"], layout["GAME_HIGHSCORE"] + 4))
     ram, read = {}, {}
     for s in SCENES:
-        ram[s] = scenes.ram[s] | runtime_written | pages_of(*HIGH_SCORES)
-        read[s] = scenes.read[s] | runtime_read
+        ram[s] = scenes.ram[s] | runtime_written | high_scores | pages_of(*FILE_BUFFERS)
+        read[s] = scenes.read[s] | runtime_read | save_strings
         if s != "menus":
             ram[s] |= scenes.ram["gameover"] | pages_of(*OBJECT_POOL)
             read[s] |= scenes.read["gameover"]
@@ -624,8 +664,8 @@ def main():
         if s == START_SCENE:
             pages, rows = rp_image.write_start(
                 os.path.join(args.out, "START.STA"), memory, order, SCENE_KIND[s], fw_id,
-                START_INVINCIBLE if args.invincible else 0,
-                PLAY_LAST if args.play else bench_frames)
+                (START_INVINCIBLE if args.invincible else 0) | (START_SCRIPTED if args.input else 0),
+                bench_frames if args.replay else PLAY_LAST)
             data = open(os.path.join(checks, "checkpoints.bin"), "rb").read()
             n = rp_image.write_checks(os.path.join(args.out, "CHECKS.DAT"),
                                       data[8:8 + 32 * struct.unpack(">I", data[4:8])[0]], fw_id)
@@ -663,6 +703,11 @@ def main():
         print(f"{name}: {len(data)} bytes, CRC {struct.unpack_from('<I', data, CRC_OFFSET)[0]:08X}, "
               f"for {fw_id}")
     shutil.copyfile(os.path.join(snap, "effects.bin"), os.path.join(args.out, "EFFECTS.SE8"))
+    input_copy = os.path.join(args.out, INPUT_FILE)
+    if args.input:
+        shutil.copyfile(args.input, input_copy)
+    elif os.path.exists(input_copy):
+        os.remove(input_copy)
     print(f"EFFECTS.SE8: {os.path.getsize(os.path.join(args.out, 'EFFECTS.SE8'))} bytes")
 
 

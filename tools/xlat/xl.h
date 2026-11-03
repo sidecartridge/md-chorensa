@@ -167,6 +167,15 @@ void xl_live_read(int on);
  * buffer the attract demo plays, 128 KB): the RP never does (it keeps the
  * buffer in flash); the host when it saves a recording (XL_SAVE_REPLAY_AT). */
 int xl_record(void);
+/* The game waits in its pause (xlat.py PATCHES_BEFORE): the RP's keys to
+ * leave the game work only then. */
+void xl_paused(void);
+/* K pressed on the title (xlat.py PATCHES_BEFORE): the hidden menu opens.
+ * The RP's key; the host has none. */
+int xl_kakusi_key(void);
+/* The title's GEM DESKTOP (0) or BOOSTER (1) chosen (xlat.py PATCHES_BEFORE):
+ * the RP leaves the game for it; the host stays on the title. */
+void xl_leave(uint32_t to);
 
 /* Enter the code at a 68000 address: the translated function that starts
  * there; returns the address its RTS (or RTE) popped. Unknown: fatal. */
