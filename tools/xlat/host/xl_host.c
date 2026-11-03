@@ -983,6 +983,10 @@ int xl_record(void) { return getenv("XL_SAVE_REPLAY_AT") != NULL; }
 
 void xl_paused(void) {}
 
+int xl_kakusi_key(void) { return 0; }
+
+void xl_leave(uint32_t to) { (void)to; }
+
 /* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
  * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
  * seconds. */

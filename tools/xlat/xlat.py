@@ -70,7 +70,113 @@ PATCHES = {
     # it loaded.
     0x2483C: ("", ("goto", 0x24842)),
     0x25C7E: ("", ("goto", 0x25C84)),
+    # CONFIG without the items that do nothing on the ST or must stay at
+    # their defaults (CONFIG_HIDDEN): their drawing skipped (the BGM value's
+    # arguments popped, as the skipped LEA would), the rest a slot apart,
+    # the cursor on its item's slot and stepping over them (menu_cursor).
+    0x25252: ("A(7) += 16u;", ("goto", 0x252F0)),              # SCREEN to STK_VERTICAL
+    0x25302: ("A(7) -= 4u; wr32(A(7), 0xDu);", ("goto", 0x25306)),   # SHOT=A BOMB=B
+    0x25314: ("", ("goto", 0x25338)),                           # START SELECT
+    0x2534A: ("A(7) -= 4u; wr32(A(7), 0xFu);", ("goto", 0x2534E)),   # SILENT MODE
+    0x25360: ("A(7) -= 4u; wr32(A(7), 0x11u);", ("goto", 0x25364)),  # INIT SCORE DATA
+    0x25374: ("A(7) -= 4u; wr32(A(7), 0x13u);", ("goto", 0x25378)),  # EXIT
+    0x253DC: (None, ("goto", 0x253E4)),
+    0x25430: (None, ("goto", 0x25438)),
+    0x2541E: (None, ("goto", 0x2542C)),
+    # The hidden menu without SAVE DEMO.REP (the RP keeps the demo it
+    # loaded): its line skipped (12 bytes stand in for its arguments, which
+    # the next LEA pops), EXIT in its slot.
+    0x25838: ("A(7) -= 12u;", ("goto", 0x25846)),
+    0x2584A: ("A(7) -= 4u; wr32(A(7), 0x1Bu);", ("goto", 0x2584E)),
+    0x25A4E: (None, ("goto", 0x25A56)),
+    0x25AA2: (None, ("goto", 0x25AAA)),
+    0x25A90: (None, ("goto", 0x25A9E)),
+    # The title's menu: START, CONTINUE, CONFIG, then KAKUSI (the hidden
+    # menu) in place of EXIT (back to Human68k), GEM DESKTOP and BOOSTER, a
+    # line apart (rows 18 to 23: the last where EXIT was, so the menu stays
+    # in the 240 lines a plain ST shows), the two new ones drawn after
+    # KAKUSI (PATCHES_BEFORE); the cursor's row and its wrap over the six;
+    # the version line, the original's and the port's. KAKUSI's choice goes
+    # where CONFIG's does, which opens the hidden menu for KAKUSI (the
+    # cursor's fourth place) instead of for the X68000 pad's up + down +
+    # right held, a combination a joystick cannot make.
+    0x24DFC: ("A(7) -= 4u; wr32(A(7), 18u);", ("goto", 0x24E00)),
+    0x24E10: ("A(7) -= 4u; wr32(A(7), 19u);", ("goto", 0x24E14)),
+    0x24E1E: ("A(7) -= 4u; wr32(A(7), 20u);", ("goto", 0x24E22)),
+    0x24E2C: ("A(7) -= 4u; wr32(A(7), 0x2576Eu);", ("goto", 0x24E30)),
+    0x24E30: ("A(7) -= 4u; wr32(A(7), 21u);", ("goto", 0x24E34)),
+    0x24E48: ("A(7) -= 4u; wr32(A(7), 0x277F6u);", ("goto", 0x24E4C)),
+    0x24E50: ("A(7) -= 4u; wr32(A(7), 2u);", ("goto", 0x24E54)),
+    0x24E62: ("A(0) = D(0) + 1u;", ("goto", 0x24E66)),
+    0x24ECE: ("A(0) = D(0) + 1u;", ("goto", 0x24ED2)),
+    0x24F22: ("A(0) = D(0) + 1u;", ("goto", 0x24F26)),
+    0x24F0C: ("if (D(4) & 0x8000u) D(4) = (D(4) & ~M16) | 5u; "
+              "else if ((D(4) & M16) > 5u) D(4) &= ~M16;", ("goto", 0x24F1A)),
+    0x25070: ("D(0) = (D(4) & M16) == 3u ? 4u : 0u; D(1) = 15u;", ("goto", 0x25072)),
 }
+# The menus' items left out, by the game's item number (D5): CONFIG's
+# SCREEN and XSP MODE (the X68000's monitor timing and sprite hardware: no
+# effect on the ST), XSP_VERTICAL and STK_VERTICAL (the rotated screen and
+# its stick: the RP draws only the upright screen), START SELECT (a pad's
+# buttons a joystick cannot send); the hidden menu's SAVE DEMO.REP. Each
+# keeps the value the game starts with.
+CONFIG_HIDDEN = (2, 3, 4, 5, 7)
+KAKUSI_HIDDEN = (9,)
+
+
+def menu_cursor(hidden, items=11):
+    """The C of a menu's cursor: its row offset (A1, two rows a slot) for
+    the item in D5 at the drawing (the CURSOR patches), and its wrap over
+    the items (WRAP), stepping over the hidden ones in the way it moved
+    (D6: 8 up, 2 down)."""
+    slots, k = [], 0
+    for n in range(items):
+        slots.append(k)
+        k += n not in hidden
+    mask = sum(1 << n for n in hidden)
+    # The slots four bits an item, in two words (a table would cost a memcpy).
+    low = sum(k << 4 * n for n, k in enumerate(slots[:8]))
+    high = sum(k << 4 * n for n, k in enumerate(slots[8:]))
+    cursor = (f"{{ uint32_t n = D(5) & M16; A(1) = 2u * ((n < 8u ? 0x{low:08X}u >> 4u * n : "
+              f"0x{high:08X}u >> 4u * (n - 8u)) & 15u); }}")
+    wrap = (f"{{ int32_t k = (int16_t)D(5), d = (D(6) & M16) == 8u ? -1 : 1; "
+            f"for (;;) {{ if (k < 0) k = {items - 1}; if (k > {items - 1}) k = 0; "
+            f"if (!((0x{mask:X}u >> k) & 1u)) break; k += d; }} "
+            "D(5) = (D(5) & ~M16) | (uint32_t)k; }")
+    return cursor, wrap
+
+
+for _menu, (_hidden, _cursors, _wrap) in {
+        "config": (CONFIG_HIDDEN, (0x253DC, 0x25430), 0x2541E),
+        "kakusi": (KAKUSI_HIDDEN, (0x25A4E, 0x25AA2), 0x25A90)}.items():
+    _c, _w = menu_cursor(_hidden)
+    for _a in _cursors:
+        PATCHES[_a] = (_c, PATCHES[_a][1])
+    PATCHES[_wrap] = (_w, PATCHES[_wrap][1])
+
+# Text the game shows, written into the program image: the title's KAKUSI
+# over the hidden menu's DEMO.REP file name, which only the save the
+# translation skips uses; GEM DESKTOP, BOOSTER and the version line over
+# CALCULATE_CPU_POWER's code after its first instruction (PATCHES runs none
+# of it).
+PORT_VERSION = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                 "version.txt")).read().strip().lstrip("v")
+TITLE_TEXTS = {0x2576E: b"KAKUSI\0",
+               0x277E2: b"GEM DESKTOP\0",
+               0x277EE: b"BOOSTER\0",
+               # Lower case: the font's orange letters, as the original's line.
+               0x277F6: f"version 1.01  ATARI ST {PORT_VERSION}".encode() + b"\0"}
+assert 0x277F6 + len(TITLE_TEXTS[0x277F6]) <= 0x27840
+
+
+def draw_text(text, row, column):
+    """C that calls DRAW_TEXT ($25D1A) as the title calls it: the text's
+    address, its row and its column on the stack."""
+    return (f"A(7) -= 4u; wr32(A(7), 0x{text:X}u); A(7) -= 4u; wr32(A(7), {row}u); "
+            f"A(7) -= 4u; wr32(A(7), {column}u); A(7) -= 4u; wr32(A(7), 0u); "
+            "xl_call(0x25D1Au); A(7) += 12u;")
+
+
 # Code the runtime runs just before an original instruction, which then runs
 # as usual (unless the code returns): the port decodes the ADPCM samples there
 # (and rewrites the game's sample table, whose lengths the effects' timing
@@ -87,6 +193,14 @@ PATCHES_BEFORE = {
     # again): the runtime knows the game is paused (xl_paused).
     0x26E4C: "xl_paused();",
     0x26E64: "xl_paused();",
+    # The title (PATCHES): GEM DESKTOP and BOOSTER drawn after KAKUSI, at
+    # the column of the others; the choice of either leaves the game
+    # (xl_leave), and the title goes on (the host stays); KAKUSI goes where
+    # CONFIG does. The RP's K key on the title (xl_kakusi_key) chooses KAKUSI.
+    0x24E3A: draw_text(0x277E2, 22, 13) + " " + draw_text(0x277EE, 23, 13),
+    0x24F46: "if ((D(4) & M16) >= 4u) { xl_leave((D(4) & M16) - 4u); goto L_024F56; }",
+    0x24FFE: "if (D(0) == 3u) D(0) = 2u;",
+    0x24F38: "if (xl_kakusi_key()) { D(4) = (D(4) & ~M16) | 3u; goto L_024F46; }",
     0x239E6: "if (xl_live_input()) { wr16(A(7) + 6u, 0u); xl_live_read(1); }",
     0x23A14: "if (xl_live_input() || !xl_record()) { xl_live_read(0); D(0) = sx16(D(1) & M16); "
              "{ uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
@@ -1044,7 +1158,10 @@ def main():
         sys.exit("--image and --homes go together")
     stats = translate(prog, args.out, only=only, homes=homes, image=args.image)
     with open(os.path.join(args.out, "xl_image.bin"), "wb") as f:
-        f.write(image.bytes[:image.bss - program.LOAD])
+        body = bytearray(image.bytes[:image.bss - program.LOAD])
+        for address, text in TITLE_TEXTS.items():
+            body[address - program.LOAD:address - program.LOAD + len(text)] = text
+        f.write(body)
     with open(os.path.join(args.out, "xl_layout.h"), "w") as h:
         h.write("/* Generated by tools/xlat: where the program sits in memory. */\n")
         h.write(f"#define XL_LOAD 0x{program.LOAD:06X}u\n#define XL_BSS 0x{image.bss:06X}u\n"

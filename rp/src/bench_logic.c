@@ -206,25 +206,32 @@ static uint32_t input_joyget(void) {
 #define SC_LEFT 0x4Bu
 #define SC_RIGHT 0x4Du
 #define SC_SPACE 0x39u
+#define SC_ALT 0x38u /* the shot, for a player without a joystick */
 /* The keys the game reads as the X68000's (IOCS _BITSNS: a byte of 8 key
- * codes a group): ESC its pause, TAB, SHIFT and CTRL the hidden debug
+ * codes a group): ESC its pause, 1, TAB, SHIFT and CTRL the hidden debug
  * mode's. While the game waits in its pause, G leaves to GEM and B to
- * Booster. */
+ * Booster. On the title K opens the hidden menu (xl_kakusi_key). */
 #define SC_ESC 0x01u
+#define SC_1 0x02u
 #define SC_TAB 0x0Fu
 #define SC_CTRL 0x1Du
 #define SC_LSHIFT 0x2Au
 #define SC_RSHIFT 0x36u
 #define SC_G 0x22u
 #define SC_B 0x30u
+#define SC_K 0x25u
 #define X68_KEY_GROUPS 16u
 static uint8_t s_x68_keys[X68_KEY_GROUPS]; /* held, by the X68000's key codes */
 static uint32_t s_paused_frame = UINT32_MAX; /* the last frame the game waited in its pause */
+#define KAKUSI_KEY_US 100000u               /* how long a K press stays new */
+static uint32_t s_kakusi_us;                  /* when K was last pressed */
+static bool s_kakusi_key;                     /* and not yet seen by the title */
 
 /* The X68000's key code for an ST scancode, or 0: none the game reads. */
 static uint32_t x68_key(uint32_t scancode) {
   switch (scancode) {
     case SC_ESC: return 0x01u;
+    case SC_1: return 0x02u;
     case SC_TAB: return 0x10u;
     case SC_LSHIFT: case SC_RSHIFT: return 0x70u;
     case SC_CTRL: return 0x71u;
@@ -234,12 +241,29 @@ static uint32_t x68_key(uint32_t scancode) {
 
 void xl_paused(void) { s_paused_frame = s_frame_count; }
 
+/* K pressed in the last moment (the title asks every frame): a press made
+ * during a game is old by the next title. */
+int xl_kakusi_key(void) {
+  bool now = s_kakusi_key && time_us_32() - s_kakusi_us < KAKUSI_KEY_US;
+  s_kakusi_key = false;
+  return now;
+}
+
 /* The ST to GEM (the cartridge's command word: userfw leaves at its next
  * frame). */
 static void exit_to_gem(void) {
   volatile uint32_t *sentinel =
       (volatile uint32_t *)((uintptr_t)__rom_in_ram_start__ + CART_CMD_SENTINEL_OFFSET);
   *sentinel = cart_asM68kLong(CART_CMD_BOOT_GEM);
+}
+
+/* The title's GEM DESKTOP and BOOSTER, as the pause's G and B. */
+void xl_leave(uint32_t to) {
+  if (to == 0) {
+    exit_to_gem();
+  } else {
+    st_session_return_to_booster();
+  }
 }
 static int s_live;
 static uint8_t s_keys;  /* the stick's bits the keyboard holds */
@@ -359,7 +383,8 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_live_read,     (const void *)xl_record,
     (const void *)&xl,              (const void *)xl_regions,
     (const void *)&xl_mem,          (const void *)xl_stray_write,
-    (const void *)xl_paused,
+    (const void *)xl_paused,       (const void *)xl_kakusi_key,
+    (const void *)xl_leave,
 };
 
 /* --- Frames --------------------------------------------------------------- */
@@ -599,6 +624,7 @@ static void poll_input(void) {
                   : key.scancode == SC_LEFT  ? STICK_LEFT
                   : key.scancode == SC_RIGHT ? STICK_RIGHT
                   : key.scancode == SC_SPACE ? STICK_BOMB
+                  : key.scancode == SC_ALT   ? STICK_SHOT
                                              : 0u;
     s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
     uint32_t code = x68_key(key.scancode);
@@ -611,6 +637,10 @@ static void poll_input(void) {
     if (key.is_press && s_frame_count - s_paused_frame <= 2u) {
       if (key.scancode == SC_G) exit_to_gem();
       if (key.scancode == SC_B) st_session_return_to_booster();
+    }
+    if (key.is_press && key.scancode == SC_K) {
+      s_kakusi_key = true;
+      s_kakusi_us = time_us_32();
     }
     if (key.is_press && bit && !s_live) {
       s_live = 1;

@@ -1,16 +1,17 @@
-# The hidden menu (KAKUSI MODE) from the title (XL_INPUT; amiga_run.py
-# --input): the cursor to CONTINUE, then up + down + right held (the cursor
-# moves to CONFIG) and button A: CONFIG with that combination opens the
-# hidden menu. STAGE 3, BOSS_ONLY and DEBUG on, SAVE DEMO.REP, EXIT; then
-# CONTINUE (from CONFIG, up once: START always starts at stage 1, CONTINUE
-# from the hidden menu's stage) and the scripted player.
+# The hidden menu (KAKUSI MODE) from the title (XL_INPUT): the cursor down
+# to KAKUSI (the translation's, in place of EXIT) and button A. STAGE 3,
+# BOSS_ONLY and DEBUG on, EXIT; then CONTINUE (from KAKUSI, up
+# twice: START always starts at stage 1, CONTINUE from the hidden menu's
+# stage) and the scripted player.
 # FRAME MASK (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B)
 300 2
 304 0
-340 b
-370 2b
-376 b
-380 0
+320 2
+324 0
+340 2
+344 0
+370 20
+376 0
 440 2
 444 0
 460 2
@@ -37,14 +38,12 @@
 664 0
 680 2
 684 0
-700 20
-704 0
-760 2
-764 0
 780 20
 784 0
 860 1
 864 0
+880 1
+884 0
 900 20
 904 0
 980 auto

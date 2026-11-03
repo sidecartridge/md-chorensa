@@ -116,6 +116,10 @@ RUNS = (("whole-live", 210000, "whole-game.txt", {"XL_INVINCIBLE": "1"}),
         ("whole-gameover", 30000, "whole-game.txt", {}),
         ("whole-config", 2500, "menu-config.txt", {}),
         ("whole-kakusi", 6000, "menu-kakusi-play.txt", {}),
+        # Every CONFIG and hidden-menu item changed once, then a game: the
+        # routines behind the items reach pages no other run does.
+        ("whole-config-on", 3200, "menu-config-on.txt", {}),
+        ("whole-kakusi-all", 4000, "menu-kakusi-all.txt", {}),
         ("whole-attract", 150000, None, {})) + tuple(
         # A game over in every stage: its writes (the high scores, the name
         # entry) are the stage's own; its save on a card without SCORE.DAT yet,

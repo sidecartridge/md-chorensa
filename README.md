@@ -1,5 +1,114 @@
 # md-framebuffer-template
 
+## Playing Cho Ren Sha 68k
+
+Cho Ren Sha 68k (© 1995 Famibe no Yosshin) is a vertical shoot 'em up for
+the Sharp X68000. This port runs the original game's code, translated, on
+the Multi-device's RP2040; the Atari ST shows the picture and plays the
+sound. The game's files come from your own copy of the game; nothing of the
+game is in this repository.
+
+### Controls
+
+Plug the joystick into **joystick port 1** (the port the mouse does not use).
+
+| Input | In a game | In the menus |
+| --- | --- | --- |
+| Joystick, or the cursor keys | move the ship | move the cursor; left and right change a value |
+| Fire button, or Alternate | shot | choose (and, on the title, start a game) |
+| Space bar | bomb (the X68000 pad's second button) | the second button: in BGM PLAY it stops the music |
+| ESC | pause; ESC again resumes | |
+| G (while paused) | leave the game for the GEM desktop | |
+| B (while paused) | return to Booster | |
+| K (on the title) | | open the hidden menu |
+| TAB, SHIFT, CTRL, 1 | the hidden menu's DEBUG keys (below) | |
+
+After leaving for GEM, reset the ST to play again: the game starts over at
+its title. The cartridge's SELECT button restarts the Multi-device (reset the
+ST afterwards); held while the ST is switched on, it starts Booster instead
+of the game.
+
+### The title
+
+| Item | What it does |
+| --- | --- |
+| START | a new game from stage 1 |
+| CONTINUE | a game from the stage where the last game ended (or the hidden menu's STAGE and ACCHO) |
+| CONFIG | the options (below) |
+| KAKUSI | the hidden menu (below); K on the title opens it too |
+| GEM DESKTOP | leave for the GEM desktop |
+| BOOSTER | return to Booster |
+
+Left alone, the title shows the high scores and then the demo; any input
+brings the title back. The bottom line shows the original game's version
+and this port's.
+
+A new ship comes every 1,000,000 points. When the last one is lost, the
+game is over; a score good enough for the high-score
+table asks for a name: move the cursor over the letters with the joystick,
+press fire to add one, and choose ED to finish. The table is kept on the
+microSD card (`ETC_DAT\SCORE.DAT`).
+
+### CONFIG
+
+Up and down choose an item; left and right change a number; fire plays or
+toggles. The options are not saved: an ST reset or switching off sets them
+back.
+
+| Item | What it does |
+| --- | --- |
+| PCM PLAY | the sound test: fire plays sound effect N (0 to $FF) |
+| BGM PLAY | the music test: fire plays song N (0 to $3F), the second button stops it |
+| SHOT=A BOMB=B | swaps the two buttons (fire and Alternate bomb, space shoots) |
+| SILENT MODE | turns the sound effects off (the music plays on) |
+| INIT SCORE DATA | clears the high-score table and saves it on the card |
+| EXIT | back to the title |
+
+The original's CONFIG has five more items, left out of this port's menu; each
+keeps the value the game starts with:
+
+| Item | On the X68000 | Why it is left out |
+| --- | --- | --- |
+| SCREEN | the monitor's timing (three CRTC modes) | no effect: the port sets the ST's screen |
+| XSP MODE | how the sprite driver splits sprites over the X68000's hardware | no effect: the port draws every sprite itself |
+| XSP_VERTICAL | the rotated screen, for a monitor on its side | the port draws only the upright screen |
+| STK_VERTICAL | turns the joystick's directions for the rotated screen | without the rotated screen it only scrambles the controls |
+| START SELECT | a pad's START and SELECT buttons, sent as left + right and up + down held together | a joystick cannot send them (on, as the game starts) |
+
+### The hidden menu (KAKUSI MODE)
+
+The original opens it from CONFIG with the pad's up, down and right held
+together, which a joystick cannot do: this port has KAKUSI on the title and
+the K key instead. Values are shown in hexadecimal. STAGE, ROUND, KASEGI,
+BOSS_ONLY, TD_SPEED and JK_SPEED apply to the next game, START or CONTINUE;
+VWAIT, MUTEKI and DEBUG at once. The original's SAVE DEMO.REP (the last game
+saved as the demo) is left out: this port keeps the demo it loaded.
+
+| Item | Default | Values | What it does |
+| --- | --- | --- | --- |
+| VWAIT | 1 | 0 to 7 | the VBLs the game waits for each frame: 1 is normal speed, 2 or more is slow motion, 0 does not wait (as fast as the X68000 can go). In this port the game shows one frame every VBL whatever the value: only 1 plays as on the X68000 |
+| MUTEKI | 0 | 0, 1 | invincibility |
+| STAGE | 1 | 0 to F | where CONTINUE starts: 1 to 7 the stages, 0 the game's stage 0, F the SHOW TIME stage; 8 to E move to the next round's stage 1 |
+| ACCHO | 0 | 0 to F | the round (loop). After stage 7 an even round goes on to the next round; an odd round plays a last part and ends the game (MISSION COMPLETE). From round 1 enemies fire back when they are destroyed, and the enemies change with the round |
+| TD_SPEED | $10 | 0 to $3C, step 4 | the enemies' bullet speed: $10 is normal, $20 twice as fast, 0 stops them |
+| JK_SPEED | $30 | 0 to $78, step 8 | the ship's speed: $30 is normal; under $10 the ship cannot move |
+| BOSS_ONLY | 0 | 0, 1 | every stage starts at its boss |
+| DEBUG | 0 | 0 to 3 | the debug mode (below) |
+| KASEGI | 0 | 0, 1 | the scoring mode: power-ups taken at their maximum build counters (shown on screen) that multiply the points of each kill, and losing the power-up clears them |
+| EXIT | | | back to the title |
+
+**DEBUG** (any value but 0): TAB freezes the game, TAB again steps one
+frame and ESC goes on; CTRL and SHIFT pressed together (and let go) give
+one step of every power-up and a stock; the 1 key ends the stage's current
+part at once; each kill's points are shown. DEBUG 1 also shows the sprite
+count, the RANK (the difficulty, which rises with time), the stage's part
+(ALG_SW) and its frame count (TOTAL_CT). Holding fire and space while the
+game starts turns DEBUG 1 on as well.
+
+---
+
+The rest of this file describes the framework the port is built on.
+
 A template for building **sub-20-millisecond audiovisual SidecarTridge
 Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
 games, demos, and console/computer emulations where the speed of putting
