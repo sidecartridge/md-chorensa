@@ -83,11 +83,20 @@ PATCHES = {
     0x253DC: (None, ("goto", 0x253E4)),
     0x25430: (None, ("goto", 0x25438)),
     0x2541E: (None, ("goto", 0x2542C)),
-    # The hidden menu without SAVE DEMO.REP (the RP keeps the demo it
-    # loaded): its line skipped (12 bytes stand in for its arguments, which
-    # the next LEA pops), EXIT in its slot.
+    # The hidden menu without VWAIT and SAVE DEMO.REP (KAKUSI_HIDDEN): their
+    # lines skipped (12 or 16 bytes stand in for their arguments, which the
+    # next LEA pops; VWAIT's value line also loads A3, DRAW_WORD_NUMBER, for
+    # the lines after it), the cursor starting on MUTEKI, and every other
+    # line a slot up (KAKUSI_ROWS).
+    0x2578E: ("D(5) = (D(5) & ~M16) | 1u;", ("goto", 0x25790)),
+    0x257AE: ("A(7) -= 12u;", ("goto", 0x257BC)),
+    0x25914: ("A(7) -= 16u; A(3) = 0x25D50u;", ("goto", 0x25930)),
     0x25838: ("A(7) -= 12u;", ("goto", 0x25846)),
-    0x2584A: ("A(7) -= 4u; wr32(A(7), 0x1Bu);", ("goto", 0x2584E)),
+    0x2584A: ("A(7) -= 4u; wr32(A(7), 0x19u);", ("goto", 0x2584E)),
+    # START SELECT starts off: on, the menus and the pause read a pad's
+    # START as left + right held and SELECT as up + down, which the cursor
+    # keys make when two are held (the pause, out of nowhere).
+    0x26B20: ("wr16(0x8DB00u, 0u);", ("goto", 0x26B28)),
     0x25A4E: (None, ("goto", 0x25A56)),
     0x25AA2: (None, ("goto", 0x25AAA)),
     0x25A90: (None, ("goto", 0x25A9E)),
@@ -118,10 +127,15 @@ PATCHES = {
 # SCREEN and XSP MODE (the X68000's monitor timing and sprite hardware: no
 # effect on the ST), XSP_VERTICAL and STK_VERTICAL (the rotated screen and
 # its stick: the RP draws only the upright screen), START SELECT (a pad's
-# buttons a joystick cannot send); the hidden menu's SAVE DEMO.REP. Each
+# buttons a joystick cannot send: off, PATCHES); the hidden menu's VWAIT
+# (the RP shows a frame every VBL whatever the wait) and SAVE DEMO.REP. Each
 # keeps the value the game starts with.
 CONFIG_HIDDEN = (2, 3, 4, 5, 7)
-KAKUSI_HIDDEN = (9,)
+KAKUSI_HIDDEN = (0, 9)
+# The hidden menu's rows (PEA $row) of MUTEKI to KASEGI, their names then
+# their values: a slot (two rows) up, into VWAIT's.
+KAKUSI_ROWS = (0x257C0, 0x257D2, 0x257E0, 0x257EE, 0x25800, 0x2580E, 0x2581C, 0x2582E,
+               0x2593C, 0x25956, 0x2596C, 0x25986, 0x2599C, 0x259B6, 0x259CC, 0x259E6)
 
 
 def menu_cursor(hidden, items=11):
@@ -146,6 +160,8 @@ def menu_cursor(hidden, items=11):
     return cursor, wrap
 
 
+for _a, _row in zip(KAKUSI_ROWS, [0xB, 0xD, 0xF, 0x11, 0x13, 0x15, 0x17, 0x19] * 2):
+    PATCHES[_a] = (f"A(7) -= 4u; wr32(A(7), 0x{_row - 2:X}u);", ("goto", _a + 4))
 for _menu, (_hidden, _cursors, _wrap) in {
         "config": (CONFIG_HIDDEN, (0x253DC, 0x25430), 0x2541E),
         "kakusi": (KAKUSI_HIDDEN, (0x25A4E, 0x25AA2), 0x25A90)}.items():

@@ -65,7 +65,7 @@ back.
 | EXIT | back to the title |
 
 The original's CONFIG has five more items, left out of this port's menu; each
-keeps the value the game starts with:
+keeps the value the game starts with (START SELECT starts off):
 
 | Item | On the X68000 | Why it is left out |
 | --- | --- | --- |
@@ -73,20 +73,22 @@ keeps the value the game starts with:
 | XSP MODE | how the sprite driver splits sprites over the X68000's hardware | no effect: the port draws every sprite itself |
 | XSP_VERTICAL | the rotated screen, for a monitor on its side | the port draws only the upright screen |
 | STK_VERTICAL | turns the joystick's directions for the rotated screen | without the rotated screen it only scrambles the controls |
-| START SELECT | a pad's START and SELECT buttons, sent as left + right and up + down held together | a joystick cannot send them (on, as the game starts) |
+| START SELECT | a pad's START (the pause) and SELECT buttons, sent as left + right and up + down held together | a joystick cannot send them, and two cursor keys held at once would pause the game |
 
 ### The hidden menu (KAKUSI MODE)
 
 The original opens it from CONFIG with the pad's up, down and right held
 together, which a joystick cannot do: this port has KAKUSI on the title and
-the K key instead. Values are shown in hexadecimal. STAGE, ROUND, KASEGI,
+the K key instead. Values are shown in hexadecimal. STAGE, ACCHO, KASEGI,
 BOSS_ONLY, TD_SPEED and JK_SPEED apply to the next game, START or CONTINUE;
-VWAIT, MUTEKI and DEBUG at once. The original's SAVE DEMO.REP (the last game
-saved as the demo) is left out: this port keeps the demo it loaded.
+MUTEKI and DEBUG at once. Two of the original's items are left out: VWAIT
+(the VBLs the game waits for each frame, 1; more is slow motion on the
+X68000, but this port shows a frame every VBL whatever the wait) and SAVE
+DEMO.REP (the last game saved as the demo: this port keeps the demo it
+loaded).
 
 | Item | Default | Values | What it does |
 | --- | --- | --- | --- |
-| VWAIT | 1 | 0 to 7 | the VBLs the game waits for each frame: 1 is normal speed, 2 or more is slow motion, 0 does not wait (as fast as the X68000 can go). In this port the game shows one frame every VBL whatever the value: only 1 plays as on the X68000 |
 | MUTEKI | 0 | 0, 1 | invincibility |
 | STAGE | 1 | 0 to F | where CONTINUE starts: 1 to 7 the stages, 0 the game's stage 0, F the SHOW TIME stage; 8 to E move to the next round's stage 1 |
 | ACCHO | 0 | 0 to F | the round (loop). After stage 7 an even round goes on to the next round; an odd round plays a last part and ends the game (MISSION COMPLETE). From round 1 enemies fire back when they are destroyed, and the enemies change with the round |

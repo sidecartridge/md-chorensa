@@ -1,6 +1,6 @@
-# The hidden menu (as menu-kakusi.txt opens it) with every item but SAVE DEMO.REP
-# changed once: right on VWAIT, MUTEKI, ACCHO, TD_SPEED, JK_SPEED, DEBUG and KASEGI,
-# STAGE 3; EXIT, CONTINUE from the title, and the scripted player.
+# The hidden menu (as menu-kakusi.txt opens it) with every item changed once:
+# right on MUTEKI, ACCHO, TD_SPEED, JK_SPEED, DEBUG and KASEGI, STAGE 3; EXIT,
+# CONTINUE from the title, and the scripted player.
 # FRAME MASK (hex: 1 up, 2 down, 4 left, 8 right, 20 button A, 40 button B)
 300 2
 304 0
@@ -10,10 +10,6 @@
 344 0
 370 20
 376 0
-420 8
-424 0
-440 2
-444 0
 450 8
 454 0
 460 2
