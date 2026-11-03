@@ -206,6 +206,41 @@ static uint32_t input_joyget(void) {
 #define SC_LEFT 0x4Bu
 #define SC_RIGHT 0x4Du
 #define SC_SPACE 0x39u
+/* The keys the game reads as the X68000's (IOCS _BITSNS: a byte of 8 key
+ * codes a group): ESC its pause, TAB, SHIFT and CTRL the hidden debug
+ * mode's. While the game waits in its pause, G leaves to GEM and B to
+ * Booster. */
+#define SC_ESC 0x01u
+#define SC_TAB 0x0Fu
+#define SC_CTRL 0x1Du
+#define SC_LSHIFT 0x2Au
+#define SC_RSHIFT 0x36u
+#define SC_G 0x22u
+#define SC_B 0x30u
+#define X68_KEY_GROUPS 16u
+static uint8_t s_x68_keys[X68_KEY_GROUPS]; /* held, by the X68000's key codes */
+static uint32_t s_paused_frame = UINT32_MAX; /* the last frame the game waited in its pause */
+
+/* The X68000's key code for an ST scancode, or 0: none the game reads. */
+static uint32_t x68_key(uint32_t scancode) {
+  switch (scancode) {
+    case SC_ESC: return 0x01u;
+    case SC_TAB: return 0x10u;
+    case SC_LSHIFT: case SC_RSHIFT: return 0x70u;
+    case SC_CTRL: return 0x71u;
+    default: return 0;
+  }
+}
+
+void xl_paused(void) { s_paused_frame = s_frame_count; }
+
+/* The ST to GEM (the cartridge's command word: userfw leaves at its next
+ * frame). */
+static void exit_to_gem(void) {
+  volatile uint32_t *sentinel =
+      (volatile uint32_t *)((uintptr_t)__rom_in_ram_start__ + CART_CMD_SENTINEL_OFFSET);
+  *sentinel = cart_asM68kLong(CART_CMD_BOOT_GEM);
+}
 static int s_live;
 static uint8_t s_keys;  /* the stick's bits the keyboard holds */
 static uint8_t s_stick;
@@ -324,6 +359,7 @@ const void *const xl_runtime[] __attribute__((used)) = {
     (const void *)xl_live_read,     (const void *)xl_record,
     (const void *)&xl,              (const void *)xl_regions,
     (const void *)&xl_mem,          (const void *)xl_stray_write,
+    (const void *)xl_paused,
 };
 
 /* --- Frames --------------------------------------------------------------- */
@@ -545,6 +581,55 @@ static void hold_times(void) {
   benchHoldTimes = t;
 }
 
+/* The player's keys and stick, from the ST's IKBD through the ROM3 ring:
+ * every frame, and from the game's own reads of them (_BITSNS, _JOYGET),
+ * which loop without a frame while they wait for a key to be let go or
+ * pressed (the pause). */
+static void poll_input(void) {
+  fb_pump_rom3();
+  ikbd_pump();
+  /* The ST started again (a reset, a return from GEM): the game starts over
+   * at its title, as the template's apps do, not on in a pause the new
+   * screen would not show. */
+  if (st_session_consume_boot()) stop(BENCH_LOGIC_DONE, "", 0);
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+    uint8_t bit = key.scancode == SC_UP      ? STICK_UP
+                  : key.scancode == SC_DOWN  ? STICK_DOWN
+                  : key.scancode == SC_LEFT  ? STICK_LEFT
+                  : key.scancode == SC_RIGHT ? STICK_RIGHT
+                  : key.scancode == SC_SPACE ? STICK_BOMB
+                                             : 0u;
+    s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
+    uint32_t code = x68_key(key.scancode);
+    if (code) {
+      uint8_t mask = (uint8_t)(1u << (code & 7u));
+      s_x68_keys[code >> 3] = key.is_press ? (uint8_t)(s_x68_keys[code >> 3] | mask)
+                                           : (uint8_t)(s_x68_keys[code >> 3] & ~mask);
+      if (key.is_press) bit = 1; /* a player's key: the game is the player's */
+    }
+    if (key.is_press && s_frame_count - s_paused_frame <= 2u) {
+      if (key.scancode == SC_G) exit_to_gem();
+      if (key.scancode == SC_B) st_session_return_to_booster();
+    }
+    if (key.is_press && bit && !s_live) {
+      s_live = 1;
+      input_close();
+    }
+  }
+  ikbd_joystick_t stick;
+  ikbd_read_joystick(1, &stick);
+  s_stick = (uint8_t)(s_keys | ((stick.state & IKBD_JOY_UP) ? STICK_UP : 0u) |
+                      ((stick.state & IKBD_JOY_DOWN) ? STICK_DOWN : 0u) |
+                      ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
+                      ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
+                      ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
+  if (s_stick) {
+    s_live = 1;
+    input_close(); /* the player takes over from a script */
+  }
+}
+
 /* Play mode: the frame the game has just finished, drawn and converted in
  * bands on both cores (the chunky buffer's other part holds game pages) and
  * shown (fb_republish waits for the ST to have copied the last one: one
@@ -567,29 +652,8 @@ static void present(uint32_t game_us) {
   s_shown_us = t2;
   audio_render_frame(); /* the music and the effects: song_samples */
   uint32_t t3 = time_us_32();
-  ikbd_pump();
+  poll_input();
   select_poll();
-  ikbd_key_event_t key;
-  while (ikbd_pop_key(&key)) {
-    uint8_t bit = key.scancode == SC_UP      ? STICK_UP
-                  : key.scancode == SC_DOWN  ? STICK_DOWN
-                  : key.scancode == SC_LEFT  ? STICK_LEFT
-                  : key.scancode == SC_RIGHT ? STICK_RIGHT
-                  : key.scancode == SC_SPACE ? STICK_BOMB
-                                             : 0u;
-    s_keys = key.is_press ? (uint8_t)(s_keys | bit) : (uint8_t)(s_keys & ~bit);
-  }
-  ikbd_joystick_t stick;
-  ikbd_read_joystick(1, &stick);
-  s_stick = (uint8_t)(s_keys | ((stick.state & IKBD_JOY_UP) ? STICK_UP : 0u) |
-                      ((stick.state & IKBD_JOY_DOWN) ? STICK_DOWN : 0u) |
-                      ((stick.state & IKBD_JOY_LEFT) ? STICK_LEFT : 0u) |
-                      ((stick.state & IKBD_JOY_RIGHT) ? STICK_RIGHT : 0u) |
-                      ((stick.state & IKBD_JOY_FIRE) ? STICK_SHOT : 0u));
-  if (s_stick) {
-    s_live = 1;
-    input_close(); /* the player takes over from a script */
-  }
   if (benchPlayHoldAt && s_frame_count == benchPlayHoldAt + 1u) {
     hold_times();
     benchPlayHeld = benchPlayHoldAt;
@@ -692,13 +756,15 @@ static void effect_stop(void);
 
 static void iocs(uint32_t pc) {
   switch (D(0) & 0xFFu) {
-    case 0x04: /* _BITSNS: no key held */
-      D(0) = 0;
+    case 0x04: /* _BITSNS: d1 the group, the keys of it held */
+      if (s_playing) poll_input();
+      D(0) = s_x68_keys[D(1) & (X68_KEY_GROUPS - 1u)];
       return;
     case 0x3B: /* _JOYGET: the script's (stick 1 only, as the host's), or the player's stick */
       if (s_input.on) {
         D(0) = (D(1) & 0xFFu) == 0 ? input_joyget() : 0xFFFFFFFFu;
       } else {
+        if (s_playing) poll_input();
         D(0) = 0xFFFFFF00u | (~(uint32_t)s_stick & 0xFFu);
       }
       return;
@@ -1447,6 +1513,7 @@ static void run(int drawn);
 void bench_logic_run(void) { run(0); }
 
 static void run(int drawn) {
+  (void)st_session_consume_boot(); /* the ST's start before this run's */
   memset(&benchLogicResult, 0, sizeof benchLogicResult);
   memset(benchLogicHistogram, 0, sizeof benchLogicHistogram);
   stream_init();
@@ -1606,7 +1673,9 @@ static void play(void) {
     return;
   }
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
+  ikbd_set_esc_auto_exit(false);             /* ESC is the game's pause */
   run(1);
+  ikbd_set_esc_auto_exit(true);
   ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
   if (benchLogicResult.state != BENCH_LOGIC_DONE) benchPlay = 0;
 }

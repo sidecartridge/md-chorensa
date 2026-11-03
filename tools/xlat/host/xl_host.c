@@ -981,6 +981,8 @@ void xl_live_read(int on) { s_live_read = on; }
 
 int xl_record(void) { return getenv("XL_SAVE_REPLAY_AT") != NULL; }
 
+void xl_paused(void) {}
+
 /* _JOYGET for a live read: active low, bit 2 left, bit 3 right, bit 5
  * (button A) the shot, held; bit 6 (button B) the bomb, a moment every six
  * seconds. */

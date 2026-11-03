@@ -83,6 +83,10 @@ PATCHES_BEFORE = {
     # without recording it; only those reads see the live stick
     # (xl_live_read), the demo's own check for a press does not. A player's
     # game is not recorded either, unless the runtime records (xl_record).
+    # The pause's two loops (waiting for its key to be let go, then pressed
+    # again): the runtime knows the game is paused (xl_paused).
+    0x26E4C: "xl_paused();",
+    0x26E64: "xl_paused();",
     0x239E6: "if (xl_live_input()) { wr16(A(7) + 6u, 0u); xl_live_read(1); }",
     0x23A14: "if (xl_live_input() || !xl_record()) { xl_live_read(0); D(0) = sx16(D(1) & M16); "
              "{ uint32_t r = rd32(A(7)); A(7) += 4; return r; } }",
