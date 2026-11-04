@@ -4,9 +4,12 @@
 # time), so an incremental build never reports a stale ID.
 #
 #   <sha7>                     clean tree
-#   <sha7>-dirty.<diff7>       uncommitted changes; <diff7> hashes the diff,
-#                              so different changes give different IDs and the
-#                              same tree always gives the same ID. The generated
+#   <sha7>-dirty.<diff7>       uncommitted changes; <diff7> hashes the diff
+#                              and every untracked file git does not ignore
+#                              (its path and content: a new source is part of
+#                              the build), so different changes give different
+#                              IDs and the same tree always gives the same ID.
+#                              The generated
 #                              target_firmware.h does not count: build.sh
 #                              regenerates it on every build with the build's
 #                              date in its header, and the m68k sources it is
@@ -46,6 +49,18 @@ else()
       WORKING_DIRECTORY "${SRC_DIR}/../.."
       OUTPUT_VARIABLE DIFF
       ERROR_QUIET)
+    execute_process(
+      COMMAND git ls-files --others --exclude-standard
+      WORKING_DIRECTORY "${SRC_DIR}/../.."
+      OUTPUT_VARIABLE UNTRACKED
+      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT "${UNTRACKED}" STREQUAL "")
+      string(REPLACE "\n" ";" UNTRACKED "${UNTRACKED}")
+      foreach(FILE_PATH IN LISTS UNTRACKED)
+        file(SHA1 "${SRC_DIR}/../../${FILE_PATH}" FILE_HASH)
+        string(APPEND DIFF "untracked ${FILE_PATH} ${FILE_HASH}\n")
+      endforeach()
+    endif()
     if("${DIFF}" STREQUAL "")
       set(BUILD_ID "${SHA}")
     else()
