@@ -30,7 +30,7 @@ C_TESTS += $(patsubst %,$(BUILD)/%-25fps,$(PROFILE_TESTS))
 
 test: c-tests py-tests
 
-c-tests: $(C_TESTS)
+c-tests: $(C_TESTS) $(BUILD)/zip_fixture.zip
 	@set -e; for t in $(C_TESTS); do echo "== $$t"; ./$$t; done
 
 py-tests:
@@ -42,13 +42,19 @@ py-tests:
 #   // cflags: -DNAME=VALUE
 # Always rebuilt (it takes about a second): a test must never pass on a binary
 # older than the firmware source it checks.
+# A test's own flags come first, so that its own stand-ins (shim_install/)
+# are found before the firmware's headers.
 $(BUILD)/%: %.c FORCE | $(BUILD)
-	$(CC) $(CFLAGS) $(shell sed -n '2s|^// cflags: ||p' $<) -o $@ $< \
+	$(CC) $(shell sed -n '2s|^// cflags: ||p' $<) $(CFLAGS) -o $@ $< \
 	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
 
 $(BUILD)/%-25fps: %.c FORCE | $(BUILD)
-	$(CC) $(CFLAGS) $(shell sed -n '2s|^// cflags: ||p' $<) -DAPP_PROFILE=PROFILE_25FPS -o $@ $< \
+	$(CC) $(shell sed -n '2s|^// cflags: ||p' $<) $(CFLAGS) -DAPP_PROFILE=PROFILE_25FPS -o $@ $< \
 	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
+
+# The archive test_zipread reads, with its members' content beside it.
+$(BUILD)/zip_fixture.zip: zip_fixture.py | $(BUILD)
+	$(PYTHON) zip_fixture.py $(BUILD)
 
 $(BUILD):
 	mkdir -p $@

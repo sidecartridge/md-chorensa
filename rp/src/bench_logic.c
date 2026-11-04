@@ -38,6 +38,7 @@
 #include "fb_font.h"
 #include "ff.h"
 #include "ikbd.h"
+#include "install.h"
 #include "select.h"
 #include "palette.h"
 #include "sdcard.h"
@@ -45,6 +46,7 @@
 #include "store.h"
 #include "xl.h"
 #include "xl_render.h"
+#include "zipread.h"
 
 /* The game starts at the title, in the menus' image, which holds the state
  * the host left after the boot. */
@@ -62,6 +64,9 @@ extern const char release_build_id[]; /* build_id.c */
  * leaves, this array, then the cartridge window's free arena (rp_image.py
  * points the stage's page table at them, by these symbols; xl_store.h). */
 uint8_t xl_rp_ram[XL_STORE_RAM_BYTES] __attribute__((aligned(4)));
+_Static_assert(XL_STORE_RAM_BYTES >= ZIP_WORK_BYTES, "the install gate's work in the game's RAM");
+_Static_assert(XL_STORE_FB_FREE_BYTES >= INSTALL_SONG_WORK_BYTES,
+               "the install gate's song buffers past the chunky buffer's banded part");
 /* The text plane in its layout (xl_store.h's XL_STORE_TEXT_*): the stage's
  * page table points its pages into it. */
 uint8_t xl_rp_text[XL_STORE_TEXT_BYTES] __attribute__((aligned(4)));
@@ -1331,7 +1336,7 @@ void xl_linef(uint32_t word, uint32_t pc) {
 /* The app's folder on the card, and a file in it. */
 static void card_path(char *out, const char *name) {
   SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-  snprintf(out, PATH_BYTES, "%s/%s", folder ? folder->value : "", name);
+  snprintf(out, PATH_BYTES, "%s/%s", folder ? folder->value : ACONFIG_DEFAULT_FOLDER, name);
 }
 
 /* Between flash operations: the bus, the IKBD and SELECT keep going. */
@@ -1339,6 +1344,14 @@ static void pump(void) {
   fb_pump_rom3();
   ikbd_pump();
   select_poll();
+}
+
+/* The install gate's: the same, and the sound path the ST chose at its
+ * hello (audio.c follows it only here, before the game), which decides how
+ * a frame is laid out for the ST's copy (the blitter's order or the CPU's). */
+static void gate_pump(void) {
+  pump();
+  audio_render_frame();
 }
 
 static const xl_store_header_t *load(int k, const char *name, uint32_t base, uint32_t size) {
@@ -1687,9 +1700,10 @@ static void refuse_slow_card(uint32_t hz) {
   while (ikbd_pop_key(&key)) {
   }
   while (benchPlay) {
-    fb_pump_rom3();
-    ikbd_pump();
-    select_poll();
+    gate_pump();
+    /* An ST that started again shows nothing until a new frame (laid out
+     * for the copy it chose: gate_pump follows its sound path). */
+    if (st_session_consume_boot()) fb_republish();
     if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
   }
 }
@@ -1702,6 +1716,32 @@ static void play(void) {
     refuse_slow_card(hz);
     return;
   }
+  /* The sound made from the repository's zip, once (install.c); the game's
+   * RAM pages and the chunky buffer past its banded part (the gate draws in
+   * bands) are free until the run starts. */
+  SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
+  /* At the card's fastest (SDCARD_MAX_KHZ) whatever its setting, which the
+   * gate's writes are bound by; the setting again for the game. */
+  /* The songs are made for the sound path the machine plays through, which
+   * it tells at its hello (an ST just switched on may not have said it yet:
+   * the game needs the ST anyway). */
+  while (st_session_hellos() == 0) gate_pump();
+  gate_pump();
+  int path = audio_uses_dma() ? INSTALL_FOR_DMA : INSTALL_FOR_YM;
+  uint32_t card_hz = sdcard_setSpiHzNow(SDCARD_MAX_KHZ * SDCARD_KILOBAUD);
+  int installed = install_gate(folder ? folder->value : ACONFIG_DEFAULT_FOLDER, xl_rp_ram,
+                               fb_chunked_buffer + XL_STORE_FB_FREE, path, release_build_id, gate_pump);
+  if (card_hz) sdcard_setSpiHzNow(card_hz);
+  if (installed != INSTALL_READY) {
+    benchLogicResult.state = BENCH_LOGIC_ERROR;
+    snprintf(benchLogicResult.error, sizeof benchLogicResult.error, "install gate: %d", installed);
+    install_refuse(installed, folder ? folder->value : ACONFIG_DEFAULT_FOLDER, gate_pump);
+    return;
+  }
+  /* The lines the ST copies a frame: all 256 when the sound goes through
+   * the DMA chip; the top 240 on the YM (a plain ST, a Mega ST), whose
+   * samples the copy writes and which has no time for 256 at 50 fps. */
+  fb_set_copy_lines(path == INSTALL_FOR_DMA ? CART_FB_LINES : CART_FB_LINES_SHORT);
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
   ikbd_set_esc_auto_exit(false);             /* ESC is the game's pause */
   run(1);

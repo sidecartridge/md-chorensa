@@ -14,6 +14,8 @@
 #include "settings.h"
 
 #define ACONFIG_PARAM_FOLDER "FOLDER"
+/* The app's folder on the card, FOLDER's default and its fallback. */
+#define ACONFIG_DEFAULT_FOLDER "/CHORENSA"
 #define ACONFIG_PARAM_MODE "MODE"
 
 #define ACONFIG_SUCCESS 0
@@ -31,7 +33,7 @@
 enum {
   ACONFIG_BUFFER_SIZE = 4096,
   ACONFIG_MAGIC_NUMBER = 0x1234,
-  ACONFIG_VERSION_NUMBER = 0x0001
+  ACONFIG_VERSION_NUMBER = 0x0002  // 2: FOLDER /CHORENSA; settings saved before it are replaced
 };
 
 enum {

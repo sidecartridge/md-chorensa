@@ -7,6 +7,7 @@
 
 #include <string.h>
 
+#include "crc32.h"
 #include "debug.h"
 #include "ff.h"
 #include "hardware/flash.h"
@@ -22,21 +23,8 @@ static FIL s_file;
 static uint8_t s_first_page[FLASH_PAGE_SIZE] __attribute__((aligned(4)));
 
 /* The CRC's running state (before the final inversion) over more bytes. */
-static uint32_t crc_update(uint32_t crc, const uint8_t *data, uint32_t length) {
-  static const uint32_t k_nibbles[16] = {
-      0x00000000u, 0x1DB71064u, 0x3B6E20C8u, 0x26D930ACu, 0x76DC4190u, 0x6B6B51F4u,
-      0x4DB26158u, 0x5005713Cu, 0xEDB88320u, 0xF00F9344u, 0xD6D6A3E8u, 0xCB61B38Cu,
-      0x9B64C2B0u, 0x86D3D2D4u, 0xA00AE278u, 0xBDBDF21Cu};
-  for (uint32_t k = 0; k < length; k++) {
-    crc ^= data[k];
-    crc = (crc >> 4) ^ k_nibbles[crc & 15u];
-    crc = (crc >> 4) ^ k_nibbles[crc & 15u];
-  }
-  return crc;
-}
-
 uint32_t store_crc32(const uint8_t *data, uint32_t length) {
-  return ~crc_update(0xFFFFFFFFu, data, length);
+  return crc32_end(crc32_update(CRC32_START, data, length));
 }
 
 const xl_store_header_t *store_header(uint32_t base) {
@@ -111,8 +99,8 @@ int store_load(const char *path, uint32_t base, uint32_t max, const char *firmwa
   /* What landed, against the header's CRC: the first page's tail from RAM
    * (it is not programmed yet), the rest from the flash. */
   uint32_t head = header.size < FLASH_PAGE_SIZE ? header.size : FLASH_PAGE_SIZE;
-  uint32_t crc = crc_update(0xFFFFFFFFu, s_first_page + sizeof header, head - sizeof header);
-  crc = ~crc_update(crc, (const uint8_t *)base + head, header.size - head);
+  uint32_t crc = crc32_update(CRC32_START, s_first_page + sizeof header, head - sizeof header);
+  crc = crc32_end(crc32_update(crc, (const uint8_t *)base + head, header.size - head));
   if (crc != header.crc) return STORE_BAD_CRC;
   program(offset, s_first_page, FLASH_PAGE_SIZE);
   return store_header(base) ? STORE_COPIED : STORE_BAD_CRC;

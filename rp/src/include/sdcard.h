@@ -108,6 +108,11 @@ void sdcard_setSpiSpeedSettings();
  */
 uint32_t sdcard_getSpiHz(void);
 
+/* The SD card's SPI clock set to `hz` now (and kept for the driver's next
+ * set-up of the card): the setting it replaces, in Hz, or 0 without a
+ * card. Between card operations only. */
+uint32_t sdcard_setSpiHzNow(uint32_t hz);
+
 /**
  * @brief Retrieve SD card storage information.
  *
