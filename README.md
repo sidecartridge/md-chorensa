@@ -198,8 +198,10 @@ made outside CI from a copy of the game:
    ```
    `pages.yml` checks that the pack was made for the release's UF2, that the
    page's converter makes every file the cartridge's own code makes, and
-   publishes every release's page at `chorensha.sidecartridge.com/<tag>/`,
-   the newest at the root. The pack never goes into a branch.
+   publishes the site: the article at the root of
+   `chorensha.sidecartridge.com` with the newest release's converter, and
+   every release's converter alone at `/<tag>/`, which the cartridge's QR
+   code opens. The pack never goes into a branch.
 
 ---
 

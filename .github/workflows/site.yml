@@ -16,3 +16,5 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build and check the site
       run: python3 tools/site/build_site.py --out _site --check
+    - name: Build and check a release's converter page
+      run: python3 tools/site/build_site.py --converter-only --out _release --check

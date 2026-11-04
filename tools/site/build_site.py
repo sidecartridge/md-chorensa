@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """The project's website, built from site/, its pictures and the web converter.
 
-Usage: build_site.py [--out DIR] [--converter DIR] [--check]
+Usage: build_site.py [--out DIR] [--converter DIR] [--converter-only] [--check]
 
 Copies site/ (the pages, their style, scripts and fonts) into tools/dev/builds/site/
 (git-ignored), or DIR, with the pictures of docs/images/ and the app's icon in images/, and the
-converter's files beside the first page: its script and worker (web/site/app.js, worker.js) and,
-from --converter (web/build.sh's web/dist/site, the default), the WebAssembly and the release's
-image pack, when there. Nothing is fetched: open index.html from a local server.
+converter's files beside the first page: from --converter (web/build.sh's web/dist/site, the
+default) its script and worker, the WebAssembly and the release's image pack, when there (the
+script and worker from web/site otherwise). Nothing is fetched: open index.html from a local
+server.
+
+--converter-only: one release's converter alone (what chorensha.sidecartridge.com/<tag>/
+serves): web/site/index.html as the page, with the site's style, fonts, cookie banner, logo and
+icon and the converter's files; its links to the article (../) leave the folder, and the check
+lets them.
 
 --check, after the build: every local link, image, script and style resolves, every #anchor
 names an id of the page, the page loads nothing from another site (it links to other sites, never
@@ -42,17 +48,27 @@ LOADS = {("img", "src"), ("script", "src"), ("link", "href"), ("source", "src"),
 NAMES = {"canonical", "alternate"}
 
 
-def build(out: Path, converter: Path) -> None:
+def build(out: Path, converter: Path, alone: bool) -> None:
     if out.exists():
         shutil.rmtree(out)
-    shutil.copytree(SITE, out)
-    (out / "images").mkdir()
-    for f in sorted(IMAGES.iterdir()):
-        if f.suffix in (".png", ".gif", ".jpg", ".mp4"):
-            shutil.copy2(f, out / "images" / f.name)
+    if alone:
+        out.mkdir(parents=True)
+        for name in ("site.css", "consent.js", "fonts", "vendor"):
+            src = SITE / name
+            (shutil.copytree if src.is_dir() else shutil.copy2)(src, out / name)
+        shutil.copy2(REPO / "web" / "site" / "index.html", out / "index.html")
+        (out / "images").mkdir()
+        shutil.copy2(IMAGES / "logo.png", out / "images" / "logo.png")
+    else:
+        shutil.copytree(SITE, out)
+        (out / "images").mkdir()
+        for f in sorted(IMAGES.iterdir()):
+            if f.suffix in (".png", ".gif", ".jpg", ".mp4"):
+                shutil.copy2(f, out / "images" / f.name)
     shutil.copy2(REPO / "icon.png", out / "images" / "icon.png")
     for name in SCRIPTS:
-        shutil.copy2(REPO / "web" / "site" / name, out / name)
+        src = converter / name
+        shutil.copy2(src if src.exists() else REPO / "web" / "site" / name, out / name)
     for name in BUILT:
         src = converter / name
         if src.is_dir():
@@ -82,7 +98,7 @@ class Page(html.parser.HTMLParser):
                 self.refs.append((tag, name, value))
 
 
-def check(out: Path) -> list[str]:
+def check(out: Path, alone: bool) -> list[str]:
     errors = []
     for f in sorted(out.rglob("*")):
         if f.suffix in (".html", ".css", ".js") and PLANNING.search(f.read_text()):
@@ -99,6 +115,8 @@ def check(out: Path) -> list[str]:
                     errors.append(f"{rel}: <{tag} {attr}> loads {value} from another site")
                 continue
             target = (f.parent / url.path) if url.path else f
+            if alone and not target.resolve().is_relative_to(out):
+                continue  # the article's, beside the release's folder once published
             if url.path and not target.exists():
                 errors.append(f"{rel}: {value} does not exist")
             elif url.fragment and target.suffix == ".html":
@@ -120,13 +138,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--converter", type=Path, default=CONVERTER)
+    ap.add_argument("--converter-only", action="store_true")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
     out = args.out.resolve()
-    build(out, args.converter.resolve())
+    build(out, args.converter.resolve(), args.converter_only)
     print(f"site: {out}")
     if args.check:
-        errors = check(out)
+        errors = check(out, args.converter_only)
         for e in errors:
             print(f"error: {e}", file=sys.stderr)
         if errors:
