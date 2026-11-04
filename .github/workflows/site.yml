@@ -1,0 +1,18 @@
+name: Site
+
+# The website (site/, built by tools/site/build_site.py with the pictures and the converter's
+# scripts): built and checked on every pull request and every push to main: every local link and
+# anchor resolves, the pages load nothing from another site, and nothing names the planning
+# notes. Publishes nothing: pages.yml does.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build and check the site
+      run: python3 tools/site/build_site.py --out _site --check

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instructions: Cho Ren Sha 68k at 50 frames a second</title>
+<meta name="description" content="How to install and play Cho Ren Sha 68k on an Atari ST with a SidecarTridge Multi-device: the card's files, GAME.TOS, the controls, the options and the hidden menu.">
+<link rel="canonical" href="https://chorensha.sidecartridge.com/play.html">
+<link rel="icon" href="images/icon.png">
+<link rel="preload" href="fonts/press-start-2p.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="vendor/cookieconsent.css">
+<script src="vendor/cookieconsent.js"></script>
+<script src="consent.js"></script>
+<!-- Google Analytics, as on the article's page: only after consent, only on *.sidecartridge.com. -->
+<script type="text/plain" data-cookiecategory="analytics">
+    (function () {
+        var GA_ID = 'G-6VT9RXTJ2N';
+        if (!/(^|\.)sidecartridge\.com$/.test(location.hostname)) return;
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA_ID;
+        document.head.appendChild(s);
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function () { dataLayer.push(arguments); };
+        gtag('js', new Date());
+        gtag('config', GA_ID);
+    })();
+</script>
+</head>
+<body>
+<a class="skip" href="#start">Skip to the instructions</a>
+
+<header class="top">
+  <a class="name" href="index.html">Cho Ren Sha 68k <span>50fps</span></a>
+  <nav aria-label="Links">
+    <a href="index.html#convert">Make the card</a>
+    <a href="play.html" aria-current="page">Instructions</a>
+    <a href="index.html#how">How it works</a>
+    <a href="plan.html">The plan</a>
+    <a href="https://github.com/sidecartridge/md-chorensha">Source</a>
+  </nav>
+</header>
+
+<div class="layout">
+<nav class="contents" aria-label="Contents">
+  <p class="contents-title">Instructions</p>
+  <ol>
+    <li><a href="#need">What you need</a></li>
+    <li><a href="#files">Making the card's files</a></li>
+    <li><a href="#start-game">Starting the game</a></li>
+    <li><a href="#controls">Controls</a></li>
+    <li><a href="#title">The title</a></li>
+    <li><a href="#config">CONFIG</a></li>
+    <li><a href="#kakusi">The hidden menu</a></li>
+  </ol>
+</nav>
+
+<main id="start">
+
+<section id="need">
+<h2>What you need</h2>
+<ul>
+  <li>An Atari ST, STE, Mega ST or Mega STE (PAL, 50 Hz) with a colour monitor.</li>
+  <li>A <a href="https://sidecartridge.com">SidecarTridge Multi-device</a> with this app
+  installed from Booster, the Multi-device's app manager: it downloads the app and its updates
+  from the SidecarTridge store, so there is no file to install by hand.</li>
+  <li>A microSD card with about 51 MB free. The app reads the card at 8 MHz or more: set the SD
+  card's speed in Booster if it is lower.</li>
+  <li>A computer with a web browser, to make the card's files.</li>
+</ul>
+</section>
+
+<section id="files">
+<h2>Making the card's files</h2>
+<ol>
+  <li>Download the Amiga port's repository as a zip, at the commit this port was tested with:
+  <a href="https://github.com/apolkosnik/chorensha/archive/40fec7d06b53f067408b3570cdf09011f76d25bd.zip">chorensha-40fec7d.zip</a>
+  (about 280 MB).</li>
+  <li>On <a href="index.html#convert">the first page</a>, drop the zip and choose
+  <b>Make the files</b>. Everything happens in the browser; nothing is uploaded.</li>
+  <li>Choose <b>Write them to the card</b> and pick the card's top folder: the files go into
+  its <code>CHORENSHA</code> folder. In a browser that cannot write to a folder, download
+  <code>CHORENSHA.zip</code> instead and unzip it onto the card.</li>
+</ol>
+<p>The page makes the game's images for this release of the app and its sound for every
+machine, so the same card plays on an STE and on a plain ST. After updating the app, make the
+files again: each release's images fit only its own firmware. The page says which firmware its
+files are for, and the cartridge shows its own on the ST.</p>
+</section>
+
+<section id="start-game">
+<h2>Starting the game</h2>
+<p>Put the card in the Multi-device and switch the ST on: it starts to the GEM desktop. Open the
+cartridge's drive, <b>c:</b>, and start <b>GAME.TOS</b>.</p>
+<p>If the card is not ready, the game shows why, in red, with a QR code that opens the page for
+this release. It checks the card again every second, so the game starts as soon as the files
+are there: take the card out, make the files, put it back. ESC goes back to the desktop, B
+starts Booster.</p>
+<table class="t">
+  <thead><tr><th scope="col">Message</th><th scope="col">What to do</th></tr></thead>
+  <tbody>
+    <tr><td>THE GAME'S FILES ARE NOT ON THE CARD YET.</td><td>make the files (above)</td></tr>
+    <tr><td>NO MICROSD CARD FOUND IN THE CARTRIDGE.</td><td>put the card in the Multi-device</td></tr>
+    <tr><td>A FILE IS MISSING: <i>name</i></td><td>make the files again, or copy the folder again</td></tr>
+    <tr><td>A FILE IS INCOMPLETE: <i>name</i></td><td>the same: the copy was cut short or the file changed</td></tr>
+    <tr><td>THE FILES ON THE CARD ARE FOR ANOTHER VERSION.</td><td>make the files again with the page the QR code opens</td></tr>
+    <tr><td>MICROSD CARD TOO SLOW</td><td>in Booster, set the SD card's speed to 8 MHz or more, or use a faster card</td></tr>
+  </tbody>
+</table>
+<p>GAME.TOS itself may say, before the game starts, that high resolution is not supported (use
+a colour monitor) or that there is not enough free memory (start without accessories or a RAM
+disk).</p>
+</section>
+
+<section id="controls">
+<h2>Controls</h2>
+<p>Plug the joystick into <b>joystick port 1</b>, the port the mouse does not use.</p>
+<table class="t">
+  <thead><tr><th scope="col">Input</th><th scope="col">In a game</th><th scope="col">In the menus</th></tr></thead>
+  <tbody>
+    <tr><td>Joystick, or the cursor keys</td><td>move the ship</td><td>move the cursor; left and right change a value</td></tr>
+    <tr><td>Fire button, or Alternate</td><td>shot</td><td>choose (and, on the title, start a game)</td></tr>
+    <tr><td>Space bar</td><td>bomb (the X68000 pad's second button)</td><td>the second button: in BGM PLAY it stops the music</td></tr>
+    <tr><td>ESC</td><td>pause; ESC again resumes</td><td></td></tr>
+    <tr><td>G, while paused</td><td>leave the game for the GEM desktop</td><td></td></tr>
+    <tr><td>B, while paused</td><td>return to Booster</td><td></td></tr>
+    <tr><td>K, on the title</td><td></td><td>open the hidden menu</td></tr>
+    <tr><td>TAB, SHIFT, CTRL, 1</td><td>the hidden menu's DEBUG keys (below)</td><td></td></tr>
+  </tbody>
+</table>
+<p>After leaving for GEM, start GAME.TOS again to play: the game starts over at its title. The
+cartridge's SELECT button restarts the Multi-device (reset the ST afterwards); held while the ST
+is switched on, it starts Booster instead of the game.</p>
+</section>
+
+<section id="title">
+<h2>The title</h2>
+<figure class="shot-inline"><img src="images/title.png" width="768" height="768" alt="The title screen: the 超連射 68K logo, then START, CONTINUE, CONFIG, KAKUSI, GEM DESKTOP and BOOSTER, and the versions"></figure>
+<table class="t">
+  <thead><tr><th scope="col">Item</th><th scope="col">What it does</th></tr></thead>
+  <tbody>
+    <tr><td>START</td><td>a new game from stage 1</td></tr>
+    <tr><td>CONTINUE</td><td>a game from the stage where the last game ended (or the hidden menu's STAGE and ACCHO)</td></tr>
+    <tr><td>CONFIG</td><td>the options (below)</td></tr>
+    <tr><td>KAKUSI</td><td>the hidden menu (below); K on the title opens it too</td></tr>
+    <tr><td>GEM DESKTOP</td><td>leave for the GEM desktop</td></tr>
+    <tr><td>BOOSTER</td><td>return to Booster</td></tr>
+  </tbody>
+</table>
+<p>Left alone, the title shows the high scores and then the demo; any input brings the title
+back. The bottom line shows the original game's version and this port's.</p>
+<p>A new ship comes every 1,000,000 points. When the last one is lost, the game is over; a score
+good enough for the high-score table asks for a name: move the cursor over the letters with the
+joystick, press fire to add one, and choose ED to finish. The table is kept on the microSD card,
+as <code>SCORE.DAT</code> in the app's folder, <code>/CHORENSHA</code>.</p>
+<figure class="shot-inline"><img src="images/name-entry.png" width="768" height="768" loading="lazy" alt="The name entry after a game over: the BEST FIGHTERS table with the new score at number 9, and the letters to choose from"></figure>
+</section>
+
+<section id="config">
+<h2>CONFIG</h2>
+<p>Up and down choose an item; left and right change a number; fire plays or toggles. The
+options are not saved: an ST reset or switching off sets them back.</p>
+<table class="t">
+  <thead><tr><th scope="col">Item</th><th scope="col">What it does</th></tr></thead>
+  <tbody>
+    <tr><td>PCM PLAY</td><td>the sound test: fire plays sound effect N (0 to $FF)</td></tr>
+    <tr><td>BGM PLAY</td><td>the music test: fire plays song N (0 to $3F), the second button stops it</td></tr>
+    <tr><td>SHOT=A BOMB=B</td><td>swaps the two buttons (fire and Alternate bomb, space shoots)</td></tr>
+    <tr><td>SILENT MODE</td><td>turns the sound effects off (the music plays on)</td></tr>
+    <tr><td>INIT SCORE DATA</td><td>clears the high-score table and saves it on the card</td></tr>
+    <tr><td>EXIT</td><td>back to the title</td></tr>
+  </tbody>
+</table>
+<p>The original's CONFIG has five more items, left out of this port's menu; each keeps the value
+the game starts with (START SELECT starts off):</p>
+<table class="t">
+  <thead><tr><th scope="col">Item</th><th scope="col">On the X68000</th><th scope="col">Why it is left out</th></tr></thead>
+  <tbody>
+    <tr><td>SCREEN</td><td>the monitor's timing (three CRTC modes)</td><td>no effect: the port sets the ST's screen</td></tr>
+    <tr><td>XSP MODE</td><td>how the sprite driver splits sprites over the X68000's hardware</td><td>no effect: the port draws every sprite itself</td></tr>
+    <tr><td>XSP_VERTICAL</td><td>the rotated screen, for a monitor on its side</td><td>the port draws only the upright screen</td></tr>
+    <tr><td>STK_VERTICAL</td><td>turns the joystick's directions for the rotated screen</td><td>without the rotated screen it only scrambles the controls</td></tr>
+    <tr><td>START SELECT</td><td>a pad's START (the pause) and SELECT buttons, sent as left + right and up + down held together</td><td>a joystick cannot send them, and two cursor keys held at once would pause the game</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="kakusi">
+<h2>The hidden menu</h2>
+<p>KAKUSI MODE. The original opens it from CONFIG with the pad's up, down and right held
+together, which a joystick cannot do: this port has KAKUSI on the title and the K key instead.
+Values are shown in hexadecimal. STAGE, ACCHO, KASEGI, BOSS_ONLY, TD_SPEED and JK_SPEED apply
+to the next game, START or CONTINUE; MUTEKI and DEBUG at once.</p>
+<table class="t">
+  <thead><tr><th scope="col">Item</th><th scope="col">Default</th><th scope="col">Values</th><th scope="col">What it does</th></tr></thead>
+  <tbody>
+    <tr><td>MUTEKI</td><td>0</td><td>0, 1</td><td>invincibility</td></tr>
+    <tr><td>STAGE</td><td>1</td><td>0 to F</td><td>where CONTINUE starts: 1 to 7 the stages, 0 the game's stage 0, F the SHOW TIME stage; 8 to E move to the next round's stage 1</td></tr>
+    <tr><td>ACCHO</td><td>0</td><td>0 to F</td><td>the round (loop). After stage 7 an even round goes on to the next round; an odd round plays a last part and ends the game (MISSION COMPLETE). From round 1 enemies fire back when they are destroyed, and the enemies change with the round</td></tr>
+    <tr><td>TD_SPEED</td><td>$10</td><td>0 to $3C, step 4</td><td>the enemies' bullet speed: $10 is normal, $20 twice as fast, 0 stops them</td></tr>
+    <tr><td>JK_SPEED</td><td>$30</td><td>0 to $78, step 8</td><td>the ship's speed: $30 is normal; under $10 the ship cannot move</td></tr>
+    <tr><td>BOSS_ONLY</td><td>0</td><td>0, 1</td><td>every stage starts at its boss</td></tr>
+    <tr><td>DEBUG</td><td>0</td><td>0 to 3</td><td>the debug mode (below)</td></tr>
+    <tr><td>KASEGI</td><td>0</td><td>0, 1</td><td>the scoring mode: power-ups taken at their maximum build counters (shown on screen) that multiply the points of each kill, and losing the power-up clears them</td></tr>
+    <tr><td>EXIT</td><td></td><td></td><td>back to the title</td></tr>
+  </tbody>
+</table>
+<p><b>DEBUG</b> (any value but 0): TAB freezes the game, TAB again steps one frame and ESC goes
+on; CTRL and SHIFT pressed together (and let go) give one step of every power-up and a stock;
+the 1 key ends the stage's current part at once; each kill's points are shown. DEBUG 1 also
+shows the sprite count, the RANK (the difficulty, which rises with time), the stage's part
+(ALG_SW) and its frame count (TOTAL_CT). Holding fire and space while the game starts turns
+DEBUG 1 on as well.</p>
+<p>Two of the original's items are left out: VWAIT (the VBLs the game waits for each frame, 1;
+more is slow motion on the X68000, but this port shows a frame every VBL whatever the wait) and
+SAVE DEMO.REP (the last game saved as the demo: this port keeps the demo it loaded).</p>
+</section>
+
+</main>
+</div>
+
+<footer class="foot">
+  <p>Cho Ren Sha 68k 50fps for the <a href="https://sidecartridge.com">SidecarTridge Multi-device</a>.</p>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
