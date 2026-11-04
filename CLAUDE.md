@@ -24,7 +24,69 @@ release, check with
 `git grep -nIiE "\b(epic|story|iteration)[ -]?[0-9]|docs/epics" -- ':!CLAUDE.md' ':!AGENTS.md' ':!.gitignore'`
 (it must come back empty). This is a hard rule.
 
-## What this repo is
+## This repository: Cho Ren Sha 68k for the Atari ST
+
+**md-chorensha** ports Cho Ren Sha 68k (© 1995 Famibe no Yosshin, Sharp X68000) to the Atari ST,
+STE, Mega ST and Mega STE through the Multi-device, at 50 frames a second. It was cut from
+md-framebuffer-template, and most of this file (from "The framework" on) still describes that
+template. **Where the two disagree, this section and the code win.**
+
+How the port works:
+
+- **The game is the original's program, translated, not emulated.** `tools/xlat/xlat.py`
+  translates the user's `SZ2.X` (68000) into C, one function per entry point; the RP runs it with
+  a runtime in `rp/src/bench_logic.c` (paged 24-bit memory, the X68000 calls the game makes, the
+  MCDRV music and DOS file calls) and draws each frame with `rp/src/xl_render.c`. The firmware
+  carries **no game code**: the translated game comes as **images on the microSD card**
+  (`COMMON.IMG`, `MENUS.IMG`, `STAGE1..7.IMG`, `START.STA`), made by `tools/xlat/rp_store.py`
+  from whole-game runs on the host and **linked against one firmware build's ELF** (an image fits
+  only that build; its header carries the build ID). `rp/src/store.c` copies them into a flash
+  store (firmware 256 KB at `$10000000`, COMMON 576 KB at `$10040000`, the stage slot 320 KB at
+  `$100D0000`) as the game moves between stages. A **store build** (`XLAT_STORE=1`, build ID
+  `<sha7>+store`) is the game; without it the firmware builds the bench's synthetic scene.
+- **What runs**: `emul.c` → `bench.c` → `bench_logic.c`'s play loop. The template's demo menu,
+  demos and games (`demo_*.c`, `game_*.c`) are still compiled but never called; `examples/` and
+  their `apply.sh` are the template's and would replace the game.
+- **The screen**: 256 × 256 (the X68000 game's), 16 colours from the ST's 512 on every machine.
+  The framebuffer is 32 KB at `$FA8000` (`CART_FRAMEBUFFER_OFFSET`), not the template's `$FA8300`.
+  The ST opens both borders (274 lines shown) on two pages at `$60000` and `$6B000`; the copy is
+  256 lines with the blitter on the DMA path (STE, Mega STE) and the top 240 with the CPU on the
+  YM path (ST, Mega ST: at 256 the copy, which also writes the samples, ends too late: 25 fps);
+  `fb_set_copy_lines()`.
+- **The sound** (50 fps profile): the DMA chip at 25,033 Hz from a 4 KB ring at `$76000`; the YM
+  at about 7,777 Hz of three-channel samples written by the frame copy after every fifth MOVEM
+  pair, from a cursor-driven ring (the RP writes ahead of where the ST reports it plays). The
+  songs (`.ST8` / `.YM8`) and effects (`EFFECTS.SE8`) stream from the card.
+- **The ST's RAM** (`target/atarist/src/userfw.s`): `$60000`–`$77FFF`: the two pages, the DMA
+  ring, the save area at `$77E00` (`UFW_SAVE_AREA`) and the state area at `$77F00`. Nothing of the
+  cartridge runs at boot: the game is **`GAME.TOS`** on the cartridge's drive c:
+  (`target/atarist/src/main.s`), which checks that its TPA holds that RAM, runs on its own stack,
+  switches a medium-resolution desktop to low, and gives the desktop back on exit.
+- **The card's files** come from the user's copy of the Amiga port's repository zip, made in the
+  browser by the **web converter** (`web/`: `rp/src/install.c` and friends compiled to
+  WebAssembly) at chorensha.sidecartridge.com. The images are published only encrypted
+  (`tools/xlat/keyed.py`: ChaCha20, the key the SHA-256 of the zip's `sz2.hex`), as a pack
+  attached to each GitHub release. At every start the RP checks the card
+  (`rp/src/install_check.c`) and, until the files are there, shows the files page with a QR code,
+  checking again every second.
+- **The website** is `site/` (built by `tools/site/build_site.py`, published by `pages.yml`): the
+  article at the root with the newest release's converter, each release's converter at
+  `/<tag>/`.
+- **Nothing from the game is ever committed** (no file of it, no translated code, images, songs
+  or tables), except the site's pictures (`docs/images/`) and the icon. The translation, the runs
+  and the images live in git-ignored or external folders (`~/chorensa`, the runs folder in
+  `tools/re/re.cfg`).
+- **A release** (README, "Making a release"): the tag builds the UF2 in CI; the tagged commit is
+  built locally the same way (its date, any UUID: the symbols do not depend on it), its images
+  made against that ELF, keyed into `CHORENSHA-PACK-<tag>.zip`, uploaded to the release, and
+  `pages.yml` publishes it. `release/vX.Y.Z` goes into `main` as a fast-forward, so the tagged
+  commit, and the images' build ID, stay the same.
+
+## The framework (md-framebuffer-template)
+
+What follows describes the template the port was built on. Its numbers (a 320 × 200 screen, the
+demo menu, the audio rates, the RAM addresses) are the template's; see the section above for the
+port's.
 
 A template for building **sub-20-millisecond audiovisual Sidecartridge Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) — games, demos, and console/computer emulations where the speed of putting a colourful 320×200 screen up matters. Each "app" is a UF2 image that runs on a Raspberry Pi Pico (RP2040) plugged into the Multi-device cartridge slot, emulating a ROM cartridge for the Atari, while also handling SD card I/O and per-app config. You draw into a **320×200, 16-colour framebuffer** in the Pico's RAM and the firmware blits it to the ST screen every VBL (50 Hz) for you; keyboard input and YM audio come for free. The primary extension point is "draw into the framebuffer, the m68k blits it for you". Public build/usage docs are at <https://docs.sidecartridge.com/sidecartridge-multidevice/programming/>.
 

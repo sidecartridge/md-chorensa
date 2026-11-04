@@ -28,9 +28,9 @@
  * ROM4_ADDR ($FA0000) on the m68k side. Layout (single source of
  * truth, must match target/atarist/src/inc/sidecart_layout.s):
  *
- *   $FA0000  CARTRIDGE             m68k header + code (max 16 KB).
- *                                  Includes the unrolled MOVEM-loop
- *                                  block (fbdrv) at offset $2000.
+ *   $FA0000  CARTRIDGE             m68k header + code (max 16 KB):
+ *                                  main.s (GAME.TOS) and userfw.s,
+ *                                  with its unrolled copy inline.
  *   $FA4000  CMD_MAGIC_SENTINEL    4 B  (m68k polls here for
  *                                        NOP / RESET / BOOT_GEM / START)
  *   $FA4004  (reserved)            8 B  (was RANDOM_TOKEN +

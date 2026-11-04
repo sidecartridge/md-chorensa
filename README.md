@@ -205,7 +205,12 @@ made outside CI from a copy of the game:
 
 ---
 
-The rest of this file describes the framework the port is built on.
+The rest of this file describes the framework the port is built on,
+md-framebuffer-template. Its numbers and examples are the template's: a
+320 × 200 screen, the demo menu, its audio rates. This port draws the
+X68000's 256 × 256 with both borders open, runs the game instead of the demo
+menu, and `examples/` would replace the game. `CLAUDE.md` lists the
+differences.
 
 A template for building **sub-20-millisecond audiovisual SidecarTridge
 Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —

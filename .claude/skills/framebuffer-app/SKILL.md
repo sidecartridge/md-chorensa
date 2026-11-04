@@ -16,6 +16,13 @@ description: >-
 
 # Building a framebuffer app on md-framebuffer-template
 
+> **In md-chorensha** (this repository, the Cho Ren Sha 68k port) the app is the
+> translated game, not a framebuffer app of the kind below: it draws 256 × 256 with
+> both borders open, keeps its game in images on the card, and starts as GAME.TOS.
+> This skill still describes the framework's APIs it uses; for the port itself read
+> `CLAUDE.md`'s "This repository" section. Stripping the demos or applying an
+> example would replace the game.
+
 This template is for **sub-20-millisecond audiovisual SidecarTridge
 Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
 games, demos, and console/computer emulations where the speed of putting

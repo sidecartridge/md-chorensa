@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 (unreleased)
+## v1.0.0 (2026-11-04)
 
 **Cho Ren Sha 68k at 50 frames a second.** Famibe no Yosshin's 1995 shoot'em up for the Sharp
 X68000, the whole game, on an Atari ST, STE, Mega ST or Mega STE with a SidecarTridge

@@ -19,8 +19,8 @@
  *     (PROFILE_DMA_LEAD) ahead of where it reports the chip plays
  *     (CART_ROM3_AUDIO_POS_WINDOW). The RP writes the mirror further ahead
  *     still, never where the ST copies.
- * The rates are the app's profile's (profile.h): the YM at 5,585 or
- * 21,943 Hz, the DMA chip at 12,517 or 25,033 Hz.
+ * The rates are the app's profile's (profile.h): the YM at 7,777 Hz
+ * (50 fps) or 21,943 Hz (25 fps), the DMA chip at 25,033 Hz in both.
  * The ST picks the output at boot by the same rule the RP applies at the
  * hello (select_output): the DMA chip when the machine has one, unless the
  * app asked for the YM (audio_prefer_ym; CART_AUDIO_OUT_OFFSET).
