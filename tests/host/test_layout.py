@@ -195,7 +195,7 @@ PAIRS = [
      lambda rp: rp["CART_COPY_LINES_OFFSET"]),
     ("copy lines: short", lambda st: st["FB_COPY_LINES_SHORT"],
      lambda rp: rp["CART_FB_LINES_SHORT"]),
-    # The boot block the ST reads in pre_auto.
+    # The boot block the ST reads as GAME.TOS starts.
     ("boot status", lambda st: window(st, "BOOT_STATUS_ADDR"),
      lambda rp: rp["CART_BOOT_STATUS_OFFSET"]),
     ("boot message", lambda st: window(st, "BOOT_MESSAGE_ADDR"),
