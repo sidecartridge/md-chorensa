@@ -6,7 +6,8 @@
 /* The game's sound for the ST, made from the user's files: the effects
  * decoded from the X68000's ADPCM, and the songs (the Amiga port's renders,
  * .crm) mixed to mono and resampled for the DMA chip and the YM. Plain C, no
- * SDK, in pieces: the RP's install gate and the host make the same bytes. */
+ * SDK, in pieces: the web converter's install gate and the host make the same
+ * bytes. */
 
 /* --- The effects -------------------------------------------------------- */
 

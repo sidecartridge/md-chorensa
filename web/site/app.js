@@ -40,8 +40,9 @@ async function loadPack() {
       files[name] = await r.arrayBuffer();
     }
     pack = { ...info, files };
-    $('version').textContent = `Version ${info.version}.`;
-    status('pack-status', `Image pack for version ${info.version} ready.`, 'good');
+    $('version').textContent = `Version ${info.version}, firmware ${info.firmware}.`;
+    status('pack-status', `Image pack for version ${info.version} ready: it works with the `
+      + `firmware ${info.firmware} (the app's build ID).`, 'good');
   } catch (e) {
     status('pack-status', `This release's image pack could not be fetched (${e.message}).`, 'bad');
   }
