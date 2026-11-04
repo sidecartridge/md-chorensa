@@ -114,7 +114,7 @@ jobs:
           unzip -j -q "$w/release/CHORENSHA-PACK-$tag.zip" -d "$w/pack"
           python3 "$RUNNER_TEMP/pack_firmware.py" "$w"/release/*.uf2 "$w/pack/COMMON.IMK"
           # The sound as the gate built for the host makes it.
-          make -C "$w/tests/host" build/test_install
+          make -C "$w/tests/host" build/zip_fixture.zip build/test_install
           (cd "$w/tests/host" && CHORENSHA_ZIP="$zip" build/test_install)
           cp "$w"/tests/host/build/install_real/*.SE8 "$w"/tests/host/build/install_real/*.ST8 \
             "$w"/tests/host/build/install_real/*.YM8 "$w/reference/"
