@@ -19,7 +19,7 @@ CFLAGS := -std=c11 -g -O1 -Wall -Wextra -Werror -Wno-unknown-pragmas \
           -fsanitize=address,undefined -fno-omit-frame-pointer \
           -fno-sanitize-recover=undefined \
           -I shim -I $(REPO)/rp/src/include
-LDFLAGS := -fsanitize=address,undefined -pthread
+LDFLAGS := -fsanitize=address,undefined -pthread -lm
 
 C_TESTS := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 # Tests that also run with the 25 fps profile (rp/src/include/profile.h).
