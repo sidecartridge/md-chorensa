@@ -14,6 +14,7 @@
 
 #include "bench_logic.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1708,6 +1709,24 @@ static void refuse_slow_card(uint32_t hz) {
   }
 }
 
+/* The YM path's level curve (audio_set_ym_curve): 127 tanh(G x) / tanh(G)
+ * for x = sample / 127, G = YM_LOUDNESS: about G times louder (+6 dB at 2)
+ * for quiet samples, rounding off to the same peak. Made once. */
+#define YM_LOUDNESS 2.0
+static const uint8_t *ym_curve(void) {
+  static uint8_t curve[256];
+  static bool made;
+  if (!made) {
+    for (int i = 0; i < 256; i++) {
+      double y = 127.0 * tanh(YM_LOUDNESS * (i - 128) / 127.0) / tanh(YM_LOUDNESS);
+      int v = (int)lround(y);
+      curve[i] = (uint8_t)((v < -128 ? -128 : v > 127 ? 127 : v) + 128);
+    }
+    made = true;
+  }
+  return curve;
+}
+
 /* Play until the host stops it or the run fails (then not again until the
  * host asks: benchPlay back to 1). */
 static void play(void) {
@@ -1742,6 +1761,9 @@ static void play(void) {
    * the DMA chip; the top 240 on the YM (a plain ST, a Mega ST), whose
    * samples the copy writes and which has no time for 256 at 50 fps. */
   fb_set_copy_lines(path == INSTALL_FOR_DMA ? CART_FB_LINES : CART_FB_LINES_SHORT);
+  /* The YM plays quieter than the DMA chip: its quiet and middle levels
+   * raised about 6 dB (ym_curve), its peaks kept. */
+  audio_set_ym_curve(ym_curve());
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
   ikbd_set_esc_auto_exit(false);             /* ESC is the game's pause */
   run(1);

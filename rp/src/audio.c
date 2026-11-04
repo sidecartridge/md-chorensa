@@ -181,6 +181,7 @@ static uint32_t s_hellos_seen;
 /* The app's source: YM pairs at AUDIO_YM_SOURCE_RATE_HZ, or PCM at a rate. */
 static audio_fill_cb_t s_fill_cb;
 static audio_pcm_cb_t s_pcm_cb;
+static const uint8_t *s_ym_curve; /* audio_set_ym_curve(), or NULL */
 static uint32_t s_pcm_rate;
 
 /* The output's FIFO: volumes for the YM, samples for the DMA chip. One
@@ -430,6 +431,7 @@ static void produce_ym(uint8_t *dst, uint32_t n) {
   uint32_t step = rate_step(audioYmRateHz);
   for (uint32_t i = 0; i < n; i++) {
     uint32_t value = (uint32_t)(resample(step) + 128);
+    if (s_ym_curve) value = s_ym_curve[value];
 #if AUDIO_YM_VOICES == 3
     for (uint32_t v = 0; v < 3u; v++) dst[3u * i + v] = audioYmTriples[value][v];
 #else
@@ -563,6 +565,8 @@ void audio_prefer_ym(bool prefer) {
 }
 
 bool audio_uses_dma(void) { return s_out == AUDIO_OUT_DMA; }
+
+void audio_set_ym_curve(const uint8_t curve[256]) { s_ym_curve = curve; }
 
 /* --- Sources ----------------------------------------------------------------- */
 

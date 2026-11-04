@@ -102,6 +102,13 @@ void audio_pause(bool paused);
 /* True when the ST plays through the DMA chip (as of its last boot). */
 bool audio_uses_dma(void);
 
+/* A level curve for the YM path only: each 8-bit sample (as an index,
+ * -128..127 + 128) is played as curve[index] - 128. The YM's three tied
+ * channels peak lower than the DMA chip's full scale, so an app can raise
+ * the quiet and middle levels and keep its peaks. NULL (the default): the
+ * samples as they are. The table must stay valid while in use. */
+void audio_set_ym_curve(const uint8_t curve[256]);
+
 /* Top up the FIFO through the fill callback (if one is installed). Call
  * once per main-loop iteration; more often does no harm. The ST's buffer
  * itself is written from a timer interrupt, following the ST's reports. */
