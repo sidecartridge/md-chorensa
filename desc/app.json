@@ -1,10 +1,11 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
-  "image": "https://placehold.co/256x256/png",
+  "name": "Cho Ren Sha 68k",
+  "description": "1995: Famibe no Yosshin's legendary X68000 shoot 'em up, hundreds of sprites and bullets on screen. Now it plays at 50 fps on your Atari ST, STE, Mega ST or Mega STE, music and effects included, made from the freely available Amiga port's files. <a target='_blank' href='https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/chorensa-50fps/'>Learn more</a>",
+  "image": "https://raw.githubusercontent.com/sidecartridge/md-chorensa/main/icon.png",
   "tags": [
-    "Sample",
+    "Game",
+    "Shoot 'em up"
   ],
   "devices": [
     "ST",
