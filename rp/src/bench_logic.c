@@ -261,10 +261,17 @@ static void exit_to_gem(void) {
   *sentinel = cart_asM68kLong(CART_CMD_BOOT_GEM);
 }
 
+static void stop(int state, const char *what, uint32_t address);
+/* Set when the game left to the desktop: the next play waits for GAME.TOS
+ * to start again (its hello) instead of playing on unseen. */
+static bool s_left_to_desktop;
+
 /* The title's GEM DESKTOP and BOOSTER, as the pause's G and B. */
 void xl_leave(uint32_t to) {
   if (to == 0) {
     exit_to_gem();
+    s_left_to_desktop = true;
+    stop(BENCH_LOGIC_DONE, "", 0);
   } else {
     st_session_return_to_booster();
   }
@@ -1670,9 +1677,9 @@ static void say(int y, unsigned color, const char *text) {
   font_print(text);
 }
 
-/* A screen just published, held until a key: then the RP restarts into
- * Booster; or until `poll` (NULL for none, called every pass) says it is
- * done. A started ST takes the frame already in the cartridge's framebuffer
+/* A screen just published, held: ESC leaves to the desktop (the screen
+ * comes back when GAME.TOS starts again), B restarts the RP into Booster,
+ * and `poll` (NULL for none, called every pass) may say it is done. A started ST takes the frame already in the cartridge's framebuffer
  * as seen and shows only the next one, and it says hello before that, so
  * the screen is published again every half second (laid out for the copy
  * the ST chose: gate_pump follows its sound path). */
@@ -1690,12 +1697,15 @@ static void hold_screen(bool (*poll)(void)) {
       fb_republish();
       published = time_us_32();
     }
-    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
+    if (ikbd_pop_key(&key) && key.is_press) {
+      if (key.scancode == SC_ESC) exit_to_gem();
+      if (key.scancode == SC_B) st_session_return_to_booster();
+    }
   }
 }
 
-/* The card is too slow: the ST says so, and at a key press the RP restarts
- * into Booster, where the user raises the SD card's speed. The host can
+/* The card is too slow: the ST says so, and B restarts the RP into Booster,
+ * where the user raises the SD card's speed (ESC: the desktop). The host can
  * stop the play over SWD instead (benchPlay 0), to leave without Booster. */
 static void refuse_slow_card(uint32_t hz) {
   static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [14] = 0x770,
@@ -1713,7 +1723,7 @@ static void refuse_slow_card(uint32_t hz) {
            (unsigned long)(hz / 100000u % 10u));
   say(80, 15, line);
   say(92, 15, "THE GAME NEEDS 8 MHZ OR MORE.");
-  say(124, 15, "PRESS A KEY: BOOSTER STARTS.");
+  say(124, 15, "ESC: DESKTOP   B: BOOSTER");
   say(136, 15, "IN BOOSTER, SET THE SD CARD");
   say(148, 15, "SPEED TO 8 MHZ OR MORE,");
   say(160, 15, "OR USE A FASTER CARD.");
@@ -1788,7 +1798,7 @@ static void draw_files_page(void) {
   for (unsigned i = 0; i < sizeof how / sizeof how[0]; i++, y += 12) say_at(BESIDE_QR, y, 15, how[i]);
   say_at(BESIDE_QR, y, 14, s_wait.folder);
   say_at(BESIDE_QR, y + 12, 15, "FOLDER.");
-  say(184, 7, "PRESS A KEY: BOOSTER STARTS.");
+  say(184, 7, "ESC: DESKTOP   B: BOOSTER");
   /* The code, black on white. */
   static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
   static uint8_t temp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
@@ -1826,8 +1836,8 @@ static bool files_ready(void) {
 }
 
 /* The card has not the game's files (install_ready's `status`, `what`):
- * the page until they are all there (true), or a key press sends the RP to
- * Booster, or the host stops the play (false). */
+ * the page until they are all there (true), or B sends the RP to Booster,
+ * or the host stops the play (false); ESC leaves to the desktop meanwhile. */
 static bool wait_for_files(const char *folder, int path, int status, const char *what) {
   s_wait.folder = folder;
   s_wait.path = path;
@@ -1867,11 +1877,15 @@ static void play(void) {
   }
   /* The game's files, made by the web converter (install_check.h): the
    * sound for the path the machine plays through, which it tells at its
-   * hello (an ST just switched on may not have said it yet: the game needs
-   * the ST anyway). */
+   * hello, when GAME.TOS starts (and starts again after the game left to
+   * the desktop). */
   SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
   const char *dir = folder ? folder->value : ACONFIG_DEFAULT_FOLDER;
   while (st_session_hellos() == 0) gate_pump();
+  if (s_left_to_desktop) {
+    while (!st_session_consume_boot() && benchPlay) gate_pump();
+    s_left_to_desktop = false;
+  }
   gate_pump();
   int path = audio_uses_dma() ? INSTALL_FOR_DMA : INSTALL_FOR_YM;
   char what[16];

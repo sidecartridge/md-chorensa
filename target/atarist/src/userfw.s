@@ -683,13 +683,11 @@ RESET_VECTOR_HI       equ $4          ; high word of the reset PC: $00FC on a 19
 TOS_ROM_192K          equ $FC0000     ; TOS header (version word at +2), 192 KB TOS
 TOS_ROM_256K          equ $E00000     ; TOS header, 256 KB TOS and later
 
-; Save area for vectors + MFP regs we'll restore on ESC exit. Lives
-; in the top 32 bytes of the 4 KB copied-code area below ST screen
-; memory (pre_auto in main.s relocates start_rom_code..end_rom_code
-; into that area; the bootstrap occupies the bottom ~1 KB, leaving
-; the top free). A5 holds the pointer (physbase - UFW_SAVE_SIZE)
-; throughout the userfw run; the exit path recomputes from D6
-; (physbase save) in case anything clobbered A5.
+; Save area for vectors + MFP regs we'll restore on ESC exit, at
+; UFW_SAVE_AREA: between the DMA sound ring and the state area, in the
+; RAM GAME.TOS keeps for userfw (main.s: GAME_RAM_LOW..GAME_RAM_HIGH).
+; A5 holds the pointer while the vectors are saved; the exit path loads it
+; again in case anything clobbered A5.
 ;   offset  0: $68  HBL vector save (long)
 ;   offset  4: $110 Timer-D vector save (long)
 ;   offset  8: $114 Timer-C vector save (long)
@@ -705,6 +703,7 @@ TOS_ROM_256K          equ $E00000     ; TOS header, 256 KB TOS and later
 ;   offset 30: MFP TCDR save (byte)
 ;   offset 31: MFP TDDR save (byte)
 UFW_SAVE_SIZE         equ 32
+UFW_SAVE_AREA         equ $00077E00          ; up to $77E1F
 
     section text
 
@@ -776,19 +775,18 @@ userfw:
     tst.b   (a0, d1.w)
 
     ; Save TOS's VBL vector and install ours. We're in supervisor mode
-    ; (entered via CA_INIT) so writing $70.w is legal.
+    ; (GAME.TOS entered it, main.s) so writing $70.w is legal.
     move.l  VBL_VECTOR.w, UFW_VBL_VEC_SAVE   ; TOS VBL vector saved in RAM
     lea     userfw_vbl(pc), a0
     move.l  a0, VBL_VECTOR.w
 
     ; --- IKBD ownership setup ------------------------------------
     ;
-    ; A5 = save area pointer (physbase - 32). Used at boot to save
-    ; the 6 IRQ vectors + MFP IER/IMR; ESC exit recomputes A5 from
-    ; UFW_PHYSBASE_SAVE before reading the save area, so A5 doesn't
-    ; need to survive the per-VBL FBDRV_INLINE expansion.
-    movea.l UFW_PHYSBASE_SAVE, a5
-    lea     -UFW_SAVE_SIZE(a5), a5
+    ; A5 = save area pointer (UFW_SAVE_AREA). Used at boot to save
+    ; the 6 IRQ vectors + MFP IER/IMR; ESC exit loads A5 again before
+    ; reading the save area, so A5 doesn't need to survive the per-VBL
+    ; FBDRV_INLINE expansion.
+    lea     UFW_SAVE_AREA, a5
 
     ; The command sentinel at CMD_MAGIC_SENTINEL_ADDR is RP-owned (m68k
     ; can't write to the cart shared region) and is zeroed by the
@@ -1461,10 +1459,9 @@ userfw_input_check:
     clr.b   DMA_SND_CTRL.w
 .exit_sound:
 
-    ; Recompute the save-area pointer from UFW_PHYSBASE_SAVE in
-    ; case anything clobbered A5 during the run.
-    movea.l UFW_PHYSBASE_SAVE, a5
-    lea     -UFW_SAVE_SIZE(a5), a5
+    ; The save-area pointer again, in case anything clobbered A5 during
+    ; the run.
+    lea     UFW_SAVE_AREA, a5
 
     ; Stop the timers so no IRQ can fire mid-restore; then TOS's Timer-C
     ; and Timer-D back as they were, 50 Hz, and a Mega STE's speed.

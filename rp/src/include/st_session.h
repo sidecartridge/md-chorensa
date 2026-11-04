@@ -50,12 +50,12 @@ uint8_t st_session_features(void);
  * each ST boot compares it with the count it last saw (audio.c). */
 uint32_t st_session_hellos(void);
 
-/* Refuses to start the app on the ST: pre_auto prints `reason` and returns to
- * GEM, as it does in high resolution. At most CART_BOOT_MESSAGE_SIZE - 1
- * characters; "\r\n" breaks a line, and the ST adds one at the end. The ST
- * reads it once per boot, before userfw starts (on a power-on about 0.3 s
- * after the RP starts): set it later and it applies from the next ST reset.
- * It holds until st_session_allow_boot(), so the ST can be reset again once
+/* Refuses to start the app on the ST: GAME.TOS prints `reason` and ends,
+ * back to the desktop, as it does in high resolution. At most
+ * CART_BOOT_MESSAGE_SIZE - 1 characters; "\r\n" breaks a line, and the ST
+ * adds one at the end. The ST reads it each time GAME.TOS starts, before
+ * userfw does: set it later and it applies from the next start.
+ * It holds until st_session_allow_boot(), so GAME.TOS can be started again once
  * the cause is gone (a card inserted, say). */
 void st_session_veto_boot(const char *reason);
 void st_session_allow_boot(void);
