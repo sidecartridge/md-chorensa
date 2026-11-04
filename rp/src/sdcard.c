@@ -1,6 +1,7 @@
 #include "sdcard.h"
 
 static FATFS *mountedFsPtr = NULL;
+static FATFS *givenFsPtr = NULL; /* sdcard_initFilesystem's, mounted or not */
 static bool sdMounted = false;
 
 static void sdcard_warnDebugRisk(void) {
@@ -84,6 +85,8 @@ sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName) {
     return SDCARD_INIT_ERROR;
   }
 
+  givenFsPtr = fsPtr;
+
   // Check the status of the sd card
   sdcard_status_t sdcardOk = sdcardInit();
   if (sdcardOk != SDCARD_INIT_OK) {
@@ -131,17 +134,31 @@ void sdcard_changeSpiSpeed(int baudRateKbits) {
   }
 }
 
-uint32_t sdcard_setSpiHzNow(uint32_t hz) {
+sdcard_status_t sdcard_remount(const char *folderName, bool reinit) {
   size_t sdNum = sd_get_num();
   sd_card_t *sdCard = sdNum > 0 ? sd_get_by_num(sdNum - 1) : NULL;
-  if ((sdCard == NULL) || (sdCard->spi_if_p == NULL) ||
-      (sdCard->spi_if_p->spi == NULL)) {
-    return 0;
+  if ((givenFsPtr == NULL) || (sdCard == NULL) || !sd_init_driver()) {
+    return SDCARD_INIT_ERROR;
   }
-  uint32_t was = sdCard->spi_if_p->spi->baud_rate;
-  sdCard->spi_if_p->spi->baud_rate = hz;
-  spi_set_baudrate(sdCard->spi_if_p->spi->hw_inst, hz);
-  return was;
+  sdMounted = false;
+  mountedFsPtr = NULL;
+  if (reinit) {
+    sdCard->state.m_Status |= STA_NOINIT;
+  }
+  // Initialised: a status command; not: the start of an initialisation.
+  if (!sdCard->sd_test_com(sdCard)) {
+    return SDCARD_INIT_ERROR;
+  }
+  if (sdcard_mountFilesystem(givenFsPtr, "0:") != FR_OK) {
+    return SDCARD_MOUNT_ERROR;
+  }
+  sdcard_status_t folderStatus = sdcard_ensureFolder(folderName);
+  if (folderStatus != SDCARD_INIT_OK) {
+    return folderStatus;
+  }
+  mountedFsPtr = givenFsPtr;
+  sdMounted = true;
+  return SDCARD_INIT_OK;
 }
 
 uint32_t sdcard_getSpiHz(void) {

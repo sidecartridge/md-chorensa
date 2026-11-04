@@ -35,19 +35,20 @@
 #include "cart_shared.h"
 #include "constants.h"
 #include "fb.h"
+#include "fb_blit.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
 #include "ff.h"
 #include "ikbd.h"
-#include "install.h"
+#include "install_check.h"
 #include "select.h"
 #include "palette.h"
+#include "qrcodegen.h"
 #include "sdcard.h"
 #include "st_session.h"
 #include "store.h"
 #include "xl.h"
 #include "xl_render.h"
-#include "zipread.h"
 
 /* The game starts at the title, in the menus' image, which holds the state
  * the host left after the boot. */
@@ -65,9 +66,6 @@ extern const char release_build_id[]; /* build_id.c */
  * leaves, this array, then the cartridge window's free arena (rp_image.py
  * points the stage's page table at them, by these symbols; xl_store.h). */
 uint8_t xl_rp_ram[XL_STORE_RAM_BYTES] __attribute__((aligned(4)));
-_Static_assert(XL_STORE_RAM_BYTES >= ZIP_WORK_BYTES, "the install gate's work in the game's RAM");
-_Static_assert(XL_STORE_FB_FREE_BYTES >= INSTALL_SONG_WORK_BYTES,
-               "the install gate's song buffers past the chunky buffer's banded part");
 /* The text plane in its layout (xl_store.h's XL_STORE_TEXT_*): the stage's
  * page table points its pages into it. */
 uint8_t xl_rp_text[XL_STORE_TEXT_BYTES] __attribute__((aligned(4)));
@@ -1347,9 +1345,9 @@ static void pump(void) {
   select_poll();
 }
 
-/* The install gate's: the same, and the sound path the ST chose at its
- * hello (audio.c follows it only here, before the game), which decides how
- * a frame is laid out for the ST's copy (the blitter's order or the CPU's). */
+/* Before the game: the same, and the sound path the ST chose at its hello
+ * (audio.c follows it only here, before the game), which decides how a
+ * frame is laid out for the ST's copy (the blitter's order or the CPU's). */
 static void gate_pump(void) {
   pump();
   audio_render_frame();
@@ -1672,6 +1670,30 @@ static void say(int y, unsigned color, const char *text) {
   font_print(text);
 }
 
+/* A screen just published, held until a key: then the RP restarts into
+ * Booster; or until `poll` (NULL for none, called every pass) says it is
+ * done. A started ST takes the frame already in the cartridge's framebuffer
+ * as seen and shows only the next one, and it says hello before that, so
+ * the screen is published again every half second (laid out for the copy
+ * the ST chose: gate_pump follows its sound path). */
+#define HOLD_REPUBLISH_US 500000u
+static void hold_screen(bool (*poll)(void)) {
+  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+  }
+  uint32_t published = time_us_32();
+  while (benchPlay) {
+    gate_pump();
+    if (poll && poll()) return;
+    if (time_us_32() - published >= HOLD_REPUBLISH_US) {
+      fb_republish();
+      published = time_us_32();
+    }
+    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
+  }
+}
+
 /* The card is too slow: the ST says so, and at a key press the RP restarts
  * into Booster, where the user raises the SD card's speed. The host can
  * stop the play over SWD instead (benchPlay 0), to leave without Booster. */
@@ -1696,17 +1718,125 @@ static void refuse_slow_card(uint32_t hz) {
   say(148, 15, "SPEED TO 8 MHZ OR MORE,");
   say(160, 15, "OR USE A FASTER CARD.");
   fb_publish();
-  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
-  ikbd_key_event_t key;
-  while (ikbd_pop_key(&key)) {
+  hold_screen(NULL);
+}
+
+/* The web converter's page for this release: the images are made for one
+ * firmware, so each release's page stays at its own version. */
+#define WEB_CONVERTER_URL "https://chorensha.sidecartridge.com/" RELEASE_VERSION "/"
+#define QR_VERSION_MAX 4 /* 33 modules: a URL of up to 62 bytes at ECC M */
+#define QR_MODULE_PX 3   /* 123 pixels with the quiet zone */
+#define QR_QUIET 4       /* modules of white around the code */
+#define QR_X 16
+#define QR_Y 56
+#define BESIDE_QR 148 /* the text right of the code: 13 characters */
+
+static void say_at(int x, int y, unsigned color, const char *text) {
+  font_set_color(color);
+  font_move((unsigned)x, (unsigned)y);
+  font_print(text);
+}
+
+/* While the card has not the game's files: what is wrong, the card
+ * checked once a second, and the page drawn again when that changes. */
+#define CHECK_EVERY_US 1000000u
+static struct {
+  const char *folder;
+  int path, status;
+  char what[16]; /* the file to blame, if one is */
+  uint32_t checked;
+} s_wait;
+
+/* The page: why the game cannot start (in red), and how to make its files
+ * on a computer, with the web converter's QR code. */
+static void draw_files_page(void) {
+  static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [9] = 0x700,
+                                                      [14] = 0x770, [15] = 0x777};
+  benchLogicResult.state = BENCH_LOGIC_ERROR;
+  snprintf(benchLogicResult.error, sizeof benchLogicResult.error, "install: %d %s", s_wait.status,
+           s_wait.what);
+  palette_set(k_colours);
+  fb_chunked_clear(0);
+  font_set_font(&font8x8);
+  say(8, 14, "CHO REN SHA 68K");
+  switch (s_wait.status) {
+    case INSTALL_NO_CARD:
+      say(24, 9, "NO MICROSD CARD FOUND IN");
+      say(36, 9, "THE CARTRIDGE.");
+      break;
+    case INSTALL_MISSING:
+      say(24, 9, "A FILE IS MISSING:");
+      say(36, 9, s_wait.what);
+      break;
+    case INSTALL_INCOMPLETE:
+      say(24, 9, "A FILE IS INCOMPLETE:");
+      say(36, 9, s_wait.what);
+      break;
+    case INSTALL_OTHER_FIRMWARE:
+      say(24, 9, "THE FILES ON THE CARD ARE");
+      say(36, 9, "FOR ANOTHER VERSION.");
+      break;
+    default:
+      say(24, 9, "THE GAME'S FILES ARE NOT ON");
+      say(36, 9, "THE CARD YET.");
+      break;
   }
-  while (benchPlay) {
-    gate_pump();
-    /* An ST that started again shows nothing until a new frame (laid out
-     * for the copy it chose: gate_pump follows its sound path). */
-    if (st_session_consume_boot()) fb_republish();
-    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
+  static const char *const how[] = {"SCAN THE CODE", "OR VISIT",    "CHORENSHA.",
+                                    "SIDECARTRIDGE", ".COM ON A",   "COMPUTER TO",
+                                    "PREPARE THE",   "CARD'S"};
+  int y = QR_Y + 4;
+  for (unsigned i = 0; i < sizeof how / sizeof how[0]; i++, y += 12) say_at(BESIDE_QR, y, 15, how[i]);
+  say_at(BESIDE_QR, y, 14, s_wait.folder);
+  say_at(BESIDE_QR, y + 12, 15, "FOLDER.");
+  say(184, 7, "PRESS A KEY: BOOSTER STARTS.");
+  /* The code, black on white. */
+  static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
+  static uint8_t temp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
+  if (qrcodegen_encodeText(WEB_CONVERTER_URL, temp, qr, qrcodegen_Ecc_MEDIUM, 1, QR_VERSION_MAX,
+                           qrcodegen_Mask_AUTO, true)) {
+    int size = qrcodegen_getSize(qr);
+    int side = (size + 2 * QR_QUIET) * QR_MODULE_PX;
+    fb_fill_rect(QR_X, QR_Y, side, side, 15);
+    for (int qy = 0; qy < size; qy++)
+      for (int qx = 0; qx < size; qx++)
+        if (qrcodegen_getModule(qr, qx, qy))
+          fb_fill_rect(QR_X + (QR_QUIET + qx) * QR_MODULE_PX, QR_Y + (QR_QUIET + qy) * QR_MODULE_PX,
+                       QR_MODULE_PX, QR_MODULE_PX, 0);
   }
+  fb_publish();
+}
+
+/* The card checked again (hold_screen's poll), once a second: true when the
+ * files are all there. A card that failed is initialised and mounted again
+ * first: it may have been taken out to be written on a computer, and put
+ * back (sdcard_remount). */
+static bool files_ready(void) {
+  if (time_us_32() - s_wait.checked < CHECK_EVERY_US) return false;
+  if (s_wait.status == INSTALL_NO_CARD) sdcard_remount(s_wait.folder, true);
+  char what[16];
+  int status = install_ready(s_wait.folder, s_wait.path, release_build_id, what);
+  s_wait.checked = time_us_32();
+  if (status == INSTALL_READY) return true;
+  if (status != s_wait.status || strcmp(what, s_wait.what) != 0) {
+    s_wait.status = status;
+    memcpy(s_wait.what, what, sizeof what);
+    draw_files_page();
+  }
+  return false;
+}
+
+/* The card has not the game's files (install_ready's `status`, `what`):
+ * the page until they are all there (true), or a key press sends the RP to
+ * Booster, or the host stops the play (false). */
+static bool wait_for_files(const char *folder, int path, int status, const char *what) {
+  s_wait.folder = folder;
+  s_wait.path = path;
+  s_wait.status = status;
+  snprintf(s_wait.what, sizeof s_wait.what, "%s", what);
+  s_wait.checked = time_us_32();
+  draw_files_page();
+  hold_screen(files_ready);
+  return benchPlay;
 }
 
 /* The YM path's level curve (audio_set_ym_curve): 127 tanh(G x) / tanh(G)
@@ -1735,28 +1865,18 @@ static void play(void) {
     refuse_slow_card(hz);
     return;
   }
-  /* The sound made from the repository's zip, once (install.c); the game's
-   * RAM pages and the chunky buffer past its banded part (the gate draws in
-   * bands) are free until the run starts. */
+  /* The game's files, made by the web converter (install_check.h): the
+   * sound for the path the machine plays through, which it tells at its
+   * hello (an ST just switched on may not have said it yet: the game needs
+   * the ST anyway). */
   SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-  /* At the card's fastest (SDCARD_MAX_KHZ) whatever its setting, which the
-   * gate's writes are bound by; the setting again for the game. */
-  /* The songs are made for the sound path the machine plays through, which
-   * it tells at its hello (an ST just switched on may not have said it yet:
-   * the game needs the ST anyway). */
+  const char *dir = folder ? folder->value : ACONFIG_DEFAULT_FOLDER;
   while (st_session_hellos() == 0) gate_pump();
   gate_pump();
   int path = audio_uses_dma() ? INSTALL_FOR_DMA : INSTALL_FOR_YM;
-  uint32_t card_hz = sdcard_setSpiHzNow(SDCARD_MAX_KHZ * SDCARD_KILOBAUD);
-  int installed = install_gate(folder ? folder->value : ACONFIG_DEFAULT_FOLDER, xl_rp_ram,
-                               fb_chunked_buffer + XL_STORE_FB_FREE, path, release_build_id, gate_pump);
-  if (card_hz) sdcard_setSpiHzNow(card_hz);
-  if (installed != INSTALL_READY) {
-    benchLogicResult.state = BENCH_LOGIC_ERROR;
-    snprintf(benchLogicResult.error, sizeof benchLogicResult.error, "install gate: %d", installed);
-    install_refuse(installed, folder ? folder->value : ACONFIG_DEFAULT_FOLDER, gate_pump);
-    return;
-  }
+  char what[16];
+  int installed = install_ready(dir, path, release_build_id, what);
+  if (installed != INSTALL_READY && !wait_for_files(dir, path, installed, what)) return;
   /* The lines the ST copies a frame: all 256 when the sound goes through
    * the DMA chip; the top 240 on the YM (a plain ST, a Mega ST), whose
    * samples the copy writes and which has no time for 256 at 50 fps. */

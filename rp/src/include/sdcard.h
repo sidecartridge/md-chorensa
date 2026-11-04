@@ -84,6 +84,23 @@ sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName);
 sdcard_status_t sdcard_ensureFolder(const char *folderName);
 
 /**
+ * @brief Mount the card again, for one that may have been taken out and put
+ *        back.
+ *
+ * There is no card-detect line: a card taken out shows only as failed
+ * commands, and a card put back answers none until it is initialised again.
+ * With `reinit` (after a failed card operation) the card is initialised
+ * again first; then the filesystem given to sdcard_initFilesystem is mounted
+ * again (which drops what FatFs kept of the card before) and the folder made
+ * if missing. The SPI clock comes back to its setting once the card answers.
+ * Only while nothing else has a file open.
+ *
+ * @return SDCARD_INIT_OK, or SDCARD_INIT_ERROR when no card answers, or the
+ *         status of the step that failed.
+ */
+sdcard_status_t sdcard_remount(const char *folderName, bool reinit);
+
+/**
  * @brief Adjust the SPI communication speed.
  *
  * Alters the SPI baud rate using a configuration entry. Verifies the provided
@@ -107,11 +124,6 @@ void sdcard_setSpiSpeedSettings();
  *        0 when there is no card interface.
  */
 uint32_t sdcard_getSpiHz(void);
-
-/* The SD card's SPI clock set to `hz` now (and kept for the driver's next
- * set-up of the card): the setting it replaces, in Hz, or 0 without a
- * card. Between card operations only. */
-uint32_t sdcard_setSpiHzNow(uint32_t hz);
 
 /**
  * @brief Retrieve SD card storage information.

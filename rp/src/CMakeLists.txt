@@ -351,12 +351,11 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 # is left out (its assets need the flash).
 # Without XLAT_STORE the bench has no logic run and builds the scene.
 if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")
-    target_sources(${PROJECT_NAME} PRIVATE store.c crc32.c xl_render.c
-                   install.c zipread.c sound_convert.c sha256.c chacha20.c
-                   ${CMAKE_CURRENT_LIST_DIR}/../../third_party/miniz/miniz_tinfl.c)
-    # miniz's inflater alone (zipread.c): no allocation, no stdio, no time.
-    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../third_party/miniz)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE MINIZ_NO_MALLOC=1 MINIZ_NO_STDIO=1 MINIZ_NO_TIME=1)
+    # install_check.c: the card's files checked at the start (the web
+    # converter makes them); qrcodegen.c: its page's QR code when they are not.
+    target_sources(${PROJECT_NAME} PRIVATE store.c crc32.c xl_render.c install_check.c
+                   ${CMAKE_CURRENT_LIST_DIR}/../../third_party/qrcodegen/qrcodegen.c)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../third_party/qrcodegen)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../tools/xlat)
     target_compile_definitions(${PROJECT_NAME} PRIVATE XL_STORE=1 XL_PAGED=1 BENCH_SCENE_OFF=1)
     target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=xl_runtime")

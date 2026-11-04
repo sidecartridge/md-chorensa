@@ -6,8 +6,8 @@
 // default fewer silently drops the last setting a user saved. To retire a
 // setting, leave its entry here and stop reading it.
 static const SettingsConfigEntry defaultEntries[] = {
-    // The app's folder on the card: the game's files, the repository's zip
-    // the install gate converts (install.c), the high scores.
+    // The app's folder on the card: the game's files (made by the web
+    // converter, checked at the start: install_check.c), the high scores.
     {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, ACONFIG_DEFAULT_FOLDER},
     {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},  // 255: Menu mode
 };

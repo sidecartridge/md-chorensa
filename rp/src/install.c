@@ -11,7 +11,6 @@
 #include "ff.h"
 #include "chacha20.h"
 #include "crc32.h"
-#include "ikbd.h"
 #include "install_members.h"
 #include "palette.h"
 #include "pico/time.h"
@@ -23,9 +22,6 @@
 #include "xl_store.h"
 #include "zipread.h"
 
-#define PATH_BYTES 128u
-#define OUTPUTS (1u + 2u * INSTALL_SONGS) /* EFFECTS.SE8, then each song's .ST8 and .YM8 */
-#define EFFECTS_FILE "EFFECTS.SE8"
 #define EFFECTS_BASE 0x400000u /* where the game's sample table points (xl_host.c) */
 #define DRAW_EVERY_US 500000u
 
@@ -77,50 +73,11 @@ _Static_assert(HISTORY_FRAMES >= RESAMPLE_YM_TAPS + 16u, "the history covers the
 
 /* --- Paths, the manifest ------------------------------------------------- */
 
-static void path_of(char *out, const char *name) { snprintf(out, PATH_BYTES, "%s/%s", s_folder, name); }
-
-static void output_name(uint32_t k, char *out) {
-  if (k == 0) {
-    strcpy(out, EFFECTS_FILE);
-    return;
-  }
-  const char *path = k_install_songs[(k - 1u) / 2u].path;
-  const char *name = strrchr(path, '/') + 1;
-  size_t stem = strcspn(name, ".");
-  snprintf(out, 16, "%.*s.%s", (int)stem, name, (k - 1u) % 2u ? "YM8" : "ST8");
-}
-
-static uint32_t file_size(const char *name) {
-  char path[PATH_BYTES];
-  path_of(path, name);
-  return f_stat(path, &s_info) == FR_OK ? (uint32_t)s_info.fsize : 0;
-}
-
-/* The manifest's state: which outputs it lists as made (their sizes, for a
- * check that they are still there). */
-static int read_manifest(uint32_t sizes[OUTPUTS]) {
-  char path[PATH_BYTES], line[64], header[32];
-  memset(sizes, 0, OUTPUTS * sizeof *sizes);
-  path_of(path, INSTALL_MANIFEST);
-  if (f_open(&s_manifest, path, FA_READ) != FR_OK) return 0;
-  snprintf(header, sizeof header, "CHORENSA INSTALL %u\n", INSTALL_VERSION);
-  int current = f_gets(line, sizeof line, &s_manifest) && strcmp(line, header) == 0;
-  while (current && f_gets(line, sizeof line, &s_manifest)) {
-    char name[16];
-    unsigned long size;
-    if (sscanf(line, "%15s %lu", name, &size) != 2) continue;
-    for (uint32_t k = 0; k < OUTPUTS; k++) {
-      char want[16];
-      output_name(k, want);
-      if (strcmp(name, want) == 0) sizes[k] = (uint32_t)size;
-    }
-  }
-  f_close(&s_manifest);
-  return current;
-}
+static void path_of(char *out, const char *name) { install_path_of(out, s_folder, name); }
+static uint32_t file_size(const char *name) { return install_file_size(s_folder, name); }
 
 static int append_manifest(const char *line, int fresh) {
-  char path[PATH_BYTES];
+  char path[INSTALL_PATH_BYTES];
   path_of(path, INSTALL_MANIFEST);
   BYTE mode = FA_WRITE | (fresh ? FA_CREATE_ALWAYS : FA_OPEN_APPEND);
   if (f_open(&s_manifest, path, mode) != FR_OK) return INSTALL_CARD_ERROR;
@@ -221,11 +178,11 @@ static void draw(int force) {
   say(64, 15, "FROM THE FILES IN THE CARD'S");
   snprintf(line, sizeof line, "%s FOLDER.", s_folder);
   say(76, 15, line);
-  if (s_output >= OUTPUTS) {
+  if (s_output >= INSTALL_OUTPUTS) {
     say(108, 15, "THE GAME'S IMAGES");
   } else {
-    output_name(s_output, name);
-    snprintf(line, sizeof line, "SOUND %lu OF %u: %s", (unsigned long)(s_output + 1u), OUTPUTS, name);
+    install_output_name(s_output, name);
+    snprintf(line, sizeof line, "SOUND %lu OF %u: %s", (unsigned long)(s_output + 1u), INSTALL_OUTPUTS, name);
     say(108, 15, line);
   }
   s_screen.bar_y = 124;
@@ -279,7 +236,7 @@ static int32_t zip_read(void *ctx, uint32_t offset, void *buffer, uint32_t lengt
 static int open_zip(void) {
   FRESULT r = f_findfirst(&s_dir, &s_info, s_folder, "*.zip");
   while (r == FR_OK && s_info.fname[0]) {
-    char path[PATH_BYTES];
+    char path[INSTALL_PATH_BYTES];
     path_of(path, s_info.fname);
     if (f_open(&s_zip_file, path, FA_READ) == FR_OK) {
       zip_member_t m;
@@ -322,7 +279,7 @@ static int write_all(FIL *f, const void *data, uint32_t length) {
 }
 
 static int create(FIL *f, const char *name) {
-  char path[PATH_BYTES];
+  char path[INSTALL_PATH_BYTES];
   path_of(path, name);
   return f_open(f, path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK ? 0 : -1;
 }
@@ -359,7 +316,7 @@ static int make_effects(void) {
     header[4 + b] = (uint8_t)(EFFECTS_BASE >> (8 * b));
     header[8 + b] = (uint8_t)((2u * e.total) >> (8 * b));
   }
-  if (create(&s_out, EFFECTS_FILE) || write_all(&s_out, header, sizeof header)) {
+  if (create(&s_out, INSTALL_EFFECTS_FILE) || write_all(&s_out, header, sizeof header)) {
     f_close(&s_out);
     return INSTALL_CARD_ERROR;
   }
@@ -392,11 +349,6 @@ static int make_effects(void) {
 
 /* --- The images ------------------------------------------------------------ */
 
-#define IMAGES 10u
-static const char *const k_images[IMAGES] = {"COMMON.IMG", "MENUS.IMG",  "STAGE1.IMG",
-                                             "STAGE2.IMG", "STAGE3.IMG", "STAGE4.IMG",
-                                             "STAGE5.IMG", "STAGE6.IMG", "STAGE7.IMG",
-                                             XL_STORE_START_FILE};
 #define KEYED_HEADER 64u
 #define KEYED_VERSION 1u
 #define CHUNK_BYTES (16u * 1024u)
@@ -420,30 +372,12 @@ static int same_firmware(const char *a, const char *firmware) {
   return strncmp(a, firmware, XL_STORE_FIRMWARE_ID - 1u) == 0;
 }
 
-/* Image k on the card, made for this firmware (its header says so). */
-static int image_current(uint32_t k, const char *firmware) {
-  char path[PATH_BYTES];
-  uint8_t h[64];
-  UINT got = 0;
-  path_of(path, k_images[k]);
-  if (f_open(&s_keyed, path, FA_READ) != FR_OK) return 0;
-  int ok = f_read(&s_keyed, h, sizeof h, &got) == FR_OK && got == sizeof h;
-  f_close(&s_keyed);
-  if (!ok) return 0;
-  int start = k == IMAGES - 1u;
-  uint32_t magic = le32(h), at = start ? offsetof(xl_store_start_t, firmware)
-                                       : offsetof(xl_store_header_t, firmware);
-  char fw[XL_STORE_FIRMWARE_ID + 1] = {0};
-  memcpy(fw, h + at, XL_STORE_FIRMWARE_ID);
-  return magic == (start ? XL_STORE_START_MAGIC : XL_STORE_MAGIC) && same_firmware(fw, firmware);
-}
-
 /* Image k's keyed copy: its header, checked; the file left open at its data. */
 static int open_keyed(uint32_t k, const char *firmware, keyed_t *t) {
-  char name[16], path[PATH_BYTES];
+  char name[16], path[INSTALL_PATH_BYTES];
   uint8_t h[KEYED_HEADER];
   UINT got = 0;
-  keyed_name(k_images[k], name);
+  keyed_name(install_images[k], name);
   path_of(path, name);
   if (f_open(&s_keyed, path, FA_READ) != FR_OK) return INSTALL_NO_PACK;
   if (f_read(&s_keyed, h, sizeof h, &got) != FR_OK || got != sizeof h || memcmp(h, "CRSK", 4) != 0) {
@@ -457,7 +391,7 @@ static int open_keyed(uint32_t k, const char *firmware, keyed_t *t) {
   t->name[16] = '\0';
   memcpy(t->firmware, h + 32, XL_STORE_FIRMWARE_ID);
   t->firmware[XL_STORE_FIRMWARE_ID] = '\0';
-  if (t->version != KEYED_VERSION || strcmp(t->name, k_images[k]) != 0) {
+  if (t->version != KEYED_VERSION || strcmp(t->name, install_images[k]) != 0) {
     f_close(&s_keyed);
     return INSTALL_BAD_PACK;
   }
@@ -498,12 +432,12 @@ static int unlock(uint32_t k, const keyed_t *t, const uint8_t key[32]) {
   uint8_t nonce_hash[32];
   sha256_t s;
   sha256_start(&s);
-  sha256_update(&s, k_images[k], (uint32_t)strlen(k_images[k]) + 1u); /* the name and its 0 */
+  sha256_update(&s, install_images[k], (uint32_t)strlen(install_images[k]) + 1u); /* the name and its 0 */
   sha256_update(&s, t->firmware, (uint32_t)strlen(t->firmware));
   sha256_end(&s, nonce_hash);
   chacha20_t c;
   chacha20_start(&c, key, nonce_hash);
-  int status = create(&s_out, k_images[k]) ? INSTALL_CARD_ERROR : INSTALL_READY;
+  int status = create(&s_out, install_images[k]) ? INSTALL_CARD_ERROR : INSTALL_READY;
   uint8_t *chunk = s_work;
   uint32_t done = 0, crc = CRC32_START;
   while (status == INSTALL_READY && done < t->size) {
@@ -524,8 +458,8 @@ static int unlock(uint32_t k, const keyed_t *t, const uint8_t key[32]) {
   f_close(&s_keyed);
   if (status == INSTALL_READY && crc32_end(crc) != t->crc) status = INSTALL_BAD_PACK;
   if (status != INSTALL_READY) {
-    char path[PATH_BYTES];
-    path_of(path, k_images[k]);
+    char path[INSTALL_PATH_BYTES];
+    path_of(path, install_images[k]);
     f_unlink(path); /* no half image left for the store */
   }
   return status;
@@ -731,35 +665,29 @@ static void phase(uint32_t p) {
   s_phase_us = now;
 }
 
-/* Whether output k is one the sound path uses: the effects, and each
- * song's .ST8 (the DMA chip) or .YM8 (the YM). */
-static int needed(uint32_t k, int path) {
-  return k == 0 || (int)((k - 1u) % 2u) == path;
-}
-
 int install_gate(const char *folder, void *work, void *song_work, int path, const char *firmware,
                  void (*pump)(void)) {
   s_folder = folder;
   s_work = work;
   s_pump = pump;
   installStats.error = 0;
-  uint32_t sizes[OUTPUTS];
-  int current = read_manifest(sizes);
+  uint32_t sizes[INSTALL_OUTPUTS];
+  int current = install_read_manifest(s_folder, sizes);
   /* Made and still there, at the size made; those the path needs counted. */
   uint32_t missing = 0;
-  for (uint32_t k = 0; k < OUTPUTS; k++) {
+  for (uint32_t k = 0; k < INSTALL_OUTPUTS; k++) {
     char name[16];
-    output_name(k, name);
+    install_output_name(k, name);
     if (sizes[k] == 0 || file_size(name) != sizes[k]) {
       sizes[k] = 0;
-      if (needed(k, path)) missing++;
+      if (install_needed(k, path)) missing++;
     }
   }
   /* The images current for this firmware, or each one's keyed copy. */
   uint32_t lock = 0; /* the images to unlock, one bit each */
   uint64_t image_units = 0;
-  for (uint32_t k = 0; k < IMAGES; k++) {
-    if (image_current(k, firmware)) continue;
+  for (uint32_t k = 0; k < INSTALL_IMAGES; k++) {
+    if (install_image_state(s_folder, k, firmware) == INSTALL_READY) continue;
     keyed_t t;
     int r = open_keyed(k, firmware, &t);
     if (r != INSTALL_READY) return r;
@@ -768,13 +696,13 @@ int install_gate(const char *folder, void *work, void *song_work, int path, cons
     image_units += t.size;
   }
   if (current && missing == 0 && lock == 0) return INSTALL_READY;
-  DPRINTF("install: %lu of %u files to make\n", (unsigned long)missing, OUTPUTS);
+  DPRINTF("install: %lu of %u files to make\n", (unsigned long)missing, INSTALL_OUTPUTS);
 
   int status = open_zip();
   if (status != INSTALL_READY) return status;
   char line[64];
   if (!current) {
-    snprintf(line, sizeof line, "CHORENSA INSTALL %u\n", INSTALL_VERSION);
+    snprintf(line, sizeof line, INSTALL_MANIFEST_HEADER, INSTALL_VERSION);
     status = append_manifest(line, 1);
   }
   song_t *b = song_work;
@@ -797,13 +725,13 @@ int install_gate(const char *folder, void *work, void *song_work, int path, cons
   /* The images first: the game needs them as much as its sound. */
   if (lock) {
     uint8_t key[32];
-    s_output = OUTPUTS; /* the screen names the images */
+    s_output = INSTALL_OUTPUTS; /* the screen names the images */
     draw(1);
     phase(5);
     work_begin(k_install_program.size);
     status = program_key(key);
     work_end();
-    for (uint32_t k = 0; k < IMAGES && status == INSTALL_READY; k++) {
+    for (uint32_t k = 0; k < INSTALL_IMAGES && status == INSTALL_READY; k++) {
       if (!(lock >> k & 1u)) continue;
       keyed_t t;
       status = open_keyed(k, firmware, &t);
@@ -827,7 +755,7 @@ int install_gate(const char *folder, void *work, void *song_work, int path, cons
     installStats.output_ms[0] = (time_us_32() - t0) / 1000u;
     phase(0);
     if (status == INSTALL_READY) {
-      snprintf(line, sizeof line, "%s %lu\n", EFFECTS_FILE, (unsigned long)file_size(EFFECTS_FILE));
+      snprintf(line, sizeof line, "%s %lu\n", INSTALL_EFFECTS_FILE, (unsigned long)file_size(INSTALL_EFFECTS_FILE));
       status = append_manifest(line, 0);
     }
   }
@@ -836,8 +764,8 @@ int install_gate(const char *folder, void *work, void *song_work, int path, cons
     int want[2] = {path == INSTALL_FOR_DMA && sizes[k] == 0, path == INSTALL_FOR_YM && sizes[k + 1u] == 0};
     if (!want[0] && !want[1]) continue;
     char st[16], ym[16];
-    output_name(k, st);
-    output_name(k + 1u, ym);
+    install_output_name(k, st);
+    install_output_name(k + 1u, ym);
     const char *const names[2] = {st, ym};
     s_output = want[0] ? k : k + 1u;
     draw(1);
@@ -869,67 +797,4 @@ int install_gate(const char *folder, void *work, void *song_work, int path, cons
   }
   f_close(&s_zip_file);
   return status;
-}
-
-void install_refuse(int status, const char *folder, void (*pump)(void)) {
-  static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [14] = 0x770,
-                                                      [15] = 0x777};
-  char line[40];
-  palette_set(k_colours);
-  screen_start();
-  /* 28 characters a line at most: the frame is 256 pixels wide. */
-  if (status == INSTALL_NO_ZIP) {
-    say(40, 14, "THE GAME'S FILES ARE MISSING");
-    say(72, 15, "COPY THE ZIP OF THE AMIGA");
-    say(84, 15, "PORT'S REPOSITORY,");
-    say(96, 15, "GITHUB.COM/APOLKOSNIK/");
-    say(108, 15, "CHORENSHA, INTO THE CARD'S");
-    snprintf(line, sizeof line, "%s FOLDER.", folder);
-    say(120, 15, line);
-  } else if (status == INSTALL_BAD_MEMBER) {
-    say(40, 14, "THE ZIP IS NOT THE ONE");
-    say(52, 14, "THE GAME WAS TESTED WITH");
-    say(84, 15, "A FILE IN IT IS MISSING OR");
-    say(96, 15, "DIFFERENT: DOWNLOAD THE ZIP");
-    say(108, 15, "OF COMMIT 40FEC7D AGAIN.");
-  } else if (status == INSTALL_NO_PACK) {
-    say(40, 14, "THE GAME'S IMAGES ARE MISSING");
-    say(72, 15, "COPY THE .IMK AND .STK FILES");
-    say(84, 15, "OF THIS RELEASE'S IMAGE PACK");
-    snprintf(line, sizeof line, "INTO THE CARD'S %s", folder);
-    say(96, 15, line);
-    say(108, 15, "FOLDER.");
-  } else if (status == INSTALL_OLD_PACK) {
-    say(40, 14, "THE IMAGE PACK IS FOR");
-    say(52, 14, "ANOTHER RELEASE");
-    say(84, 15, "COPY THIS RELEASE'S .IMK AND");
-    say(96, 15, ".STK FILES OVER THEM.");
-  } else if (status == INSTALL_BAD_PACK) {
-    say(40, 14, "THE IMAGE PACK IS DAMAGED");
-    say(84, 15, "COPY THIS RELEASE'S .IMK AND");
-    say(96, 15, ".STK FILES AGAIN.");
-  } else if (status == INSTALL_READ_ERROR) {
-    say(40, 14, "THE CARD'S DATA CAME BACK");
-    say(52, 14, "DAMAGED, AGAIN AND AGAIN");
-    say(84, 15, "TRY A SLOWER SD CARD SPEED");
-    say(96, 15, "IN BOOSTER, OR ANOTHER CARD.");
-  } else {
-    say(40, 14, "THE CARD COULD NOT BE");
-    say(52, 14, "WRITTEN");
-    say(84, 15, "IT NEEDS ABOUT 60 MB FREE:");
-    say(96, 15, "CHECK THE CARD, TRY AGAIN.");
-  }
-  say(152, 15, "PRESS A KEY: BOOSTER STARTS.");
-  screen_show();
-  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
-  ikbd_key_event_t key;
-  while (ikbd_pop_key(&key)) {
-  }
-  for (;;) {
-    pump();
-    /* An ST that started again shows nothing until a new frame (laid out
-     * for the copy it chose: pump follows its sound path). */
-    if (st_session_consume_boot()) fb_republish();
-    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
-  }
 }
