@@ -1799,6 +1799,12 @@ static void draw_files_page(void) {
   say_at(BESIDE_QR, y, 14, s_wait.folder);
   say_at(BESIDE_QR, y + 12, 15, "FOLDER.");
   say(184, 7, "ESC: DESKTOP   B: BOOSTER");
+  /* This firmware's build ID, as the converter's page names the one its
+   * files are for (a development build's long ID alone, to fit the line). */
+  char build[40];
+  snprintf(build, sizeof build, strlen(release_build_id) <= 21u ? "FIRMWARE %s" : "%s",
+           release_build_id);
+  say(200, 7, build);
   /* The code, black on white. */
   static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
   static uint8_t temp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
