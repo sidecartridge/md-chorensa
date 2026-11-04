@@ -50,7 +50,7 @@
  *                                        lines copied, and slots
  *                                        12..19: the palette).
  *   $FA4100  AUDIO_BUFFER       4096 B (YM volume pairs, or DMA samples)
- *   $FA5100  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
+ *   $FA5100  BOOT_STATUS        2 B  (read as GAME.TOS starts: 0 = start)
  *   $FA5102  BOOT_MESSAGE     126 B  (why the RP refused to start)
  *   $FA5180  APP_FREE          ~11.6 KB free arena, ends at FRAMEBUFFER
  *   $FA8000  FRAMEBUFFER          32 KB (256 lines of 256 px, 4 bpp)
@@ -208,11 +208,11 @@
                                                   samples of either (the buffer's last 4
                                                   bytes unused) */
 
-/* Boot block, after the audio buffer. The ST reads the status word once
- * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which
+/* Boot block, after the audio buffer. The ST reads the status word each
+ * time GAME.TOS starts, before it starts userfw: CART_BOOT_OK (0, which
  * the window's erase at boot leaves) starts the app; anything else makes
- * pre_auto print the NUL-terminated text at CART_BOOT_MESSAGE_OFFSET and
- * return to GEM. Written through st_session_veto_boot(). */
+ * GAME.TOS print the NUL-terminated text at CART_BOOT_MESSAGE_OFFSET and
+ * end, back to the desktop. Written through st_session_veto_boot(). */
 #define CART_BOOT_STATUS_OFFSET                                               \
   (CART_AUDIO_BUFFER_OFFSET + CART_AUDIO_BUFFER_SIZE)
 #define CART_BOOT_OK                  0u

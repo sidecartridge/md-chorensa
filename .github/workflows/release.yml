@@ -13,6 +13,10 @@ env:
   # The same toolchain and toolkit as the Build workflow and local builds.
   ARM_TOOLCHAIN_VERSION: 14.2.rel1
   STCMD_NO_TTY: 1
+  # The game's firmware: the translated game comes as images on the SD card
+  # (a store build, ID <sha7>+store). Without it the build is the bench's
+  # synthetic scene.
+  XLAT_STORE: 1
 
 jobs:
   build:

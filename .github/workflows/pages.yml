@@ -1,0 +1,145 @@
+name: Web converter
+
+# The page that makes the microSD card's /CHORENSHA files from the Amiga
+# port's repository zip, on GitHub Pages at chorensha.sidecartridge.com (the
+# repository's Pages source is GitHub Actions; the custom domain is set in
+# its Pages settings). The images are made for one firmware, so every
+# release has its own page, /<tag>/, which the cartridge's QR code opens;
+# the root sends to the newest. Each is built from its release's tag with
+# its keyed image pack: an asset of the release, CHORENSHA-PACK-<tag>.zip
+# (the .IMK and .STK files keyed.py makes for the release's firmware), made
+# outside CI from a copy of the game and uploaded by hand. The packs never go
+# into a branch: Pages gets them as a build artifact. Once a pack is there:
+#
+#   gh release upload v1.0.0 CHORENSHA-PACK-v1.0.0.zip
+#   gh workflow run pages.yml
+#
+# A release's page is published only when its pack was made for its UF2 and
+# its converter, in WebAssembly, makes every file the gate built for the
+# host makes, byte for byte. A release without a pack is left out.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One publication at a time; a later run waits for the one before.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # The Amiga port's commit the gate's members (install_members.h) come from.
+  AMIGA_COMMIT: 40fec7d06b53f067408b3570cdf09011f76d25bd
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout the code, with its tags
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Cache the Amiga port's repository zip
+      id: amiga
+      uses: actions/cache@v4
+      with:
+        path: amiga
+        key: amiga-zip-${{ env.AMIGA_COMMIT }}
+
+    - name: Download the Amiga port's repository zip
+      if: steps.amiga.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p amiga
+        curl -fsSL -o amiga/repository.zip \
+          "https://github.com/apolkosnik/chorensha/archive/$AMIGA_COMMIT.zip"
+
+    # The pack's firmware build ID (in each keyed file's header) must be the
+    # one in the release's UF2, or the cartridge refuses the images.
+    - name: The pack's check
+      run: |
+        cat > "$RUNNER_TEMP/pack_firmware.py" <<'EOF'
+        import struct, sys
+        uf2 = open(sys.argv[1], 'rb').read()
+        blocks = {}
+        for at in range(0, len(uf2), 512):
+            magic0, magic1, _, addr, size = struct.unpack_from('<5I', uf2, at)
+            if magic0 == 0x0A324655 and magic1 == 0x9E5D5157:
+                blocks[addr] = uf2[at + 32:at + 32 + size]
+        flash = b''.join(blocks[a] for a in sorted(blocks))
+        firmware = open(sys.argv[2], 'rb').read()[32:64].split(b'\0')[0]
+        print('The pack is for firmware', firmware.decode())
+        if firmware + b'\0' not in flash:
+            sys.exit('The release UF2 is another firmware: make the pack for it again')
+        EOF
+
+    - name: Every release's page
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        zip="$GITHUB_WORKSPACE/amiga/repository.zip"
+        mkdir -p site
+        newest=""
+        for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName -q '.[].tagName'); do
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' \
+              | grep -qx "CHORENSHA-PACK-$tag.zip"; then
+            echo "$tag: no pack, left out"
+            continue
+          fi
+          echo "::group::$tag"
+          w="$GITHUB_WORKSPACE/releases/$tag"
+          git worktree add -q --detach "$w" "$tag"
+          # The firmware's QR code opens /<its version.txt>/.
+          test "$(tr -d '[:space:]' < "$w/version.txt")" = "$tag"
+          mkdir -p "$w/release" "$w/pack" "$w/reference"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$w/release" \
+            --pattern '*.uf2' --pattern "CHORENSHA-PACK-$tag.zip"
+          test "$(ls "$w"/release/*.uf2 | wc -l)" -eq 1
+          unzip -j -q "$w/release/CHORENSHA-PACK-$tag.zip" -d "$w/pack"
+          python3 "$RUNNER_TEMP/pack_firmware.py" "$w"/release/*.uf2 "$w/pack/COMMON.IMK"
+          # The sound as the gate built for the host makes it.
+          make -C "$w/tests/host" build/test_install
+          (cd "$w/tests/host" && CHORENSHA_ZIP="$zip" build/test_install)
+          cp "$w"/tests/host/build/install_real/*.SE8 "$w"/tests/host/build/install_real/*.ST8 \
+            "$w"/tests/host/build/install_real/*.YM8 "$w/reference/"
+          PACK="$w/pack" CHORENSHA_ZIP="$zip" CHORENSHA_REFERENCE="$w/reference" "$w/web/build.sh" test
+          mkdir -p "site/$tag"
+          cp -R "$w/web/dist/site/." "site/$tag/"
+          echo "- $tag" >> "$GITHUB_STEP_SUMMARY"
+          newest="${newest:-$tag}"
+          echo "::endgroup::"
+        done
+        test -n "$newest"
+        cat > site/index.html <<EOF
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>Cho Ren Sha 68k: prepare the microSD card</title>
+          <meta http-equiv="refresh" content="0; url=$newest/">
+          <script>location.replace('$newest/' + location.search);</script>
+        </head>
+        <body><p><a href="$newest/">The web converter</a></p></body>
+        </html>
+        EOF
+        echo "Newest: $newest" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Publish on GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4

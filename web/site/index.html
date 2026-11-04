@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cho Ren Sha 68k for the Atari ST</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Cho Ren Sha 68k for the Atari ST</h1>
+    <p class="lead">This page makes the files the SidecarTridge Multi-device app needs on its
+      microSD card, in the <code>/CHORENSHA</code> folder: the game's images and its sound for
+      every Atari ST, STE, Mega ST and Mega STE. It works from your copy of the Amiga port's
+      repository, and everything happens in this browser: nothing is uploaded.</p>
+
+    <section>
+      <h2>1. Get the Amiga port's repository</h2>
+      <p>Download <a id="zip-link" href="https://github.com/apolkosnik/chorensha/archive/40fec7d06b53f067408b3570cdf09011f76d25bd.zip">the repository as a zip</a>
+        (about 280 MB, the version the app was tested with).</p>
+    </section>
+
+    <section>
+      <h2>2. Choose it here</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="zip" accept=".zip">
+        <span>Drop the zip here, or click to choose it</span>
+      </label>
+      <p id="zip-status" class="status"></p>
+    </section>
+
+    <section>
+      <h2>3. Make the card's files</h2>
+      <p id="pack-status" class="status">Fetching this release's image pack…</p>
+      <button id="go" disabled>Make the files</button>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <p id="go-status" class="status"></p>
+    </section>
+
+    <section id="save" hidden>
+      <h2>4. Put them on the card</h2>
+      <p id="folder-hint">Choose the card itself (its top folder): the files go into its
+        <code>CHORENSHA</code> folder.</p>
+      <button id="to-folder">Write them to the card</button>
+      <button id="to-zip">Download CHORENSHA.zip</button>
+      <p id="save-status" class="status"></p>
+      <p>Then put the card in the Multi-device, switch the ST on and start <code>GAME.TOS</code> from the cartridge's drive c:.</p>
+    </section>
+
+    <footer>
+      <p>Cho Ren Sha 68k © 1995 Famibe no Yosshin. The Amiga port by Adam Polkosnik, after
+        Sascha Springer's Atari Falcon port. The Atari ST port by SidecarTridge.
+        <span id="version"></span></p>
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

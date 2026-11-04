@@ -4,14 +4,14 @@
 # The user's own copy of the game, never inside the repository: a checkout of
 # https://github.com/apolkosnik/chorensha (the Amiga port, which carries the
 # original X68000 disk, the game's data and the port's own checkpoints).
-ORIGINAL=/path/to/chorensa/upstream
+ORIGINAL=/path/to/chorensha/upstream
 # The original program, rebuilt from that checkout's hex dump:
 #   xxd -r binaries/x68000/sz2.hex SZ2.X
-SZ2X=/path/to/chorensa/SZ2.X
+SZ2X=/path/to/chorensha/SZ2.X
 
 # Run folders (screen dumps and checkpoints hold the game: keep them outside
 # the repository).
-RUNS=/path/to/chorensa/runs
+RUNS=/path/to/chorensha/runs
 
 # FS-UAE runs the Amiga port: an A1200 with Kickstart 3.1 (40.068, the A1200's)
 # and a Workbench 3.1 disk 2 ("Workbench"), from which amiga_system.py builds a
@@ -19,7 +19,7 @@ RUNS=/path/to/chorensa/runs
 FSUAE=/Applications/FS-UAE.app/Contents/MacOS/fs-uae
 KICKSTART_A1200=/path/to/Kickstart v3.1 r40.068 (1993-12)(Commodore)(A1200)[!].rom
 WORKBENCH_ADF=/path/to/Workbench v3.1 rev 40.42 (1994)(Commodore)(M10)(Disk 2 of 6)(Workbench)[!].adf
-AMIGA_SYSTEM=/path/to/chorensa/amiga-system
+AMIGA_SYSTEM=/path/to/chorensha/amiga-system
 # amitools' xdftool (pip install amitools), to read the Workbench disk.
 XDFTOOL=/path/to/venv/bin/xdftool
 

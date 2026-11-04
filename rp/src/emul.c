@@ -138,7 +138,7 @@ void emul_start() {
   static FATFS fsys;
   SettingsConfigEntry *folder =
       settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-  const char *folderName = folder ? folder->value : "/test";
+  const char *folderName = folder ? folder->value : ACONFIG_DEFAULT_FOLDER;
   if (sdcard_initFilesystem(&fsys, folderName) != SDCARD_INIT_OK) {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
   }

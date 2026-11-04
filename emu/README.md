@@ -37,7 +37,7 @@ Then `emu/emumd/tools/mdfw hatari` again.
 ## Build and run
 
 ```sh
-emu/emumd/tools/mdfw build           # build/md-chorensa.mdfw
+emu/emumd/tools/mdfw build           # build/md-chorensha.mdfw
 emu/emumd/tools/mdfw run             # in a window
 emu/emumd/tools/mdfw run --headless --frames 400 --screenshot build/shot.png
 ```

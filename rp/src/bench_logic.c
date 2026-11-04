@@ -14,6 +14,7 @@
 
 #include "bench_logic.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,12 +35,15 @@
 #include "cart_shared.h"
 #include "constants.h"
 #include "fb.h"
+#include "fb_blit.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
 #include "ff.h"
 #include "ikbd.h"
+#include "install_check.h"
 #include "select.h"
 #include "palette.h"
+#include "qrcodegen.h"
 #include "sdcard.h"
 #include "st_session.h"
 #include "store.h"
@@ -257,10 +261,17 @@ static void exit_to_gem(void) {
   *sentinel = cart_asM68kLong(CART_CMD_BOOT_GEM);
 }
 
+static void stop(int state, const char *what, uint32_t address);
+/* Set when the game left to the desktop: the next play waits for GAME.TOS
+ * to start again (its hello) instead of playing on unseen. */
+static bool s_left_to_desktop;
+
 /* The title's GEM DESKTOP and BOOSTER, as the pause's G and B. */
 void xl_leave(uint32_t to) {
   if (to == 0) {
     exit_to_gem();
+    s_left_to_desktop = true;
+    stop(BENCH_LOGIC_DONE, "", 0);
   } else {
     st_session_return_to_booster();
   }
@@ -1331,7 +1342,7 @@ void xl_linef(uint32_t word, uint32_t pc) {
 /* The app's folder on the card, and a file in it. */
 static void card_path(char *out, const char *name) {
   SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-  snprintf(out, PATH_BYTES, "%s/%s", folder ? folder->value : "", name);
+  snprintf(out, PATH_BYTES, "%s/%s", folder ? folder->value : ACONFIG_DEFAULT_FOLDER, name);
 }
 
 /* Between flash operations: the bus, the IKBD and SELECT keep going. */
@@ -1339,6 +1350,14 @@ static void pump(void) {
   fb_pump_rom3();
   ikbd_pump();
   select_poll();
+}
+
+/* Before the game: the same, and the sound path the ST chose at its hello
+ * (audio.c follows it only here, before the game), which decides how a
+ * frame is laid out for the ST's copy (the blitter's order or the CPU's). */
+static void gate_pump(void) {
+  pump();
+  audio_render_frame();
 }
 
 static const xl_store_header_t *load(int k, const char *name, uint32_t base, uint32_t size) {
@@ -1658,8 +1677,35 @@ static void say(int y, unsigned color, const char *text) {
   font_print(text);
 }
 
-/* The card is too slow: the ST says so, and at a key press the RP restarts
- * into Booster, where the user raises the SD card's speed. The host can
+/* A screen just published, held: ESC leaves to the desktop (the screen
+ * comes back when GAME.TOS starts again), B restarts the RP into Booster,
+ * and `poll` (NULL for none, called every pass) may say it is done. A started ST takes the frame already in the cartridge's framebuffer
+ * as seen and shows only the next one, and it says hello before that, so
+ * the screen is published again every half second (laid out for the copy
+ * the ST chose: gate_pump follows its sound path). */
+#define HOLD_REPUBLISH_US 500000u
+static void hold_screen(bool (*poll)(void)) {
+  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
+  ikbd_key_event_t key;
+  while (ikbd_pop_key(&key)) {
+  }
+  uint32_t published = time_us_32();
+  while (benchPlay) {
+    gate_pump();
+    if (poll && poll()) return;
+    if (time_us_32() - published >= HOLD_REPUBLISH_US) {
+      fb_republish();
+      published = time_us_32();
+    }
+    if (ikbd_pop_key(&key) && key.is_press) {
+      if (key.scancode == SC_ESC) exit_to_gem();
+      if (key.scancode == SC_B) st_session_return_to_booster();
+    }
+  }
+}
+
+/* The card is too slow: the ST says so, and B restarts the RP into Booster,
+ * where the user raises the SD card's speed (ESC: the desktop). The host can
  * stop the play over SWD instead (benchPlay 0), to leave without Booster. */
 static void refuse_slow_card(uint32_t hz) {
   static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [14] = 0x770,
@@ -1677,21 +1723,148 @@ static void refuse_slow_card(uint32_t hz) {
            (unsigned long)(hz / 100000u % 10u));
   say(80, 15, line);
   say(92, 15, "THE GAME NEEDS 8 MHZ OR MORE.");
-  say(124, 15, "PRESS A KEY: BOOSTER STARTS.");
+  say(124, 15, "ESC: DESKTOP   B: BOOSTER");
   say(136, 15, "IN BOOSTER, SET THE SD CARD");
   say(148, 15, "SPEED TO 8 MHZ OR MORE,");
   say(160, 15, "OR USE A FASTER CARD.");
   fb_publish();
-  ikbd_set_input_mode(IKBD_INPUT_KEYBOARD);
-  ikbd_key_event_t key;
-  while (ikbd_pop_key(&key)) {
+  hold_screen(NULL);
+}
+
+/* The web converter's page for this release: the images are made for one
+ * firmware, so each release's page stays at its own version. */
+#define WEB_CONVERTER_URL "https://chorensha.sidecartridge.com/" RELEASE_VERSION "/"
+#define QR_VERSION_MAX 4 /* 33 modules: a URL of up to 62 bytes at ECC M */
+#define QR_MODULE_PX 3   /* 123 pixels with the quiet zone */
+#define QR_QUIET 4       /* modules of white around the code */
+#define QR_X 16
+#define QR_Y 56
+#define BESIDE_QR 148 /* the text right of the code: 13 characters */
+
+static void say_at(int x, int y, unsigned color, const char *text) {
+  font_set_color(color);
+  font_move((unsigned)x, (unsigned)y);
+  font_print(text);
+}
+
+/* While the card has not the game's files: what is wrong, the card
+ * checked once a second, and the page drawn again when that changes. */
+#define CHECK_EVERY_US 1000000u
+static struct {
+  const char *folder;
+  int path, status;
+  char what[16]; /* the file to blame, if one is */
+  uint32_t checked;
+} s_wait;
+
+/* The page: why the game cannot start (in red), and how to make its files
+ * on a computer, with the web converter's QR code. */
+static void draw_files_page(void) {
+  static const uint16_t k_colours[PALETTE_ENTRIES] = {[0] = 0x000, [7] = 0x555, [9] = 0x700,
+                                                      [14] = 0x770, [15] = 0x777};
+  benchLogicResult.state = BENCH_LOGIC_ERROR;
+  snprintf(benchLogicResult.error, sizeof benchLogicResult.error, "install: %d %s", s_wait.status,
+           s_wait.what);
+  palette_set(k_colours);
+  fb_chunked_clear(0);
+  font_set_font(&font8x8);
+  say(8, 14, "CHO REN SHA 68K");
+  switch (s_wait.status) {
+    case INSTALL_NO_CARD:
+      say(24, 9, "NO MICROSD CARD FOUND IN");
+      say(36, 9, "THE CARTRIDGE.");
+      break;
+    case INSTALL_MISSING:
+      say(24, 9, "A FILE IS MISSING:");
+      say(36, 9, s_wait.what);
+      break;
+    case INSTALL_INCOMPLETE:
+      say(24, 9, "A FILE IS INCOMPLETE:");
+      say(36, 9, s_wait.what);
+      break;
+    case INSTALL_OTHER_FIRMWARE:
+      say(24, 9, "THE FILES ON THE CARD ARE");
+      say(36, 9, "FOR ANOTHER VERSION.");
+      break;
+    default:
+      say(24, 9, "THE GAME'S FILES ARE NOT ON");
+      say(36, 9, "THE CARD YET.");
+      break;
   }
-  while (benchPlay) {
-    fb_pump_rom3();
-    ikbd_pump();
-    select_poll();
-    if (ikbd_pop_key(&key) && key.is_press) st_session_return_to_booster();
+  static const char *const how[] = {"SCAN THE CODE", "OR VISIT",    "CHORENSHA.",
+                                    "SIDECARTRIDGE", ".COM ON A",   "COMPUTER TO",
+                                    "PREPARE THE",   "CARD'S"};
+  int y = QR_Y + 4;
+  for (unsigned i = 0; i < sizeof how / sizeof how[0]; i++, y += 12) say_at(BESIDE_QR, y, 15, how[i]);
+  say_at(BESIDE_QR, y, 14, s_wait.folder);
+  say_at(BESIDE_QR, y + 12, 15, "FOLDER.");
+  say(184, 7, "ESC: DESKTOP   B: BOOSTER");
+  /* The code, black on white. */
+  static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
+  static uint8_t temp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VERSION_MAX)];
+  if (qrcodegen_encodeText(WEB_CONVERTER_URL, temp, qr, qrcodegen_Ecc_MEDIUM, 1, QR_VERSION_MAX,
+                           qrcodegen_Mask_AUTO, true)) {
+    int size = qrcodegen_getSize(qr);
+    int side = (size + 2 * QR_QUIET) * QR_MODULE_PX;
+    fb_fill_rect(QR_X, QR_Y, side, side, 15);
+    for (int qy = 0; qy < size; qy++)
+      for (int qx = 0; qx < size; qx++)
+        if (qrcodegen_getModule(qr, qx, qy))
+          fb_fill_rect(QR_X + (QR_QUIET + qx) * QR_MODULE_PX, QR_Y + (QR_QUIET + qy) * QR_MODULE_PX,
+                       QR_MODULE_PX, QR_MODULE_PX, 0);
   }
+  fb_publish();
+}
+
+/* The card checked again (hold_screen's poll), once a second: true when the
+ * files are all there. A card that failed is initialised and mounted again
+ * first: it may have been taken out to be written on a computer, and put
+ * back (sdcard_remount). */
+static bool files_ready(void) {
+  if (time_us_32() - s_wait.checked < CHECK_EVERY_US) return false;
+  if (s_wait.status == INSTALL_NO_CARD) sdcard_remount(s_wait.folder, true);
+  char what[16];
+  int status = install_ready(s_wait.folder, s_wait.path, release_build_id, what);
+  s_wait.checked = time_us_32();
+  if (status == INSTALL_READY) return true;
+  if (status != s_wait.status || strcmp(what, s_wait.what) != 0) {
+    s_wait.status = status;
+    memcpy(s_wait.what, what, sizeof what);
+    draw_files_page();
+  }
+  return false;
+}
+
+/* The card has not the game's files (install_ready's `status`, `what`):
+ * the page until they are all there (true), or B sends the RP to Booster,
+ * or the host stops the play (false); ESC leaves to the desktop meanwhile. */
+static bool wait_for_files(const char *folder, int path, int status, const char *what) {
+  s_wait.folder = folder;
+  s_wait.path = path;
+  s_wait.status = status;
+  snprintf(s_wait.what, sizeof s_wait.what, "%s", what);
+  s_wait.checked = time_us_32();
+  draw_files_page();
+  hold_screen(files_ready);
+  return benchPlay;
+}
+
+/* The YM path's level curve (audio_set_ym_curve): 127 tanh(G x) / tanh(G)
+ * for x = sample / 127, G = YM_LOUDNESS: about G times louder (+6 dB at 2)
+ * for quiet samples, rounding off to the same peak. Made once. */
+#define YM_LOUDNESS 2.0
+static const uint8_t *ym_curve(void) {
+  static uint8_t curve[256];
+  static bool made;
+  if (!made) {
+    for (int i = 0; i < 256; i++) {
+      double y = 127.0 * tanh(YM_LOUDNESS * (i - 128) / 127.0) / tanh(YM_LOUDNESS);
+      int v = (int)lround(y);
+      curve[i] = (uint8_t)((v < -128 ? -128 : v > 127 ? 127 : v) + 128);
+    }
+    made = true;
+  }
+  return curve;
 }
 
 /* Play until the host stops it or the run fails (then not again until the
@@ -1702,6 +1875,29 @@ static void play(void) {
     refuse_slow_card(hz);
     return;
   }
+  /* The game's files, made by the web converter (install_check.h): the
+   * sound for the path the machine plays through, which it tells at its
+   * hello, when GAME.TOS starts (and starts again after the game left to
+   * the desktop). */
+  SettingsConfigEntry *folder = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
+  const char *dir = folder ? folder->value : ACONFIG_DEFAULT_FOLDER;
+  while (st_session_hellos() == 0) gate_pump();
+  if (s_left_to_desktop) {
+    while (!st_session_consume_boot() && benchPlay) gate_pump();
+    s_left_to_desktop = false;
+  }
+  gate_pump();
+  int path = audio_uses_dma() ? INSTALL_FOR_DMA : INSTALL_FOR_YM;
+  char what[16];
+  int installed = install_ready(dir, path, release_build_id, what);
+  if (installed != INSTALL_READY && !wait_for_files(dir, path, installed, what)) return;
+  /* The lines the ST copies a frame: all 256 when the sound goes through
+   * the DMA chip; the top 240 on the YM (a plain ST, a Mega ST), whose
+   * samples the copy writes and which has no time for 256 at 50 fps. */
+  fb_set_copy_lines(path == INSTALL_FOR_DMA ? CART_FB_LINES : CART_FB_LINES_SHORT);
+  /* The YM plays quieter than the DMA chip: its quiet and middle levels
+   * raised about 6 dB (ym_curve), its peaks kept. */
+  audio_set_ym_curve(ym_curve());
   ikbd_set_input_mode(IKBD_INPUT_JOYSTICKS); /* stick 1 for the player */
   ikbd_set_esc_auto_exit(false);             /* ESC is the game's pause */
   run(1);

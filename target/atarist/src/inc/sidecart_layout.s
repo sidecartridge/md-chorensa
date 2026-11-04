@@ -20,8 +20,8 @@
 ;   $FA4034  COPY_LINES_ADDR            2 B   (slot 9: the lines copied, 256 or the top 240)
 ;   $FA4040  PALETTE_ADDR               32 B  (slots 12..19: 16 palette words)
 ;   $FA4100  AUDIO_BUFFER_ADDR          4096 B (YM volume pairs, or DMA samples)
-;   $FA5100  BOOT_STATUS_ADDR           2 B   read once in pre_auto: 0 = start
-;   $FA5102  BOOT_MESSAGE_ADDR          126 B why the RP refused; printed before GEM
+;   $FA5100  BOOT_STATUS_ADDR           2 B   read as GAME.TOS starts: 0 = start
+;   $FA5102  BOOT_MESSAGE_ADDR          126 B why the RP refused; printed, then the desktop
 ;   $FA5180  APP_FREE_ADDR              ~11.6 KB for the app, up to the framebuffer
 ;   $FA8000  FRAMEBUFFER_ADDR           32768 B (256 lines of 256 px, 4bpp, flush at the top)
 ;   $FAFFFF  end of the window
@@ -117,8 +117,8 @@ BLIT_MODE_BLITTER       equ 2           ; the blitter, whatever the sound path
 BLIT_PIECE_DEFAULT      equ 16          ; lines, 1.0 ms: an IKBD byte waits less than its 1.28 ms
 
 ; Boot block. The RP can refuse to start the app (st_session_veto_boot()): a
-; non-zero status makes pre_auto print the NUL-terminated message and return
-; to GEM.
+; non-zero status makes GAME.TOS print the NUL-terminated message and end,
+; back to the desktop.
 BOOT_STATUS_ADDR        equ AUDIO_BUFFER_END                           ; $FA5100
 BOOT_MESSAGE_ADDR       equ (BOOT_STATUS_ADDR + 2)                     ; $FA5102
 BOOT_MESSAGE_SIZE       equ 126

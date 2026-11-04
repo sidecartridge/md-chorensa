@@ -73,9 +73,9 @@ documents each.
 ```sh
 ./amiga_run.py --frames 6000 --name oracle        # the whole attract demo, against the reference
 ./amiga_run.py --program <a build of the port> --frames 6000  # e.g. one with denser dumps
-./quantise.py stats ~/chorensa/runs/<run>/WORK --segment title:0-650 --segment play:651-6000
-./quantise.py sheet ~/chorensa/runs/<run>/WORK --frames 700,4100 --segment play:651-6000 --out <dir>
-./oracle.py png ~/chorensa/runs/<run>/shots/*.bin # screen dumps to PNG
+./quantise.py stats ~/chorensha/runs/<run>/WORK --segment title:0-650 --segment play:651-6000
+./quantise.py sheet ~/chorensha/runs/<run>/WORK --frames 700,4100 --segment play:651-6000 --out <dir>
+./oracle.py png ~/chorensha/runs/<run>/shots/*.bin # screen dumps to PNG
 ./hatari_run.py --build --expect scripts/bench.exp --name bench
 ./hatari_run.py --machine st --expect scripts/bench.exp
 ```

@@ -1,12 +1,75 @@
-# md-framebuffer-template
+<div align="center">
 
-## Playing Cho Ren Sha 68k
+<img src="icon.png" alt="SidecarTridge Multi-device Cho Ren Sha 68k" width="180" />
+
+# Cho Ren Sha 68k for the SidecarTridge Multi-device
+
+[![Build](https://github.com/sidecartridge/md-chorensha/actions/workflows/build.yml/badge.svg)](https://github.com/sidecartridge/md-chorensha/actions/workflows/build.yml)
+[![Release](https://github.com/sidecartridge/md-chorensha/actions/workflows/release.yml/badge.svg)](https://github.com/sidecartridge/md-chorensha/actions/workflows/release.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+
+</div>
 
 Cho Ren Sha 68k (© 1995 Famibe no Yosshin) is a vertical shoot 'em up for
-the Sharp X68000. This port runs the original game's code, translated, on
-the Multi-device's RP2040; the Atari ST shows the picture and plays the
-sound. The game's files come from your own copy of the game; nothing of the
-game is in this repository.
+the Sharp X68000. This port plays it on an Atari ST, STE, Mega ST or Mega
+STE with a [SidecarTridge Multi-device](https://sidecartridge.com) in its
+cartridge slot: the original game's code runs, translated, on the
+Multi-device's RP2040, and the ST shows the picture and plays the sound, at
+50 frames a second. The game's files are made from the Amiga
+port's repository; nothing of the game is in this repository.
+
+## Installing
+
+### What you need
+
+- An Atari ST, STE, Mega ST or Mega STE (PAL, 50 Hz) with a colour monitor.
+- A SidecarTridge Multi-device with this app installed from Booster, and a
+  microSD card with about 51 MB free. The app reads the card at 8 MHz or
+  more: set the SD card's speed in Booster if it is lower.
+- A computer with a web browser, to make the card's files.
+
+### Making the card's files
+
+1. Download the Amiga port's repository as a zip, at the commit this port
+   was tested with:
+   <https://github.com/apolkosnik/chorensha/archive/40fec7d06b53f067408b3570cdf09011f76d25bd.zip>
+   (about 280 MB).
+2. Open <https://chorensha.sidecartridge.com>, drop the zip on the page and
+   choose **Make the files**. Everything happens in the browser; nothing is
+   uploaded.
+3. Choose **Write them to the card** and pick the card's top folder: the
+   files go into its `CHORENSHA` folder. In a browser that cannot write to a
+   folder, download `CHORENSHA.zip` instead and unzip it onto the card.
+
+The page makes the game's images for this release of the app and its sound
+for every machine, so the same card plays on an STE and on a plain ST. After
+updating the app, make the files again: each release's images fit only its
+own firmware.
+
+### Starting the game
+
+Put the card in the Multi-device and switch the ST on: it starts to the GEM
+desktop. Open the cartridge's drive, **c:**, and start **GAME.TOS**.
+
+If the card is not ready, the game shows why, in red, with a QR code that
+opens the page for this release; it checks the card again every second, so
+the game starts as soon as the files are there (take the card out, make the
+files, put it back). ESC goes back to the desktop, B starts Booster.
+
+| Message | What to do |
+| --- | --- |
+| THE GAME'S FILES ARE NOT ON THE CARD YET. | make the files (above) |
+| NO MICROSD CARD FOUND IN THE CARTRIDGE. | put the card in the Multi-device |
+| A FILE IS MISSING: *name* | make the files again, or copy the folder again |
+| A FILE IS INCOMPLETE: *name* | the same: the copy was cut short or the file changed |
+| THE FILES ON THE CARD ARE FOR ANOTHER VERSION. | make the files again with the page the QR code opens |
+| MICROSD CARD TOO SLOW | in Booster, set the SD card's speed to 8 MHz or more, or use a faster card |
+
+GAME.TOS itself may say, before the game starts, that high resolution is not
+supported (use a colour monitor) or that there is not enough free memory
+(start without accessories or a RAM disk).
+
+## Playing Cho Ren Sha 68k
 
 ### Controls
 
@@ -23,7 +86,7 @@ Plug the joystick into **joystick port 1** (the port the mouse does not use).
 | K (on the title) | | open the hidden menu |
 | TAB, SHIFT, CTRL, 1 | the hidden menu's DEBUG keys (below) | |
 
-After leaving for GEM, reset the ST to play again: the game starts over at
+After leaving for GEM, start GAME.TOS again to play: the game starts over at
 its title. The cartridge's SELECT button restarts the Multi-device (reset the
 ST afterwards); held while the ST is switched on, it starts Booster instead
 of the game.
@@ -47,7 +110,7 @@ A new ship comes every 1,000,000 points. When the last one is lost, the
 game is over; a score good enough for the high-score
 table asks for a name: move the cursor over the letters with the joystick,
 press fire to add one, and choose ED to finish. The table is kept on the
-microSD card, as `SCORE.DAT` in the app's folder.
+microSD card, as `SCORE.DAT` in the app's folder, `/CHORENSHA`.
 
 ### CONFIG
 
@@ -106,6 +169,37 @@ part at once; each kill's points are shown. DEBUG 1 also shows the sprite
 count, the RANK (the difficulty, which rises with time), the stage's part
 (ALG_SW) and its frame count (TOTAL_CT). Holding fire and space while the
 game starts turns DEBUG 1 on as well.
+
+## Making a release
+
+For the port's maintainers. A release is tagged as the framework's own
+releases are (below, and `CLAUDE.md`'s release workflow): the release
+workflow builds the UF2, the game's firmware (`XLAT_STORE=1`), and attaches
+it to the GitHub release. The web page needs that release's image pack,
+made outside CI from a copy of the game:
+
+1. Build the same commit locally, dated by it, with the app's UUID, for the
+   release's ELF (a local build of a commit matches CI's byte for byte):
+   ```bash
+   RELEASE_DATE="$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M:%S')" \
+     XLAT_STORE=1 ./build.sh pico_w release <the app's UUID>
+   ```
+2. Make the images against it, `rp/build-pico_w-release/rp.elf`, with
+   `tools/xlat/rp_store.py --firmware` (and its runs of the whole game).
+3. Key them, with the zip's `binaries/x68000/sz2.hex`, and zip the keyed set:
+   ```bash
+   python3 tools/xlat/keyed.py --images <the images> --hex <sz2.hex> --out <pack>
+   (cd <pack> && zip ../CHORENSHA-PACK-vX.Y.Z.zip *.IMK *.STK)
+   ```
+4. Upload it to the release and publish the page:
+   ```bash
+   gh release upload vX.Y.Z CHORENSHA-PACK-vX.Y.Z.zip
+   gh workflow run pages.yml
+   ```
+   `pages.yml` checks that the pack was made for the release's UF2, that the
+   page's converter makes every file the cartridge's own code makes, and
+   publishes every release's page at `chorensha.sidecartridge.com/<tag>/`,
+   the newest at the root. The pack never goes into a branch.
 
 ---
 
@@ -742,3 +836,7 @@ addressing, and a dual-core band split via `fb_core1_dispatch()`.
 ## License
 
 GPL v3.0 — see [LICENSE](LICENSE).
+
+Third-party code, each under its own licence in `third_party/`: miniz's
+inflater (MIT), for the web converter's zip reader; Project Nayuki's QR Code
+generator (MIT), for the QR code on the cartridge's files page.

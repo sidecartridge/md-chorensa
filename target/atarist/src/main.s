@@ -35,8 +35,6 @@ FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen cop
 ; native 4bpp copy replaced it; nothing references this constant.
 MONO_UI_BUFFER_SIZE	equ 8000
 
-SCREEN_SIZE			equ (-4096)	; Use the memory before the screen memory to store the copied code
-PRE_RESET_WAIT		equ $FFFFF
 
 ; If 1, the display will not use the framebuffer and will write directly to the
 ; display memory. This is useful to reduce the memory usage in the rp2040
@@ -44,6 +42,7 @@ PRE_RESET_WAIT		equ $FFFFF
 DISPLAY_BYPASS_FRAMEBUFFER 	equ 1
 
 _conterm			equ $484	; Conterm device number
+PALETTE_REGS		equ $FFFF8240	; the 16 palette words
 
 
 ; Constants needed for the commands
@@ -172,96 +171,123 @@ check_commands		macro
 first:
 ;	dc.l second
 	dc.l 0
-	dc.l $08000000 + pre_auto		; After GEMDOS init (before booting from disks)
-	dc.l 0
+	dc.l GAME_TOS_APP				; no init routine: a TOS application
+	dc.l game_tos					; opened from the desktop's drive c:
 	dc.w GEMDOS_TIME 				;time
 	dc.w GEMDOS_DATE 				;date
-	dc.l end_pre_auto - pre_auto
-	dc.b "TERM",0
+	dc.l end_game_tos - game_tos
+	dc.b "GAME.TOS",0
     even
 
-pre_auto:
-; Relocate the content of the cartridge ROM to the RAM
+; GAME.TOS: the desktop starts it as any TOS program (Pexec, user mode, its
+; basepage at 4(sp)); nothing of the cartridge runs at boot. The program
+; enters supervisor mode, checks the machine and the RP's word, and runs
+; userfw, which takes the machine over and returns (rts) when the player
+; leaves to the desktop; then the program gives the desktop back its
+; resolution, palette and user mode, and ends (Pterm0).
+;
+; userfw keeps its screens, the DMA sound ring and its state at fixed
+; addresses, GAME_RAM_LOW..GAME_RAM_HIGH (userfw.s: UFW_SCREEN_A ..
+; UFW_RESET_STUB's state area). A program started by the desktop owns its
+; whole TPA and keeps it (no Mshrink), so those addresses are the program's
+; as long as the TPA holds them; the stack TOS gives the program sits at the
+; TPA's top, where they may be, so the program runs on its own stack at the
+; TPA's bottom instead. The words it keeps for itself are in its basepage's
+; command line, which a cartridge program does not read.
+GAME_TOS_APP		equ $40000000	; CA_INIT bit 30: a TOS application
+GAME_RAM_LOW		equ $00060000	; userfw's lowest fixed address (UFW_SCREEN_A)
+GAME_RAM_HIGH		equ $00078000	; past its highest (the state area's end)
+GAME_STACK_BYTES	equ 4096
+BP_HITPA			equ 4			; basepage: the TPA's end
+BP_CMDLIN			equ $80			; basepage: the command line, 128 bytes
+GAME_SAVE_SSP		equ BP_CMDLIN		; long: Super's old stack
+GAME_SAVE_SP		equ BP_CMDLIN+4		; long: the stack TOS gave the program
+GAME_SAVE_REZ		equ BP_CMDLIN+8		; word: the desktop's resolution
+GAME_SAVE_PALETTE	equ BP_CMDLIN+16	; 16 words: the desktop's palette
 
-; Get the screen memory address to display
-	get_screen_base
-	move.l d0, a2
+game_tos:
+	move.l 4(sp), a4				; the basepage
+	clr.l -(sp)
+	gemdos Super,6
+	move.l d0, GAME_SAVE_SSP(a4)
+	move.l sp, GAME_SAVE_SP(a4)
 
-	lea SCREEN_SIZE(a2), a2		; Move to the work area just after the screen memory
-	move.l a2, a3				; Save the relocation destination address in A3
-	; Copy the code out of the ROM to avoid unstable behavior
-    move.l #end_rom_code - start_rom_code, d6
-    lea start_rom_code, a1    ; a1 points to the start of the code in ROM
-    lsr.w #2, d6
-    subq #1, d6
-.copy_rom_code:
-    move.l (a1)+, (a2)+
-    dbf d6, .copy_rom_code
-	jmp (a3)
+	; userfw's fixed addresses in this program's TPA, its own stack below them.
+	lea .no_memory_txt(pc), a0
+	cmpi.l #GAME_RAM_HIGH, BP_HITPA(a4)
+	blo .refuse
+	lea 256+GAME_STACK_BYTES(a4), a1
+	cmpa.l #GAME_RAM_LOW, a1
+	bhi .refuse
+	move.l a1, sp
+	move.l a4, -(sp)
 
-start_rom_code:
-; We assume the screen memory address is in D0 after the get_screen_base call
-	move.l d0, a6				; Save the screen memory address in A6
-
-; Enable bconin to return shift key status
-	or.b #%1000, _conterm.w
-
-; Get the resolution of the screen. High-res (640x400 mono) is not
-; supported by the framebuffer template; bail to GEM with a message
-; mirroring md-sprites-demo's lowres_only branch.
+	; Low resolution only; a medium-resolution desktop is switched to low
+	; and back. High resolution (a mono monitor) cannot show the game.
 	get_rez
-	cmp.w #2, d0
-	beq .highres_unsupported
-
-; The old mono boot-UI loop (.print_loop_low, which read the
-; first 8 KB of the cartridge framebuffer and expanded it 1bpp -> 4bpp
-; into the ST screen) is gone. With u8g2 removed there's nothing left
-; to render in mono, and the expander mis-mapped any 4bpp content
-; written to the cart FB (40 cart bytes -> 1 ST row, so rows 0..4 of
-; a 4bpp image landed on ST rows 0, 4, 8, 12, 16). Boot straight into
-; the user firmware: userfw owns the VBL loop and runs the FBDRV_INLINE
-; copy, which copies the cart FB to ST screen verbatim with the correct 4bpp planar interpretation.
-; Unless the RP refused to start the app: then print its reason and return
-; to GEM, as for high resolution.
+	move.w d0, GAME_SAVE_REZ(a4)
+	lea .highres_unsupported_txt(pc), a0
+	cmpi.w #2, d0
+	beq .refuse_on_own_stack
+	; The RP's word: 0 starts the game, else its reason is printed.
+	lea BOOT_MESSAGE_ADDR, a0
 	tst.w BOOT_STATUS_ADDR
-	bne.s .boot_vetoed
-	jmp USERFW
+	bne .refuse_on_own_stack
 
-.boot_vetoed:
-	print BOOT_MESSAGE_ADDR
+	movem.l PALETTE_REGS.w, d0-d7
+	movem.l d0-d7, GAME_SAVE_PALETTE(a4)
+	tst.w GAME_SAVE_REZ(a4)
+	beq.s .low_rez
+	clr.w -(sp)						; low resolution
+	move.l #-1, -(sp)				; the screens as they are
+	move.l #-1, -(sp)
+	move.w #5, -(sp)				; XBIOS Setscreen
+	trap #14
+	lea 12(sp), sp
+.low_rez:
+
+	jsr USERFW
+
+	move.l (sp)+, a4
+	move.w GAME_SAVE_REZ(a4), d0
+	beq.s .rez_back
+	move.w d0, -(sp)
+	move.l #-1, -(sp)
+	move.l #-1, -(sp)
+	move.w #5, -(sp)				; XBIOS Setscreen
+	trap #14
+	lea 12(sp), sp
+.rez_back:
+	movem.l GAME_SAVE_PALETTE(a4), d0-d7
+	movem.l d0-d7, PALETTE_REGS.w
+	bra.s .leave
+
+.refuse_on_own_stack:
+	move.l (sp)+, a4
+.refuse:
+	move.l a0, -(sp)
+	gemdos Cconws,6
 	print .crlf_txt
-	bra boot_gem
+	print .press_key_txt
+	gemdos Cnecin,2
+
+.leave:
+	move.l GAME_SAVE_SP(a4), sp
+	move.l GAME_SAVE_SSP(a4), -(sp)
+	gemdos Super,6
+	Pterm0
 
 .crlf_txt:
 	dc.b $d,$a,0
-	even
-
-.highres_unsupported:
-	print .highres_unsupported_txt
-	bra boot_gem
-
+.press_key_txt:
+	dc.b "Press a key.",$d,$a,0
+.no_memory_txt:
+	dc.b "Not enough free memory for the game.",$d,$a
+	dc.b "Remove accessories or a RAM disk and try again.",0
 .highres_unsupported_txt:
 	dc.b "High resolution (640x400) not supported.",$d,$a
-	dc.b "Switch to low or medium res and reboot.",$d,$a
-	dc.b 0
+	dc.b "Switch to low or medium resolution.",0
 	even
-
-.reset:
-    move.l #PRE_RESET_WAIT, d6
-.wait_me:
-    subq.l #1, d6           ; Decrement the outer loop
-    bne.s .wait_me          ; Wait for the timeout
-
-	clr.l $420.w			; Invalidate memory system variables
-	clr.l $43A.w
-	clr.l $51A.w
-	move.l $4.w, a0			; Now we can safely jump to the reset vector
-	jmp (a0)
-	nop
-
-boot_gem:
-	; If we get here, continue loading GEM
-    rts
 
 ; Dispatcher for the user firmware module. Reached on CMD_START via the
 ; sentinel poll in check_commands. The cartridge image places userfw.s
@@ -278,8 +304,7 @@ rom_function:
     include "inc/sidecart_functions.s"
 
 ; The NOP tail. The senders' wait loop must never be the last code of a module:
-; firmware.py strips trailing zero bytes from the image, pre_auto relocates
-; start_rom_code..end_rom_code in whole longwords, and both the write sender
+; firmware.py strips trailing zero bytes from the image, and both the write sender
 ; (its code size includes 4 bytes past the loop) and the 68000's prefetch read
 ; past the loop's last word. Every module that includes sidecart_functions.s
 ; ends like this.
@@ -294,7 +319,6 @@ rom_function:
 	nop
 main_end:
 
-end_rom_code:
-end_pre_auto:
+end_game_tos:
 	even
 	dc.l 0
