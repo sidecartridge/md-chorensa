@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cho Ren Sha 68k at 50 frames a second</title>
+<meta name="description" content="Famibe no Yosshin's 1995 X68000 shoot'em up on an Atari ST at 50 frames a second, through a SidecarTridge Multi-device: make the microSD card's files here, and read how the port works.">
+<meta property="og:title" content="Cho Ren Sha 68k at 50 frames a second">
+<meta property="og:description" content="The X68000's bullet storm on an Atari ST: the original game's code, translated to C, running in the cartridge slot.">
+<meta property="og:image" content="https://chorensha.sidecartridge.com/images/icon.png">
+<meta property="og:url" content="https://chorensha.sidecartridge.com/">
+<meta name="twitter:card" content="summary">
+<link rel="canonical" href="https://chorensha.sidecartridge.com/">
+<link rel="icon" href="images/icon.png">
+<link rel="preload" href="fonts/press-start-2p.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="vendor/cookieconsent.css">
+<script src="vendor/cookieconsent.js"></script>
+<script src="consent.js"></script>
+<!-- Google Analytics, the sidecartridge.com property, as on the SidecarTridge sites: cookieconsent runs
+     it only after the analytics category is accepted, and it loads gtag only on *.sidecartridge.com. -->
+<script type="text/plain" data-cookiecategory="analytics">
+    (function () {
+        var GA_ID = 'G-6VT9RXTJ2N';
+        if (!/(^|\.)sidecartridge\.com$/.test(location.hostname)) return;
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA_ID;
+        document.head.appendChild(s);
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function () { dataLayer.push(arguments); };
+        gtag('js', new Date());
+        gtag('config', GA_ID);
+    })();
+</script>
+<script>
+  /* The developer details, shown or not before the page draws: ?dev=1 or ?dev=0 first, then
+     the reader's last choice, else hidden. Without this script they all show. */
+  (function () {
+    var dev = new URLSearchParams(location.search).get('dev');
+    if (dev !== '1' && dev !== '0') {
+      try { dev = localStorage.getItem('crs-dev'); } catch (e) { dev = null; }
+    }
+    document.documentElement.dataset.dev = dev === '1' ? 'on' : 'off';
+  })();
+</script>
+</head>
+<body>
+<a class="skip" href="#convert">Skip to making the card</a>
+
+<header class="top">
+  <a class="name" href="#top">Cho Ren Sha 68k <span>50fps</span></a>
+  <button type="button" class="dev-switch" role="switch" aria-checked="false" hidden>
+    <span class="track" aria-hidden="true"><span class="knob"></span></span>
+    <span class="dev-label">Developer details</span>
+  </button>
+  <nav aria-label="Links">
+    <a href="#convert">Make the card</a>
+    <a href="play.html">Instructions</a>
+    <a href="#how">How it works</a>
+    <a href="plan.html">The plan</a>
+    <a href="https://github.com/sidecartridge/md-chorensha">Source</a>
+  </nav>
+</header>
+
+<section class="hero" id="top">
+  <div class="fire" aria-hidden="true"></div>
+  <div class="hero-text">
+    <h1><img class="logo" src="images/logo.png" width="232" height="124" alt="Cho Ren Sha 68k"></h1>
+    <p class="lede">Famibe no Yosshin's 1995 shoot'em up for the Sharp X68000, hundreds of
+    bullets on the screen, at 50 frames a second on an Atari ST, STE, Mega ST or Mega STE.</p>
+    <p class="lede small">The game's own code runs, translated to C, on the small computer in a
+    <a href="https://sidecartridge.com">SidecarTridge Multi-device</a> in the cartridge slot; the
+    ST shows the picture and plays the sound. Make the microSD card's files here, then read
+    <a href="#how">how it works</a>.</p>
+  </div>
+
+  <section class="convert" id="convert" data-step="1" aria-labelledby="convert-title">
+    <h2 id="convert-title">Make the card</h2>
+    <ol>
+      <li class="step">
+        <span class="step-name">Choose the repository's zip</span>
+        <p>The game's files come from the Amiga port's repository:
+        <a id="zip-link" href="https://github.com/apolkosnik/chorensha/archive/40fec7d06b53f067408b3570cdf09011f76d25bd.zip">download it as a zip</a>
+        (about 280 MB, the version the app was tested with), then choose it here.</p>
+        <label class="drop" id="drop">
+          <input type="file" id="zip" accept=".zip">
+          <span>Drop the zip here, or click to choose it</span>
+        </label>
+        <p id="zip-status" class="status"></p>
+      </li>
+      <li class="step">
+        <span class="step-name">Make the files</span>
+        <p id="pack-status" class="status">Fetching this release's image pack…</p>
+        <button type="button" id="go" disabled>Make the files</button>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="go-status" class="status"></p>
+      </li>
+      <li class="step">
+        <span class="step-name">Put them on the card</span>
+        <div id="save" hidden>
+          <p id="folder-hint">Choose the card itself (its top folder): the files go into its
+          <code>CHORENSHA</code> folder.</p>
+          <button type="button" id="to-folder">Write them to the card</button>
+          <button type="button" id="to-zip">Download CHORENSHA.zip</button>
+          <p id="save-status" class="status"></p>
+        </div>
+        <p class="note">Then put the card in the Multi-device, switch the ST on and start
+        <code>GAME.TOS</code> from the cartridge's drive c:. Everything happens in this browser:
+        nothing is uploaded.</p>
+      </li>
+    </ol>
+  </section>
+  <figure class="screen" id="video">
+    <div class="frame">
+      <img src="images/play.gif" width="512" height="512" alt="Stage 1's mid-boss blowing up in a screen-wide explosion, at 50 frames a second">
+      <a class="watch" href="images/play.mp4"><span class="watch-icon" aria-hidden="true"></span>Watch 30 seconds, with sound</a>
+    </div>
+    <figcaption>Stage 1 as the ST shows it, frame for frame at 50 a second, drawn by the
+    cartridge in sixteen colours. The video is the first stage's boss, with the STE's DMA
+    sound.</figcaption>
+  </figure>
+</section>
+
+<section class="scores" aria-labelledby="scores-title">
+  <h2 id="scores-title">Best scores</h2>
+  <ol class="score-table">
+    <li><span class="rank">1st</span><span class="score">50</span><span class="what">frames a second on every ST, one step of the game every vertical blank</span></li>
+    <li><span class="rank">2nd</span><span class="score">512</span><span class="what">sprites in one frame, the game's own maximum, reached in stage 4</span></li>
+    <li><span class="rank">3rd</span><span class="score">405,013</span><span class="what">lines of C translated from the original's 71,339 68000 instructions</span></li>
+    <li><span class="rank">4th</span><span class="score">12,608</span><span class="what">checkpoints against the original over five whole games on an STE, none different</span></li>
+    <li><span class="rank">5th</span><span class="score">5</span><span class="what">frames shown late in about 149,000, both loops of the game</span></li>
+  </ol>
+</section>
+
+<section class="gallery" aria-labelledby="gallery-title">
+  <h2 id="gallery-title">Seven stages, as the ST shows them</h2>
+  <ul class="shots">
+    <li><figure><img src="images/stage1-action.png" width="768" height="768" loading="lazy" alt="Stage 1: the ship's shots up the middle, enemies and explosion clouds on both sides"><figcaption>Stage 1, 251 sprites</figcaption></figure></li>
+    <li><figure><img src="images/boss1-destroyed.png" width="768" height="768" loading="lazy" alt="Stage 1's boss destroyed: a core flash, lightning, shock rings and chains of explosions"><figcaption>Stage 1's boss destroyed, 442 sprites</figcaption></figure></li>
+    <li><figure><img src="images/stage2-explosions.png" width="768" height="768" loading="lazy" alt="Stage 2: a field of explosions and purple bullets"><figcaption>Stage 2, 307 sprites</figcaption></figure></li>
+    <li><figure><img src="images/stage3-busy.png" width="768" height="768" loading="lazy" alt="Stage 3: shock rings and explosions over the whole screen"><figcaption>Stage 3, 428 sprites</figcaption></figure></li>
+    <li><figure><img src="images/boss3.png" width="768" height="768" loading="lazy" alt="Stage 3's boss, a grey battleship inside rings of explosions"><figcaption>Stage 3's boss, 408 sprites</figcaption></figure></li>
+    <li><figure><img src="images/stage5.png" width="768" height="768" loading="lazy" alt="Stage 5: a long red and grey battleship among purple and red bullets"><figcaption>Stage 5, 207 sprites</figcaption></figure></li>
+    <li><figure><img src="images/stage6.png" width="768" height="768" loading="lazy" alt="Stage 6: giant white and blue shock rings and chains of explosions"><figcaption>Stage 6, 344 sprites</figcaption></figure></li>
+    <li><figure><img src="images/stage7-bullets.png" width="768" height="768" loading="lazy" alt="Stage 7: twin green ships and a swarm of red fighters, purple bullets everywhere and a blue laser"><figcaption>Stage 7, 373 sprites</figcaption></figure></li>
+    <li><figure><img src="images/boss7.png" width="768" height="768" loading="lazy" alt="Stage 7's boss, a green and red battleship filling the screen"><figcaption>Stage 7's boss, 312 sprites</figcaption></figure></li>
+  </ul>
+  <p class="gallery-note">Every picture is a frame the cartridge draws, at three times the ST's
+  pixels: 256 by 256, sixteen colours.</p>
+</section>
+
+<div class="layout" id="how">
+<nav class="contents" aria-label="Contents">
+  <p class="contents-title">How it works</p>
+  <ol>
+    <li><a href="#game">The game</a></li>
+    <li><a href="#frame">Twenty milliseconds</a></li>
+    <li><a href="#screen">Both borders open</a></li>
+    <li><a href="#code">The 68000's code, in C</a></li>
+    <li><a href="#store">Where the game lives</a></li>
+    <li><a href="#colours">Sixteen colours</a></li>
+    <li><a href="#sound">Sound</a></li>
+    <li><a href="#files">The card's files</a></li>
+    <li class="dev"><a href="#build">Building it</a></li>
+    <li class="dev"><a href="#find">Finding your way in the code</a></li>
+    <li><a href="#credits">Credits</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="game">
+<h2>The game</h2>
+<p>Cho Ren Sha 68k came out in 1995 for the Sharp X68000, a Japanese home computer built around
+the same Motorola 68000 as the Atari ST, but with a sprite chip, a 65,536-colour palette and a
+screen of 256 by 256 pixels at 55.46 frames a second. Its author, Famibe no Yosshin, filled that
+screen: seven stages and their bosses, a second loop harder than the first, and in the busiest
+moments 512 sprites at once, the game's own limit, multiplexed by its sprite driver over the
+chip's 128.</p>
+<p>The ST has no sprites, sixteen colours from 512 and a screen of 200 lines. This port does not
+emulate the X68000. It takes the game's own program, 268,418 bytes of it, translates it to C, and
+runs it on the computer in the cartridge, which draws every frame and hands it to the ST. The
+game is the original's, step for step: every frame the ST shows is the frame the X68000 would
+have shown, in sixteen colours.</p>
+</section>
+
+<section id="frame">
+<h2>Twenty milliseconds</h2>
+<p>The SidecarTridge Multi-device is a Raspberry Pi RP2040 in the ST's cartridge slot: two Arm
+Cortex-M0+ cores at 225 MHz, 264 KB of RAM and 2 MB of flash. To the ST it is a ROM cartridge; to
+this port it is where the game runs. A PAL ST has fifty vertical blanks a second, 19.98 ms apart,
+and in each of them both machines do their part of the frame.</p>
+<figure class="tape" aria-labelledby="tape-cap">
+  <p class="tape-name">The RP2040</p>
+  <div class="tape-bar" role="img" aria-label="One frame on the RP2040, on average: 1.7 ms of game logic, 5.0 ms drawing, 1.2 ms converting to the ST's planes, 1.8 ms of sound, about 10 ms spare">
+    <span class="t-logic" style="flex-basis:8.5%"></span><span class="t-draw" style="flex-basis:25%"></span><span class="t-c2p" style="flex-basis:6%"></span><span class="t-sound" style="flex-basis:9%"></span><span class="t-spare" style="flex-basis:51.5%"></span>
+  </div>
+  <p class="tape-name">The STE</p>
+  <div class="tape-bar" role="img" aria-label="One frame on an STE: 17.4 ms copying the picture with the blitter, 0.4 ms of other work, about 2.2 ms spare">
+    <span class="t-copy" style="flex-basis:87%"></span><span class="t-other" style="flex-basis:2%"></span><span class="t-spare" style="flex-basis:11%"></span>
+  </div>
+  <figcaption id="tape-cap">One vertical blank, measured on an STE. Above, the cartridge's
+  average frame: <b class="k-logic">the game's logic</b>, <b class="k-draw">drawing</b>,
+  <b class="k-c2p">converting to the ST's planes</b>, <b class="k-sound">the sound</b> and the
+  <b class="k-spare">time left</b>. Below, the ST: <b class="k-copy">copying the picture</b> from
+  the cartridge to its screen, and the 2.2 ms left before the next blank.</figcaption>
+</figure>
+<p>The cartridge runs one step of the game, the original's code translated, in 1.7 ms on average
+(4.7 ms at worst). It draws the picture in 5.0 ms on average, 11.9 ms in the busiest frame of a
+whole game, both cores at once, sixteen lines at a time; converts it to the four bit planes the
+ST's screen is made of in 1.2 ms; and mixes the sound. The ST copies the finished picture from the
+cartridge's window to its screen, flips to it at the next blank and asks for the next. A frame the
+cartridge finishes late is shown a blank later, never torn, and cannot change the game: over a
+whole game in both loops, five frames in about 149,000 were late.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>The cartridge's 64 KB window at <code>$FA0000</code> holds the ST's code (14,304 of its 16 KB),
+the command and frame-counter words, the audio buffer and, at <code>$FA8000</code>, the 32 KB
+framebuffer: 256 lines of 128 bytes, the image's 256 pixels in four planes. The RP bumps the
+frame counter at <code>$FA400C</code> as the last write of a publish; the ST copies only when its
+low word changes, then flips and acknowledges with a read at <code>$FB84xx</code> in the
+cartridge's third ROM area, which the RP captures with a PIO and a DMA ring. The ST cannot write
+to the cartridge: everything it tells the RP, it tells by reading an address.</p>
+<p>The CPU copy stores with MOVEM predecrement, four cycles a move faster than displacement, so
+the RP publishes the frame in the order that copy reads it: lines 255 to 0, each in three pieces
+of 44, 44 and 40 bytes. The blitter reads the natural order, and the RP publishes that when the
+ST uses it. The drawing buffer is one byte a pixel; the conversion to planes is a hand-written
+Thumb routine that moves four pixels at a time with one multiply per plane, the bottom half on the
+second core.</p>
+</div>
+</section>
+
+<section id="screen">
+<h2>Both borders open</h2>
+<p>The game was drawn for 256 lines; the ST shows 200. It shows the rest the way the demo scene
+does: by switching the screen to 60 Hz for a few cycles at the exact moment the video chip decides
+where the border starts, at the top and again at the bottom, the ST shows 274 lines. The port puts
+the game's 256 in the middle of them, and its 256 columns in the first 256 of the ST's 320.</p>
+<p>That size is the ST's limit, not the port's choice. The 32 KB picture has to cross the ST's
+bus every frame, and the bus moves a word every eight cycles whoever moves it: 16.4 ms of the 20
+are gone before a single pixel is drawn. The 68000's fastest copy takes 18.5 ms for 256 lines;
+the STE's blitter, which copies in pieces of sixteen lines so the keyboard is never kept waiting,
+17.4 ms. On a plain ST and a Mega ST, the 68000 also plays the sound while it copies, and 256 lines
+no longer fit: the copy ended a quarter of a millisecond too late and the game fell to 25 frames a
+second. Those machines copy the top 240 lines, which hold the game and its score; the bottom
+sixteen stay black.</p>
+<table class="t">
+  <thead><tr><th scope="col">Machine</th><th scope="col">Copy</th><th scope="col">Lines</th><th scope="col">Copy time</th><th scope="col">Left</th></tr></thead>
+  <tbody>
+    <tr><td>STE, Mega STE</td><td>the blitter, in pieces of 16 lines</td><td>256</td><td>17.41 ms</td><td>2.2 ms</td></tr>
+    <tr><td>ST, Mega ST</td><td>the 68000, writing the sound between its moves</td><td>240</td><td>19.46 ms</td><td>0.24 ms</td></tr>
+    <tr><td>ST, Mega ST, 256 lines</td><td>the same</td><td>256</td><td>19.65 ms</td><td>too late: 25 fps</td></tr>
+  </tbody>
+</table>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>The ST's screen pages are at <code>$60000</code> and <code>$6B000</code>, 274 lines of 160
+bytes each, the image from line 9. The bottom border opens at cycle 504 of line 262: Timer-B, in
+event-count mode, counts display lines to the end of line 259, and its handler waits for line
+starts with <code>stop</code> and the HBL until the video counter says 262, then writes 60 Hz and
+50 Hz again 69 NOPs apart. Counting to line 260, as first written, left about 50 cycles of margin,
+and an IKBD byte made the border miss in 1.7% of frames; a line earlier, none missed in 5,717. The
+top border is opened by Timer-C, which fires early in line 30 and runs on, so its count tells the
+handler how many lines ago it fired. Both handlers mask the keyboard and the samples while they
+wait, because an interrupt can start a hundred cycles late behind a MOVEM.</p>
+<p>The CPU copy is fully unrolled: per line, three MOVEM pairs of 44, 44 and 40 bytes and a
+<code>lea</code>, 580 cycles, about 8 KB of code. A0, A4 and A7 stay out of its register lists so
+the sound and the interrupts can run during it. The blitter copies a word in 8 cycles against
+MOVEM's 8.8; the main loop sizes each piece from the two timers' counts, so no piece is running
+when a border must be switched.</p>
+</div>
+</section>
+
+<section id="code">
+<h2>The 68000's code, in C</h2>
+<p>The game's program is translated mechanically, not rewritten: a translator of the port's own
+reads the user's copy of the executable and its disassembly and writes one C function for every
+entry point the program has, 651 of them, 71,339 instructions, 405,013 lines of C. Compiled for the
+RP2040 it is 895 KB of Thumb code. Nothing was ported by hand, and there is no 68000 interpreter:
+the translated game steps a frame in 1.7 ms on average, against 0.54 ms for the original on a
+50 MHz 68030.</p>
+<p>It works because the game was written in C: no self-modifying code, no counted cycles, and
+every indirect call can be found from the program's relocations. The translation keeps the
+original's logic exactly, and a played game proves it. The reference is the Amiga port, which runs
+the original's 68000 code itself: a game recorded by the game's own recorder, through all seven
+stages and the second loop, matched it at 2,500 of 2,500 checkpoints and on 1,498 of 1,499
+screens pixel for pixel on the Mac; on an STE, five whole games crossed 57 stage changes and 12,608
+checkpoints without a single difference.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>A call pushes the real return address and calls the callee's function, which returns the
+address its RTS popped; the caller goes on only when that is the address it pushed, else it hands
+it up, so code that rewrites its stack lands where the 68000 would. Flags are computed only where
+something may read them. A handful of patches sit where the Amiga port has its own: the sprite
+driver's output and its wait for the blank, the text plane's clear, the CPU-speed probe, the demo
+recorder's save, and the title menu reworked for the ST.</p>
+<p>Memory is the 68000's 24-bit space in 256-byte pages through a table of page pointers, two
+instructions a lookup. Each 16-bit word is kept in the RP's byte order (a byte is at its address
+XOR 1). Pages a stage only reads stay in flash and run in place; written pages live in RAM; a write
+into a flash page stops the game with its address on screen. The runtime serves the X68000 calls
+the game makes, the IOCS keyboard, joystick, ADPCM and palette calls, the MCDRV music driver and
+the DOS file calls (the high scores are <code>SCORE.DAT</code> on the card); any other call stops
+the run with its name.</p>
+<table class="t">
+  <thead><tr><th scope="col">Build of the translated code</th><th scope="col">Flash</th><th scope="col">Logic, mean</th><th scope="col">Worst</th></tr></thead>
+  <tbody>
+    <tr><td><code>-Os</code>, memory accessors forced inline</td><td>924 KB</td><td>2.91 ms</td><td>8.47 ms</td></tr>
+    <tr><td><code>-O2</code>, forced inline</td><td>939 KB</td><td>2.68 ms</td><td>7.45 ms</td></tr>
+    <tr><td><code>-Os</code>, accessors called</td><td>674 KB</td><td>1.71 ms</td><td>4.70 ms</td></tr>
+    <tr><td>and constant shifts inline, words in the RP's byte order</td><td>605 KB</td><td>1.30 ms</td><td>3.51 ms</td></tr>
+  </tbody>
+</table>
+<p>The smaller code is the faster: it runs from flash, where a cache miss costs more than a call.
+About 40% of the logic's time is spent in the memory accessors.</p>
+</div>
+</section>
+
+<section id="store">
+<h2>Where the game lives</h2>
+<p>895 KB of code and the stages' pictures do not fit beside the firmware in 2 MB of flash, let
+alone in 264 KB of RAM. So the game is cut into images on the microSD card: COMMON, what every
+stage shares (571 KB, in a 576 KB slot), and one image for each stage and for the menus, 154 to
+268 KB each. Between stages, the next image is copied from the card into the flash while the ST
+shows the last frame: 1.5 to 1.9 seconds, and the music picks up again in step. The game's
+variables live in RAM, in 350 pages of 256 bytes found in three places: a 48 KB array, the part
+of the drawing buffer a frame drawn in bands leaves free, and the cartridge window's spare room.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<table class="t">
+  <thead><tr><th scope="col">Flash</th><th scope="col">Address</th><th scope="col">Size</th></tr></thead>
+  <tbody>
+    <tr><td>the firmware, with no game code (today 235 KB)</td><td><code>$10000000</code></td><td>256 KB</td></tr>
+    <tr><td>COMMON</td><td><code>$10040000</code></td><td>576 KB</td></tr>
+    <tr><td>the slot: the stage or the menus being played</td><td><code>$100D0000</code></td><td>320 KB</td></tr>
+    <tr><td>Booster, and the settings</td><td><code>$10120000</code></td><td>896 KB</td></tr>
+  </tbody>
+</table>
+<p><code>tools/xlat/rp_store.py</code> makes the images from 21 runs of the whole game on the Mac:
+a played game through both loops, a game to its game over and name entry, every menu with every
+item changed, the attract demo, and a game from each stage and each boss. Each run records which
+functions every stage enters and which pages it writes and reads. A function belongs to a stage
+when only that stage runs it, to COMMON when more than one does; a page that a stage writes, or
+reads after another wrote it, goes to RAM; the rest stays in the images. Each image is compiled
+for the RP and linked at its flash address against the firmware's own ELF, so it calls the
+firmware's runtime directly: an image fits one firmware build only, and carries that build's ID in
+its header. The whole run, from the files to the card, takes about three minutes on a Mac.</p>
+<p>A stage changes when the game calls a function the slot does not hold: COMMON's table says
+which image has it. The copy erases in 64 KB blocks, about 150 ms each with the interrupts off,
+programs through a 4 KB buffer, writes the image's first page last and checks its CRC-32, so a
+copy cut short is never taken for a whole one. Each page keeps one slot of the RAM pool in every
+stage, so a stage change moves no page; 325 of the 345 usable slots are used.</p>
+</div>
+</section>
+
+<section id="colours">
+<h2>Sixteen colours</h2>
+<p>The game's palettes hold 117 colours, and a frame of play uses about 57 of them; the ST shows
+sixteen, from 512, on every machine. For each stage, the colours are sorted offline into sixteen
+groups by how they move over the stage, so the entries that cycle or fade together share an ST
+colour. Then, every frame, the cartridge works out the sixteen colours from the game's palette
+as it is at that moment, in about 50 µs: the colour cycling and the fades play as palette
+changes, as on the X68000.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>Each ST colour is the mean of its entries' current colours in linear light, weighted by how
+much of the screen each covers, rounded channel by channel to the nearest of the ST's eight
+levels. <code>tools/xlat/palette_fit.py</code> makes the grouping from a run's per-pixel dumps
+and writes the same integer arithmetic the RP runs, so the Mac predicts the cartridge's frames
+exactly: on the ST, held frames differ from the Mac's in no pixel and no colour.</p>
+<table class="t">
+  <thead><tr><th scope="col">Stage</th><th scope="col">1</th><th scope="col">2</th><th scope="col">3</th><th scope="col">4</th><th scope="col">5</th><th scope="col">6</th><th scope="col">7</th></tr></thead>
+  <tbody>
+    <tr><td>palette entries in use</td><td>186</td><td>206</td><td>189</td><td>183</td><td>202</td><td>210</td><td>160</td></tr>
+    <tr><td>mean error, Oklab × 100</td><td>2.34</td><td>2.37</td><td>2.57</td><td>2.68</td><td>2.68</td><td>2.80</td><td>1.63</td></tr>
+  </tbody>
+</table>
+<p>A fit made fresh every frame was 0.2 closer, but it needs the backgrounds kept as the game's
+palette indices, 128 KB of RAM the RP does not have.</p>
+</div>
+</section>
+
+<section id="sound">
+<h2>Sound</h2>
+<p>The effects are the X68000's own: 31 ADPCM samples, decoded as its MSM6258 chip decodes them.
+The music is the game's twelve songs as the Amiga port renders them from the original's music
+driver, cut into an intro and a loop that joins itself without a gap, and resampled for each kind
+of ST. An STE or a Mega STE plays it through its DMA sound chip, at 25,033 samples a second; a
+plain ST or a Mega ST through its YM2149, whose three channels, tied together inside the ST, make
+an eight-bit voice at about 7,700 samples a second, written by the 68000 between its moves while
+it copies the frame.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>The resampler is a Kaiser-windowed sinc, 128 phases, 24 taps to 25,033 Hz and 48 to 7,777 Hz,
+cut at 90% of the lower Nyquist; the loop is the third of three played after the intro, so it
+joins both the intro's end and its own. The effects are mixed in one at a time, as the game
+chooses them by priority, read from the card a sector at a time; a whole game plays 5,934 of them
+and starts 21 songs, at the Mac's frames exactly.</p>
+<p>The DMA chip loops over a 4 KB ring at <code>$76000</code> in ST RAM. Every blank the ST reads
+where the chip plays, reports it to the RP with an address read, and copies the cartridge's mirror
+up to three blanks (1,536 bytes) ahead of it; the RP keeps the mirror 1,856 bytes ahead of the
+chip. On the YM path, the copy writes a sample after every fifth MOVEM pair: six bytes through
+<code>movep</code>, the three channels' volumes from a table fitted to the levels measured on a
+real ST, 153 samples during the copy and a few more around the borders. The ST reports where it
+is, and the RP writes ahead of it and resamples to the rate the ST actually achieves, so no sample
+is dropped or held. A curve, 127 tanh(2x)/tanh(2), raises the YM's quiet levels about 6 dB to match
+the DMA chip's loudness.</p>
+<table class="t">
+  <thead><tr><th scope="col">File</th><th scope="col">What it holds</th></tr></thead>
+  <tbody>
+    <tr><td><code>EFFECTS.SE8</code></td><td>'CRSE', the samples' base address, size; then the 31 effects, signed 8-bit (451 KB)</td></tr>
+    <tr><td><code>NAME.ST8</code> / <code>.YM8</code></td><td>'CRS8', the rate, the intro's and the loop's lengths, the fade unit, the song's level; signed 8-bit mono for the DMA chip (12 songs, 37 MB) or the YM (11 MB)</td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<section id="files">
+<h2>The card's files</h2>
+<p>None of the game is in the app, in its repository or on this site's server. The converter at
+the top of this page is the cartridge's own install code, compiled to WebAssembly: it reads the
+Amiga port's public repository zip in your browser, checks every file it needs by size and
+CRC-32, decodes the effects, resamples the songs for both kinds of sound chip, and unlocks the
+game's images. Those are published only encrypted, under a key that only the repository gives.
+Then it writes about 51 MB to the card.</p>
+<p>The game is GAME.TOS on the cartridge's drive c:. Each time it starts, the cartridge checks
+the card: the images made for its firmware, the manifest, the sound for the machine's chip. If
+anything is missing, the ST says what, in red, with a QR code to this page for its own release,
+and checks again every second, so the game starts as soon as the card is right.</p>
+<div class="more dev">
+<p class="more-label">For developers</p>
+<p>The zip is read in place from its central directory and inflated with miniz's inflater; a
+member that comes back damaged is read again, up to three times. The images' key is the SHA-256
+of <code>binaries/x68000/sz2.hex</code> as the zip holds it; each image is ChaCha20 under a nonce
+from its name and the firmware's build ID, with a 64-byte header that names both and carries the
+plain bytes' CRC-32, so a wrong key is caught. The keyed pack is an asset of each release, never in
+the repository; the site's build checks it was made for the release's firmware and that the
+WebAssembly makes every file the cartridge's code makes, byte for byte.</p>
+<p>GAME.TOS enters supervisor mode, checks that its memory holds the fixed RAM the ST's code uses
+(<code>$60000</code> to <code>$78000</code>: on a 512 KB ST, TOS's screen starts right after
+it), runs on its own stack, switches a medium-resolution desktop to low and gives the desktop
+back its resolution and palette when the game ends. A card taken out to be written on a computer
+is initialised and mounted again when it comes back: the cartridge has no card-detect line, so it
+learns of it from a failed read.</p>
+</div>
+</section>
+
+<section id="build" class="dev">
+<h2>Building it</h2>
+<p>The app is a UF2 for the Multi-device, built from the
+<a href="https://github.com/sidecartridge/md-chorensha">repository</a> with the ARM GNU
+Toolchain and the Atari ST toolkit; its README gives the commands and a release's steps.</p>
+<p>To play, there is no UF2 to install by hand: Booster, the Multi-device's own app manager,
+downloads the app from the SidecarTridge store and installs it, and its updates too.</p>
+<p>The firmware carries no game code. A build's ID, its commit and whether its tree was clean,
+names the images it fits; the converter page and the cartridge's files page both show it. Host
+tests run the firmware's own units under the address and undefined-behaviour sanitizers on every
+pull request: the renderer against random scenes of up to 600 sprites, the zip reader, the
+install, the sound converter, the keyed images, both copies' layouts, and the ST's and the RP's
+shared constants.</p>
+</section>
+
+<section id="find" class="dev">
+<h2>Finding your way in the code</h2>
+<table class="t">
+  <thead><tr><th scope="col">Where</th><th scope="col">What</th></tr></thead>
+  <tbody>
+    <tr><td><code>target/atarist/src/main.s</code></td><td>GAME.TOS: the program's start, its checks and its exit</td></tr>
+    <tr><td><code>target/atarist/src/userfw.s</code></td><td>the ST's side: both borders, the copy, the samples, the keyboard, the flip</td></tr>
+    <tr><td><code>rp/src/include/cart_shared.h</code></td><td>the cartridge window's layout and the signal addresses, checked against the ST's by <code>test_layout.py</code></td></tr>
+    <tr><td><code>rp/src/bench_logic.c</code></td><td>the game on the RP: the runtime, the frame, the stage change, the files page</td></tr>
+    <tr><td><code>rp/src/xl_render.c</code></td><td>the renderer: the two layers, the sprites, the text plane, the palette</td></tr>
+    <tr><td><code>rp/src/store.c</code></td><td>the flash store: an image from the card into the flash</td></tr>
+    <tr><td><code>rp/src/audio.c</code>, <code>rp/src/sound_convert.c</code></td><td>the sound's two paths, and the converter for both</td></tr>
+    <tr><td><code>rp/src/install.c</code>, <code>install_check.c</code>, <code>web/</code></td><td>the converter, the card's check, the converter in WebAssembly</td></tr>
+    <tr><td><code>tools/xlat/</code></td><td>the translator, the runs, the images, the palettes, the keyed pack</td></tr>
+    <tr><td><code>tools/dev/</code></td><td>flashing and reading the running RP over the Debug Probe</td></tr>
+  </tbody>
+</table>
+<p>The port is built on
+<a href="https://github.com/sidecartridge/md-framebuffer-template">md-framebuffer-template</a>,
+which you can start your own app from.</p>
+</section>
+
+<section id="credits">
+<h2>Credits</h2>
+<p>Cho Ren Sha 68k is © 1995 Famibe no Yosshin. The Atari Falcon port and the disassembly it
+builds on are Sascha Springer's; the Amiga port, whose repository this page reads and whose
+renders of the music this port plays, is Adam Polkosnik's. This port is SidecarTridge's, built on
+<a href="https://github.com/sidecartridge/md-framebuffer-template">md-framebuffer-template</a>;
+its source is <a href="https://github.com/sidecartridge/md-chorensha">on GitHub</a> under the
+GPL v3, with miniz's inflater and Project Nayuki's QR Code generator, both MIT.</p>
+</section>
+
+</main>
+</div>
+
+<footer class="foot">
+  <p>Cho Ren Sha 68k 50fps for the <a href="https://sidecartridge.com">SidecarTridge Multi-device</a>.
+  <span id="version"></span></p>
+  <p>Set in Source Serif 4 and Press Start 2P, the font the cartridge draws its own screens with.</p>
+</footer>
+
+<script src="site.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

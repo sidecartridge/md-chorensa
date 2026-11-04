@@ -26,6 +26,12 @@ function status(id, text, kind) {
   $(id).className = `status ${kind || ''}`;
 }
 
+// The step to do now, for a page that marks it (the site's title-menu cursor).
+function step(n) {
+  const convert = $('convert');
+  if (convert) convert.dataset.step = String(n);
+}
+
 function updateGo() {
   $('go').disabled = !pack || !zip;
 }
@@ -55,9 +61,11 @@ function chooseZip(file) {
   if (!/\.zip$/i.test(file.name)) {
     status('zip-status', `${file.name} is not a zip.`, 'bad');
     zip = null;
+    step(1);
   } else {
     zip = file;
     status('zip-status', `${file.name}, ${(file.size / 1e6).toFixed(0)} MB. Ready.`, 'good');
+    step(2);
   }
   updateGo();
 }
@@ -91,6 +99,7 @@ async function makeFiles() {
   const mb = made.reduce((a, f) => a + f.bytes.length, 0) / 1e6;
   status('go-status', `${made.length} files, ${mb.toFixed(0)} MB, made in ${((performance.now() - t) / 1000).toFixed(0)} s.`, 'good');
   $('save').hidden = false;
+  step(3);
   if (!('showDirectoryPicker' in window)) {
     $('to-folder').hidden = true;
     $('folder-hint').textContent = 'Unzip CHORENSHA.zip onto the card: it holds the CHORENSHA folder.';

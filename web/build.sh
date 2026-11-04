@@ -39,7 +39,8 @@ CMD=(emcc $CFLAGS -I web/src -I rp/src/include -I tools/xlat -I third_party/mini
 run
 echo "Built web/dist/crinstall.mjs and crinstall.wasm"
 
-# The page: web/site's files, the gate and the pack, in web/dist/site.
+# The converter: web/site's files, the gate and the pack, in web/dist/site (tools/site/build_site.py
+# makes the published pages from it, with the site's style).
 rm -rf "$ROOT/web/dist/site"
 mkdir -p "$ROOT/web/dist/site/pack"
 cp "$ROOT"/web/site/* "$ROOT/web/dist/crinstall.mjs" "$ROOT/web/dist/crinstall.wasm" \

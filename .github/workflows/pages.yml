@@ -1,24 +1,36 @@
-name: Web converter
+name: Pages
 
-# The page that makes the microSD card's /CHORENSHA files from the Amiga
-# port's repository zip, on GitHub Pages at chorensha.sidecartridge.com (the
+# The website, on GitHub Pages at chorensha.sidecartridge.com (the
 # repository's Pages source is GitHub Actions; the custom domain is set in
-# its Pages settings). The images are made for one firmware, so every
-# release has its own page, /<tag>/, which the cartridge's QR code opens;
-# the root sends to the newest. Each is built from its release's tag with
-# its keyed image pack: an asset of the release, CHORENSHA-PACK-<tag>.zip
-# (the .IMK and .STK files keyed.py makes for the release's firmware), made
-# outside CI from a copy of the game and uploaded by hand. The packs never go
-# into a branch: Pages gets them as a build artifact. Once a pack is there:
+# its Pages settings). The root is the article (site/, from the branch the
+# workflow runs on) with the newest release's converter on its first page.
+# The images are made for one firmware, so every release also keeps its own
+# converter alone at /<tag>/, which the cartridge's QR code opens. Each
+# converter is built from its release's tag with its keyed image pack: an
+# asset of the release, CHORENSHA-PACK-<tag>.zip (the .IMK and .STK files
+# keyed.py makes for the release's firmware), made outside CI from a copy of
+# the game and uploaded by hand. The packs never go into a branch: Pages gets
+# them as a build artifact. Once a pack is there:
 #
 #   gh release upload v1.0.0 CHORENSHA-PACK-v1.0.0.zip
 #   gh workflow run pages.yml
 #
-# A release's page is published only when its pack was made for its UF2 and
-# its converter, in WebAssembly, makes every file the gate built for the
-# host makes, byte for byte. A release without a pack is left out.
+# A release's converter is published only when its pack was made for its UF2
+# and its converter, in WebAssembly, makes every file the gate built for the
+# host makes, byte for byte. A release without a pack is left out; with no
+# release at all nothing is published. A push to main that changes the site
+# publishes it again.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/images/**'
+      - 'icon.png'
+      - 'web/**'
+      - 'tools/site/**'
+      - '.github/workflows/pages.yml'
 
 permissions:
   contents: read
@@ -76,7 +88,7 @@ jobs:
             sys.exit('The release UF2 is another firmware: make the pack for it again')
         EOF
 
-    - name: Every release's page
+    - name: Every release's converter, then the article
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
@@ -107,26 +119,24 @@ jobs:
           cp "$w"/tests/host/build/install_real/*.SE8 "$w"/tests/host/build/install_real/*.ST8 \
             "$w"/tests/host/build/install_real/*.YM8 "$w/reference/"
           PACK="$w/pack" CHORENSHA_ZIP="$zip" CHORENSHA_REFERENCE="$w/reference" "$w/web/build.sh" test
-          mkdir -p "site/$tag"
-          cp -R "$w/web/dist/site/." "site/$tag/"
+          # The release's converter alone, in its own tag's look.
+          if [ -f "$w/tools/site/build_site.py" ]; then
+            python3 "$w/tools/site/build_site.py" --converter-only \
+              --converter "$w/web/dist/site" --out "site/$tag" --check
+          else
+            mkdir -p "site/$tag"
+            cp -R "$w/web/dist/site/." "site/$tag/"
+          fi
           echo "- $tag" >> "$GITHUB_STEP_SUMMARY"
           newest="${newest:-$tag}"
           echo "::endgroup::"
         done
-        test -n "$newest"
-        cat > site/index.html <<EOF
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <title>Cho Ren Sha 68k: prepare the microSD card</title>
-          <meta http-equiv="refresh" content="0; url=$newest/">
-          <script>location.replace('$newest/' + location.search);</script>
-        </head>
-        <body><p><a href="$newest/">The web converter</a></p></body>
-        </html>
-        EOF
-        echo "Newest: $newest" >> "$GITHUB_STEP_SUMMARY"
+        test -n "$newest" || { echo "No release has its pack yet: nothing to publish"; exit 1; }
+        # The article at the root, with the newest release's converter.
+        python3 tools/site/build_site.py --converter "$GITHUB_WORKSPACE/releases/$newest/web/dist/site" \
+          --out "$RUNNER_TEMP/root" --check
+        cp -R "$RUNNER_TEMP/root/." site/
+        echo "Newest: $newest, its converter on the first page" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload the pages
       uses: actions/upload-pages-artifact@v3

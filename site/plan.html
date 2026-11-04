@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cho Ren Sha 68k: how the work was planned</title>
+<meta name="description" content="Ten days from the first commit: how the Atari ST port of Cho Ren Sha 68k was planned in iterations, epics, stories and tasks, checked against the original at every step, and how the plan changed on the way.">
+<meta property="og:title" content="Cho Ren Sha 68k: how the work was planned">
+<meta property="og:description" content="Ten days, nine epics, 204 tasks: the method behind the 50 fps port, and how the plan changed on the way.">
+<meta property="og:image" content="https://chorensha.sidecartridge.com/images/icon.png">
+<meta property="og:url" content="https://chorensha.sidecartridge.com/plan.html">
+<link rel="canonical" href="https://chorensha.sidecartridge.com/plan.html">
+<link rel="icon" href="images/icon.png">
+<link rel="preload" href="fonts/press-start-2p.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="vendor/cookieconsent.css">
+<script src="vendor/cookieconsent.js"></script>
+<script src="consent.js"></script>
+<!-- Google Analytics, as on the article's page: only after consent, only on *.sidecartridge.com. -->
+<script type="text/plain" data-cookiecategory="analytics">
+    (function () {
+        var GA_ID = 'G-6VT9RXTJ2N';
+        if (!/(^|\.)sidecartridge\.com$/.test(location.hostname)) return;
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA_ID;
+        document.head.appendChild(s);
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function () { dataLayer.push(arguments); };
+        gtag('js', new Date());
+        gtag('config', GA_ID);
+    })();
+</script>
+</head>
+<body>
+<a class="skip" href="#start">Skip to the plan</a>
+
+<header class="top">
+  <a class="name" href="index.html">Cho Ren Sha 68k <span>50fps</span></a>
+  <nav aria-label="Links">
+    <a href="index.html#convert">Make the card</a>
+    <a href="play.html">Instructions</a>
+    <a href="index.html#how">How it works</a>
+    <a href="plan.html" aria-current="page">The plan</a>
+    <a href="https://github.com/sidecartridge/md-chorensha">Source</a>
+  </nav>
+</header>
+
+<section class="hero plan-hero" id="top">
+  <div class="hero-text">
+    <h1 class="title"><span class="big">10</span> days from the first commit to a game on every ST</h1>
+    <p class="lede">The port's first commit is dated 26 October 2026; on 4 November the whole game
+    played on a plain ST, an STE, a Mega ST and a Mega STE. In between, the work followed a plan
+    written down before any code: what to find out, what to build, in which order, and how each
+    part would be checked on a real Atari ST.</p>
+    <p class="lede small">This page is about that plan: the method, the path it took, and the
+    places where it changed its mind.</p>
+  </div>
+  <figure class="days" aria-labelledby="days-cap">
+    <div class="days-grid" role="img" aria-label="When each part of the plan was worked on, from 26 October to 4 November">
+      <span class="d-head" style="grid-column:2">26</span><span class="d-head" style="grid-column:3">27</span><span class="d-head" style="grid-column:4">28</span><span class="d-head" style="grid-column:5">29</span><span class="d-head" style="grid-column:6">30</span><span class="d-head" style="grid-column:7">31</span><span class="d-head" style="grid-column:8">1</span><span class="d-head" style="grid-column:9">2</span><span class="d-head" style="grid-column:10">3</span><span class="d-head" style="grid-column:11">4</span>
+      <span class="d-row">The direction check</span><span class="d-bar r1" style="grid-column:2 / 4"></span>
+      <span class="d-row">The whole game on the Mac</span><span class="d-bar r2" style="grid-column:3 / 4"></span>
+      <span class="d-row">Room on the RP</span><span class="d-bar r3" style="grid-column:3 / 5"></span>
+      <span class="d-row">Every stage on the RP</span><span class="d-bar r4" style="grid-column:4 / 10"></span>
+      <span class="d-row">The game's flow</span><span class="d-bar r5" style="grid-column:9 / 11"></span>
+      <span class="d-row">The player's install</span><span class="d-bar r6" style="grid-column:10 / 12"></span>
+      <span class="d-row">The machines</span><span class="d-bar r7" style="grid-column:11 / 12"></span>
+      <span class="d-row">The site</span><span class="d-bar r8 open" style="grid-column:11 / 12"></span>
+    </div>
+    <figcaption id="days-cap">October and November 2026, day by day: when each part of the plan
+    was worked on, to its checkpoint. Every stage on the RP took six days, most of them long runs
+    of the whole game on an STE; the site is the part still open.</figcaption>
+  </figure>
+</section>
+
+<div class="layout">
+<nav class="contents" aria-label="Contents">
+  <p class="contents-title">On this page</p>
+  <ol>
+    <li><a href="#units">Four sizes of work</a></li>
+    <li><a href="#oracle">The original as the yardstick</a></li>
+    <li><a href="#checkpoints">Nothing merges unseen</a></li>
+    <li><a href="#decisions">Decisions, written down</a></li>
+    <li><a href="#path">The path</a></li>
+    <li><a href="#changes">Where the plan changed</a></li>
+    <li><a href="#numbers">In numbers</a></li>
+    <li><a href="#private">Why the notes stay private</a></li>
+  </ol>
+</nav>
+
+<main id="start">
+
+<section id="units">
+<h2>Four sizes of work</h2>
+<p>The plan has four levels, each a different size of promise:</p>
+<dl class="facts">
+  <div><dt>Iteration</dt><dd>one goal that takes several epics, with a sentence saying when it is over. The first asked whether the game was possible at all, and ended when the author had watched the attract demo on an ST, had the numbers on one page and had said go or no-go. The second is the first version: the whole game, on every ST, from the player's own files, released.</dd></div>
+  <div><dt>Epic</dt><dd>a capability, such as room on the RP, the game's flow or the player's install. Epics run one at a time, in order, and each ends at a checkpoint on real hardware.</dd></div>
+  <div><dt>Story</dt><dd>a slice of an epic that can be shown working: the scene change, the keyed images, GAME.TOS.</dd></div>
+  <div><dt>Task</dt><dd>a checkbox inside a story. A task is ticked only when someone has seen it done: built is not verified on the ST.</dd></div>
+</dl>
+<p>The numbers on the plan are its order of execution, and a short script turns the checkboxes
+into a status page, epic by epic, so where the work stands is always one command away. Each epic
+is written down to its tasks and read by the author before it starts; the later ones stay an
+outline until the checkpoint before them.</p>
+</section>
+
+<section id="oracle">
+<h2>The original as the yardstick</h2>
+<p>Cho Ren Sha never runs on an ST, and no X68000 was at hand. The reference is the Amiga port,
+which runs the original's 68000 code itself: its state every sixty frames of the attract demo,
+a hundred checkpoints over 6,000 frames, was the first yardstick. A played game, recorded by the
+game's own recorder and reaching every stage and the second loop, became the second: 2,500
+checkpoints over 150,000 frames.</p>
+<p>Everything built later is held to those, first on the Mac, then on the cartridge: the
+translation matched all 2,500, and 1,498 of 1,499 screens pixel for pixel (one enemy drawn two
+frames early). On an STE, one night of five whole games crossed 57 stage changes and 12,608
+checkpoints without a single difference.</p>
+</section>
+
+<section id="checkpoints">
+<h2>Nothing merges unseen</h2>
+<p>Every epic ends with a verification story, and that story belongs to the author: the epic is
+built, flashed onto a Multi-device and played on a real Atari ST before its work is merged.</p>
+<ol class="steps">
+  <li>A release branch is cut, named after the version it will become.</li>
+  <li>Each epic gets its own branch, cut from the release branch.</li>
+  <li>The epic's pull request goes to the release branch, never to the main branch, and is merged
+  only after its checkpoint on hardware.</li>
+  <li>When the whole version is done, the release branch is merged into the main branch, once, and
+  only then tagged. The tag builds the release and publishes it.</li>
+</ol>
+<p>Every pull request also builds both firmware variants and runs the host tests, so the
+checkpoint on hardware judges the game, not whether it compiles; timings that feed a decision
+come from release builds only. Nothing is committed or pushed until the author says so. The
+first epic is the one exception to the branches: the direction check was cut from the main
+branch, and at its checkpoint it became, whole, the base of the release branch.</p>
+</section>
+
+<section id="decisions">
+<h2>Decisions, written down</h2>
+<p>Anything that cuts across epics is a numbered entry in a decisions log, with its date, who
+decided and why: where the game's logic runs, how the ST shows 256 lines, which palette, how the
+sound reaches each machine, where the player's files come from, what the card's slowest clock may
+be. Stories cite an entry instead of arguing the point again. Beside the decisions sit the
+constraints (nothing from the game is ever committed; a build that succeeds proves nothing about
+the bus; only release builds' timings count) and the facts about the original, each with its
+source.</p>
+<p>A decision is not rewritten when a measurement moves it: the new finding is added beneath it
+with its date and who decided, so the log shows how the thinking moved, which is what the next
+sections are made from.</p>
+</section>
+
+<section id="path">
+<h2>The path</h2>
+<p>Nine epics in two iterations, in the order they ran. Each had its question fixed before it
+started.</p>
+<ol class="path">
+  <li>
+    <h3>The direction check</h3>
+    <p class="when">26 and 27 October</p>
+    <p>Four bets nobody had measured: that an ST shows 256 lines at 50 Hz with its interrupts
+    running, that a hundred colours read as Cho Ren Sha in sixteen, that the RP draws the busiest
+    frame in time, and that the original's code, translated, runs fast enough on it. Each tested
+    alone, then together: the attract demo's first stage at 50 frames a second on an STE, from the
+    original's own code. The answer was go.</p>
+  </li>
+  <li>
+    <h3>The whole game on the Mac</h3>
+    <p class="when">27 October</p>
+    <p>A scripted, invincible game through all seven stages and the second loop, recorded and
+    checked against the Amiga port: 2,500 of 2,500 checkpoints. It also measured what each part
+    of the game needs on the cartridge: up to 512 sprites in a frame, 46 KB more RAM than there
+    was, and a flash split the wrong way round.</p>
+  </li>
+  <li>
+    <h3>Room on the RP</h3>
+    <p class="when">27 and 28 October</p>
+    <p>The RAM and the flash for the whole game: the conversion to the ST's planes done in place,
+    the text plane packed, the frame drawn in bands of sixteen lines so part of the drawing buffer
+    holds the game's pages, and the flash split again around the stages' real sizes.</p>
+  </li>
+  <li>
+    <h3>Every stage on the RP</h3>
+    <p class="when">28 October to 2 November</p>
+    <p>The whole game from the card: the stage change in under two seconds, the game from its own
+    boot, both loops played on the STE against every checkpoint. The renderer was rewritten on
+    the way: the busiest measured frame went from 12.2 to 8.4 ms, and the frames late over a
+    whole game from 138 to 5.</p>
+  </li>
+  <li>
+    <h3>The game's flow</h3>
+    <p class="when">2 and 3 November</p>
+    <p>A player's game as on the X68000: the title, the demo when left alone, continue, game
+    over, the name entry and the high scores kept on the card, the pause, and the options trimmed
+    to what works on an ST.</p>
+  </li>
+  <li>
+    <h3>The player's install</h3>
+    <p class="when">3 and 4 November</p>
+    <p>How a player with nothing but a browser makes the card's files: the Amiga port's public
+    repository in, the images unlocked and the sound made for both kinds of ST, out. And the game
+    as a program on the cartridge's drive, not something that takes over the ST at boot.</p>
+  </li>
+  <li>
+    <h3>The machines</h3>
+    <p class="when">4 November</p>
+    <p>The plain ST with 512 KB, the Mega ST and the Mega STE, which had never run the game, on
+    the bench beside the STE that ran everything before them.</p>
+  </li>
+  <li>
+    <h3>The site</h3>
+    <p class="when">from 4 November</p>
+    <p>This website: the converter on its first page, how it works, and this plan.</p>
+  </li>
+  <li>
+    <h3>The release</h3>
+    <p class="when">to come</p>
+    <p>What ships, the release build on every machine, the documents, the tag.</p>
+  </li>
+</ol>
+</section>
+
+<section id="changes">
+<h2>Where the plan changed</h2>
+<p>A plan written before the work is a guess. These are the places where the work proved it
+wrong.</p>
+
+<h3 class="turn">The install, from the cartridge to the browser</h3>
+<p>The first plan converted the player's files on the cartridge, at the first start: the Amiga
+port's repository zip copied onto the card, read in place, its members checked, the effects
+decoded, the songs resampled, a manifest written last. It worked, and was measured on an STE:
+about five and a half minutes for the sound with the card at its fastest clock, nine seconds to
+unlock the images. The next day the same converter, compiled to WebAssembly, moved to this
+website, where it makes the same files byte for byte in seconds. The cartridge kept only the check,
+and gave back 26 KB of flash.</p>
+
+<h3 class="turn">A program, not a takeover</h3>
+<p>The framework the port grew from takes the ST over at boot. Started that way, the ST could do
+nothing else with the cartridge in. Now the ST boots to its desktop and the game is GAME.TOS on
+the cartridge's drive c:, which meant a program that checks the memory it needs, runs on its own
+stack and gives the desktop back as it found it. A plain ST with 512 KB, whose screen sits right
+where the game's memory ends, moved one table of the ST's code to make it fit.</p>
+
+<h3 class="turn">240 lines for the YM</h3>
+<p>The plan was 256 lines on every ST. On the plain ST's path, where the 68000 copies the frame
+and writes the sound to the YM between its moves, the copy ended a quarter of a millisecond too
+late: 25 frames a second. 248 lines would have held; the plain ST and the Mega ST copy the top
+240, the STE and the Mega STE all 256.</p>
+
+<h3 class="turn">The plain ST's sound, three times</h3>
+<p>Samples on a timer cost half the frames. Samples written by the frame copy itself held 50
+frames a second, but dropped four of every 112 and buzzed at 50 Hz. Then the ST began to report
+where it plays and the cartridge to write ahead of it, so no sample can be dropped; and three of
+the YM's channels, fitted to the levels measured on a real chip, turned six bits into about
+eight.</p>
+
+<h3 class="turn">The stage change, measured</h3>
+<p>About two seconds behind a screen was accepted from the start. The first measurement was three
+to five: the stage's image and, the first time, the code all stages share, copied from the card
+into the flash. After the flash was split again, a stage takes 1.5 to 2 seconds. The music could
+not play through it: the flash's erases stop the cartridge's interrupts longer than the sound's
+lead, so it pauses and comes back in step.</p>
+
+<h3 class="turn">The flash, the other way round</h3>
+<p>The plan gave the shared code a small slot and each stage a large one. The whole game measured
+on the Mac said the opposite: the shared code about 570 KB, a stage 110 to 210 KB. The firmware's
+reserve shrank to make room, and the menus, whose backgrounds carry their own colours, became a
+stage of their own. The shared code ended at 571 of its 576 KB.</p>
+
+<h3 class="turn">No hand port, after all</h3>
+<p>The plan kept a fallback: whatever the mechanical translation could not carry would be ported
+by hand. The translation carried everything, the attract demo first, then every stage, the
+menus and the high scores. No routine of the game was rewritten by hand.</p>
+
+<p>One thing never changed: the speed. The X68000 steps the game 55.46 times a second; the port
+steps it once every vertical blank of a PAL ST, 50 times, decided on the first day and never
+revisited.</p>
+</section>
+
+<section id="numbers">
+<h2>In numbers</h2>
+<dl class="facts tally">
+  <div><dt>2</dt><dd>iterations: the direction check, then the first version.</dd></div>
+  <div><dt>9</dt><dd>epics planned; 7 closed at a checkpoint on hardware, the site and the release to come.</dd></div>
+  <div><dt>52</dt><dd>stories, 46 of them done.</dd></div>
+  <div><dt>204</dt><dd>tasks, 187 ticked.</dd></div>
+  <div><dt>43</dt><dd>entries in the decisions log: 22 decisions, 9 constraints, 12 facts.</dd></div>
+  <div><dt>78</dt><dd>commits on the release branch, four of its epics merged through pull requests.</dd></div>
+  <div><dt>0</dt><dd>checkpoints different from the original's, over every stage, in every check of the finished game.</dd></div>
+</dl>
+<p>What is not ticked is honest. The site's own tasks are still open. On the machines, every story
+was closed with some checks not run as written: the scripted games against the checkpoints and
+the late frames stage by stage on the plain ST and the Mega STE, and the refusal on a machine
+with too little memory. They were accepted as they stand; the release build's run on every machine
+is the release's own checkpoint.</p>
+</section>
+
+<section id="private">
+<h2>Why the notes stay private</h2>
+<p>The plan lives as notes on the developer's machine, beside the code. They are where the
+original's internals are kept: hundreds of the game's own addresses and what they mean, its
+formats, references into its disassembly, and tens of megabytes of its frames. The game has no
+licence and its author keeps the copyright, so none of that can be published, and the port's first
+rule is that nothing from the game is ever committed: no file of it, no translated code, no
+extracted table or sample.</p>
+<p>The repository keeps what the notes produced: the tools instead of their output, tests on
+made-up data, and code that says what it does in full, with no pointer to an item of the plan.
+That is also why this page tells the path by what was done, not by the plan's numbers. The same
+layout, fields and status script are used across SidecarTridge's projects.</p>
+</section>
+
+</main>
+</div>
+
+<footer class="foot">
+  <p>Cho Ren Sha 68k 50fps for the <a href="https://sidecartridge.com">SidecarTridge Multi-device</a>.
+  <a href="index.html#how">How it works</a>.</p>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
