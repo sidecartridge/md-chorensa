@@ -229,7 +229,8 @@ FBDRV_LINE_TAIL       equ (FB_LINE_BYTES - FBDRV_LINE_CHUNKS * FBDRV_ITER_BYTES)
 ; Per VBL: FBDRV_INLINE_SAMPLES in the copy, 2 by the handlers,
 ; 3 or 4 idle: about PROFILE_50FPS_YM_SAMPLES_A_VBL, the rate the RP lays
 ; the ring out for; on the machine the YM's wait states, the handlers and
-; the IKBD's interrupts make it 106-108, and the RP follows: A0 runs on
+; the IKBD's interrupts make it about 154 (7,697 Hz against the nominal
+; 7,777), and the RP follows: A0 runs on
 ; through the ring, userfw_vbl reports it, the RP writes ahead of it and
 ; resamples to the rate the ST achieves (no sample is ever skipped or
 ; held; the cadence only sets the pitch the RP corrects). On the DMA path
@@ -571,7 +572,7 @@ YM_TIMER_PRESCALER    equ 1                  ; /4 (delay mode)
 ; so userfw keeps a ring of AUDIO_DMA_RING_BYTES there, the second use of
 ; Atari RAM after the screen pages and on the same assumption: the 4 KB
 ; between screen page B and the state area. The chip loops over it mono, at the profile's rate
-; (12,517 or 25,033 Hz); every VBL userfw copies into it, from the audio
+; (25,033 Hz in both profiles); every VBL userfw copies into it, from the audio
 ; buffer that mirrors it, what the RP has written ahead of the chip (see
 ; AUDIO_BUFFER_ADDR).
 DMA_SND_CTRL          equ $FFFF8901          ; bit 0 play, bit 1 loop

@@ -346,8 +346,9 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 # firmware carries no game code. The game's code translated by tools/xlat
 # comes as images on the SD card (made by tools/xlat/rp_store.py from the
 # user's copy of the game, linked against this firmware's ELF), which the
-# run copies into the flash store after the firmware's 384 KB (store.c,
-# tools/xlat/xl_store.h). The game's RAM pages are a 48 KB array; the scene
+# run copies into the flash store after the firmware's 256 KB (store.c,
+# tools/xlat/xl_store.h: XL_STORE_BASE; the firmware links into 384 KB, and
+# rp_store.py refuses an ELF that ends past the store's start). The game's RAM pages are a 48 KB array; the scene
 # is left out (its assets need the flash).
 # Without XLAT_STORE the bench has no logic run and builds the scene.
 if (DEFINED ENV{XLAT_STORE} AND NOT "$ENV{XLAT_STORE}" STREQUAL "0")

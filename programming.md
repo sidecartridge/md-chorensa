@@ -18,6 +18,11 @@ This section provides developers with in-depth guidance on programming the Multi
 This guide applies to the new version 2.0 of the firmware in beta stage.
 
 {: .warning}
+**This repository is md-chorensha, the Atari ST port of Cho Ren Sha 68k.** Its own architecture
+(the translated game, the images and the flash store, 256 × 256 with both borders open, GAME.TOS)
+is in `CLAUDE.md`'s "This repository" section.
+
+{: .warning}
 **This document describes the upstream `md-microfirmware-template` framework, not the trimmed `md-framebuffer-template` you are looking at.** Many modules referenced below (`chandler.c`, `tprotocol.c`, `display.c`, `term.c`, `download.c`, the network stack, etc.) have been stripped or replaced in this template. Refer to `CLAUDE.md` for the **current** module list and architecture. The most relevant change: the chandler + TPROTOCOL command-dispatch layer was dropped (cart-region constants relocated to `rp/src/include/cart_shared.h` under a `CART_*` prefix; the main loop now drains commemul directly via `commemul_poll(ikbd_consume_rom3_sample)`).
 
 {: .note}

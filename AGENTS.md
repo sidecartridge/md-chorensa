@@ -1,5 +1,11 @@
 # AGENTS.md — Microfirmware Template Playbook
 
+This repository is **md-chorensha**, the Atari ST port of Cho Ren Sha 68k, cut from
+md-framebuffer-template. This file is the template family's playbook: its environment, commands
+and troubleshooting apply, but its paths and examples are the upstream template's. For how the
+port works (the translated game, the images on the card, the flash store, 256 × 256 with both
+borders open, GAME.TOS, the web converter), read `CLAUDE.md`'s "This repository" section first.
+
 Welcome to the md-microfirmware-template workspace. This is the quick primer so any agent can get productive fast.
 
 ## 1. Environment setup (do this before touching the repo)
