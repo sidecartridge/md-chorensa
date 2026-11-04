@@ -51,7 +51,7 @@ for stick 1, inputs/*.txt) the RP plays that script as the host does, its
 checkpoints compared with the host's (a mortal game from any stage).
 
 Everything it writes is the game's: outside the repository (default
-~/chorensa/xlat-store), never committed.
+~/chorensha/xlat-store), never committed.
 
 usage: rp_store.py --firmware ELF [--frame 100] [--runs RUN ... --game-over RUN]
                    [--replay FILE [--invincible]] [--input SCRIPT] [--bench-frames N]
@@ -468,7 +468,7 @@ def main():
                     help="the bench's snapshot's frame (in the title)")
     ap.add_argument("--runs", nargs="+", help="the whole game's runs (else they are made)")
     ap.add_argument("--game-over", help="which of --runs plays to a game over")
-    ap.add_argument("--palettes", default=os.path.join(os.path.expanduser("~"), "chorensa",
+    ap.add_argument("--palettes", default=os.path.join(os.path.expanduser("~"), "chorensha",
                                                        "xlat-store", "palettes"),
                     help="the scenes' palette fits: stage1.bin..stage7.bin, menus.bin")
     ap.add_argument("--replay", help="a recorded game (XL_SAVE_REPLAY_AT's replay.rep) the "
@@ -482,13 +482,13 @@ def main():
                     help=f"the frames the host's checkpoints cover (default {BENCH_LAST}); with "
                     f"--replay also where the bench's run ends (default {REPLAY_LAST}); without "
                     "it the run never ends: a player's game lasts as long as it does")
-    ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-store"))
+    ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), "chorensha", "xlat-store"))
     args = ap.parse_args()
     if bool(args.runs) != bool(args.game_over):
         sys.exit("--runs and --game-over go together")
     cfg = recfg.load()
     original = recfg.need(cfg, "ORIGINAL")[0]
-    exe = cfg.get("SZ2X") or os.path.join(os.path.expanduser("~"), "chorensa", "SZ2.X")
+    exe = cfg.get("SZ2X") or os.path.join(os.path.expanduser("~"), "chorensha", "SZ2.X")
     listing = os.path.join(original, "sources", "sz2.s")
     fw = os.path.abspath(args.firmware)
     fw_id = firmware_id(fw)

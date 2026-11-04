@@ -8,7 +8,7 @@ Usage: hatari_run.py [--machine st|ste|megast|megaste] [--memsize MB] [--sound]
                      [--firmware FILE.mdfw] [--build] [--sd DIR]
 
 The firmware is the host build EmuMD makes of rp/src (emu/README.md):
-build/md-chorensa.mdfw by default, built first with --build. Paths come from
+build/md-chorensha.mdfw by default, built first with --build. Paths come from
 tools/re/re.cfg (see re.cfg.example): EmuMD's Hatari (HATARI), the TOS images
 (TOS_STE, 1.62, for every machine unless TOS_ST is set for the ST and Mega ST
 and TOS_MSTE, 2.06, for the Mega STE, which TOS 1.62 does not boot), and
@@ -233,8 +233,8 @@ def main() -> int:
     ap.add_argument("--realtime", action="store_true", help="no fast-forward")
     ap.add_argument("--step-time", type=float, default=60, help="seconds a step may take")
     ap.add_argument("--key-hold", type=float, default=0.1, help="host seconds after a key step")
-    ap.add_argument("--firmware", type=Path, default=REPO / "build" / "md-chorensa.mdfw",
-                    help="the .mdfw to run (default build/md-chorensa.mdfw)")
+    ap.add_argument("--firmware", type=Path, default=REPO / "build" / "md-chorensha.mdfw",
+                    help="the .mdfw to run (default build/md-chorensha.mdfw)")
     ap.add_argument("--build", action="store_true", help="build the .mdfw first (mdfw build)")
     ap.add_argument("--sd", type=Path, help="a folder copied as the run's microSD card")
     ap.add_argument("--quiet-firmware", action="store_true", help="leave out the firmware's log")

@@ -9,7 +9,7 @@ screen_NNNNN.bin every --screens frames (the port's dump format), output.txt,
 result.txt (PASS when every checkpoint matches the port's reference, a shorter
 run against its start, and, with --screen-reference, every screen matches the
 port's of the same frame in RGB). The translation and the build
-go to BUILD (default ~/chorensa/xlat-build), outside the repository: they
+go to BUILD (default ~/chorensha/xlat-build), outside the repository: they
 are the game's.
 
 usage: run_host.py [--frames 6000] [--name NAME] [--build DIR] [--rebuild]
@@ -45,7 +45,7 @@ RP_SRC = os.path.join(HERE, "..", "..", "rp", "src")
 
 def build(cfg, out, rebuild, resume=None, art=None):
     original = cfg["ORIGINAL"]
-    exe = cfg.get("SZ2X") or os.path.join(os.path.expanduser("~"), "chorensa", "SZ2.X")
+    exe = cfg.get("SZ2X") or os.path.join(os.path.expanduser("~"), "chorensha", "SZ2.X")
     listing = os.path.join(original, "sources", "sz2.s")
     tag = os.path.join(out, ".translated")
     sources = [os.path.join(HERE, f) for f in ("xlat.py", "m68k.py", "program.py", "xl.h")]
@@ -136,7 +136,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--frames", type=int, default=6000)
     ap.add_argument("--name", default="")
-    ap.add_argument("--build", default=os.path.join(os.path.expanduser("~"), "chorensa", "xlat-build"))
+    ap.add_argument("--build", default=os.path.join(os.path.expanduser("~"), "chorensha", "xlat-build"))
     ap.add_argument("--rebuild", action="store_true")
     ap.add_argument("--screens", type=int, default=500, help="a screen every N frames")
     ap.add_argument("--screen-reference", help="a folder of the port's screen_NNNNN.bin")

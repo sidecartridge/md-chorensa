@@ -3,8 +3,8 @@
  * host's original (xl_host.c, its steps from pow()) over random data, whole
  * and in pieces; a .crm's blocks unpacked to mono in pieces of every size;
  * the resampler keeping a sine's frequency and level and a constant's level
- * at both rates; the song's plan. With CHORENSA_CRM (a render) and
- * CHORENSA_SONG (the same song made by music_convert.py with ffmpeg) set,
+ * at both rates; the song's plan. With CHORENSHA_CRM (a render) and
+ * CHORENSHA_SONG (the same song made by music_convert.py with ffmpeg) set,
  * the converter's song is compared with ffmpeg's. */
 #include <math.h>
 #include <stdio.h>
@@ -243,7 +243,7 @@ static void test_real_song(const char *crm_path, const char *song_path) {
   uint32_t crm_size = 0, song_size = 0;
   uint8_t *crm_file = load(crm_path, &crm_size), *ffmpeg = load(song_path, &song_size);
   if (crm_file == NULL || ffmpeg == NULL) {
-    printf("CHORENSA_CRM / CHORENSA_SONG not found, skipped\n");
+    printf("CHORENSHA_CRM / CHORENSHA_SONG not found, skipped\n");
     return;
   }
   song_ctx_t s;
@@ -287,7 +287,7 @@ int main(void) {
   test_unblock();
   test_resampler();
   test_plan();
-  const char *crm = getenv("CHORENSA_CRM"), *song = getenv("CHORENSA_SONG");
+  const char *crm = getenv("CHORENSHA_CRM"), *song = getenv("CHORENSHA_SONG");
   if (crm && song) test_real_song(crm, song);
   TEST_END();
 }

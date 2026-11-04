@@ -4,7 +4,7 @@
  * every member found below the top folder and extracted byte for byte,
  * deflated and stored, one longer than the 32 KB window; a missing path; a
  * damaged member caught by its CRC; a short archive refused. With
- * CHORENSA_ZIP set to the repository's zip, its members the gate reads are
+ * CHORENSHA_ZIP set to the repository's zip, its members the gate reads are
  * extracted and checked too. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,7 +103,7 @@ static void check_repository(const char *path) {
   archive_t a = {0};
   a.file = fopen(path, "rb");
   if (a.file == NULL) {
-    printf("CHORENSA_ZIP: %s not found, skipped\n", path);
+    printf("CHORENSHA_ZIP: %s not found, skipped\n", path);
     return;
   }
   fseek(a.file, 0, SEEK_END);
@@ -172,7 +172,7 @@ int main(void) {
   CHECK_EQ(zip_open(&zip, read_memory, &n, n.size), ZIP_ERR_FORMAT);
   free(a.data);
 
-  const char *repository = getenv("CHORENSA_ZIP");
+  const char *repository = getenv("CHORENSHA_ZIP");
   if (repository) check_repository(repository);
   TEST_END();
 }

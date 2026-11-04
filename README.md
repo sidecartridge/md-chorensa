@@ -47,7 +47,7 @@ A new ship comes every 1,000,000 points. When the last one is lost, the
 game is over; a score good enough for the high-score
 table asks for a name: move the cursor over the letters with the joystick,
 press fire to add one, and choose ED to finish. The table is kept on the
-microSD card, as `SCORE.DAT` in the app's folder, `/CHORENSA`.
+microSD card, as `SCORE.DAT` in the app's folder, `/CHORENSHA`.
 
 ### CONFIG
 
