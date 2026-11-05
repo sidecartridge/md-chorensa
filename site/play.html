@@ -91,8 +91,54 @@ files are for, and the cartridge shows its own on the ST.</p>
 
 <section id="start-game">
 <h2>Starting the game</h2>
-<p>Put the card in the Multi-device and switch the ST on: it starts to the GEM desktop. Open the
-cartridge's drive, <b>c:</b>, and start <b>GAME.TOS</b>.</p>
+<p>Put the card in the Multi-device and switch the ST on: it starts to the GEM desktop. The game
+is a program on the cartridge, <b>GAME.TOS</b>. The ST reaches the cartridge as a drive of its
+own, <b>c</b> in lower case (upper-case <b>C</b> is the first hard disk partition, a different
+drive), and the desktop shows it as the <b>CARTRIDGE</b> icon.</p>
+<ol>
+  <li>Open the <b>CARTRIDGE</b> icon (double-click it).</li>
+  <li>In its window, double-click <b>GAME.TOS</b>.</li>
+</ol>
+<div class="gem">
+  <figure><img src="images/gem-desktop.png" width="320" height="200" alt="The GEM desktop with the floppy disks A and B, the CARTRIDGE icon and the trash"><figcaption>The desktop, with the CARTRIDGE icon (drive c).</figcaption></figure>
+  <figure><img src="images/gem-cartridge.png" width="320" height="200" alt="The window of the cartridge, titled Cartridge, with GAME.TOS in it"><figcaption>The cartridge's window: double-click GAME.TOS.</figcaption></figure>
+</div>
+
+<h3>No CARTRIDGE icon on the desktop?</h3>
+<p>A plain desktop shows it. A desktop saved for other drives (a hard disk, a floppy emulator)
+may not: TOS then loads that desktop without the icon. Create it once.</p>
+<div class="gem">
+  <figure><img src="images/gem-no-icon.png" width="320" height="200" alt="A GEM desktop with floppy disks A and B and the trash, but no cartridge icon"><figcaption>A desktop with no icon for the cartridge.</figcaption></figure>
+</div>
+<p><b>TOS 1.x</b> (an ST, an STE, a Mega ST):</p>
+<ol>
+  <li>Click a drive icon once to select it, for example floppy A.</li>
+  <li>Choose <b>Options › Install Disk Drive…</b> (it stays grey until a drive icon is
+  selected).</li>
+  <li>In <b>Drive identifier</b> type a lower-case <b>c</b>; in <b>Icon label</b>,
+  <b>CARTRIDGE</b>. Choose <b>Install</b>.</li>
+</ol>
+<div class="gem">
+  <figure><img src="images/gem-tos1-menu.png" width="320" height="200" alt="TOS 1.62's Options menu open on Install Disk Drive, with floppy A selected"><figcaption>TOS 1.x: Options › Install Disk Drive…</figcaption></figure>
+  <figure><img src="images/gem-tos1-dialog.png" width="320" height="200" alt="The INSTALL DISK DRIVE dialog with drive identifier c and icon label CARTRIDGE"><figcaption>Drive identifier c, label CARTRIDGE, Install.</figcaption></figure>
+</div>
+<p><b>TOS 2.06</b> (a Mega STE, an STE with TOS 2.06):</p>
+<ol>
+  <li>Click a drive icon once to select it, for example floppy A.</li>
+  <li>Choose <b>Options › Install Icon…</b></li>
+  <li>In <b>Icon Identifier</b> type a lower-case <b>c</b>; in <b>Icon Label</b>,
+  <b>CARTRIDGE</b>; leave the type on <b>Drive</b>. Choose <b>OK</b>.</li>
+</ol>
+<div class="gem">
+  <figure><img src="images/gem-tos2-menu.png" width="320" height="200" alt="TOS 2.06's Options menu open on Install Icon"><figcaption>TOS 2.06: Options › Install Icon…</figcaption></figure>
+  <figure><img src="images/gem-tos2-dialog.png" width="320" height="200" alt="The INSTALL DESKTOP ICON dialog with icon identifier c, label CARTRIDGE and the type Drive"><figcaption>Identifier c, label CARTRIDGE, type Drive, OK.</figcaption></figure>
+</div>
+<p>The CARTRIDGE icon appears; open it, and GAME.TOS is there. To keep the icon the next time
+the ST starts, choose <b>Options › Save Desktop</b> with a writable disk in drive A, or with
+the hard disk the ST starts from.</p>
+<div class="gem">
+  <figure><img src="images/gem-save.png" width="320" height="200" alt="The Options menu open on Save Desktop"><figcaption>Options › Save Desktop keeps the icon.</figcaption></figure>
+</div>
 <p>If the card is not ready, the game shows why, in red, with a QR code that opens the page for
 this release. It checks the card again every second, so the game starts as soon as the files
 are there: take the card out, make the files, put it back. ESC goes back to the desktop, B

@@ -297,6 +297,12 @@ img { max-width: 100%; height: auto; }
 .shots figcaption { margin-top: 0.4rem; font: 9px/1.8 var(--pixel); color: var(--menu); }
 .gallery-note { max-width: 40rem; margin: 1.5rem auto 0; text-align: center; font-size: 0.95rem; color: var(--muted); }
 
+/* the GEM desktop, at twice the ST's low-resolution pixels */
+.gem { display: grid; grid-template-columns: minmax(0, 640px); gap: 1.25rem; margin: 0 0 1.5rem; }
+.gem figure { margin: 0; }
+.gem img { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; border: 2px solid var(--rule); }
+.gem figcaption { margin-top: 0.35rem; font-size: 0.9rem; line-height: 1.4; color: var(--muted); }
+
 .shot-inline { margin: 0 0 1.5rem; max-width: 384px; }
 .shot-inline img { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; border: 2px solid var(--rule); }
 

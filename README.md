@@ -49,7 +49,29 @@ own firmware.
 ### Starting the game
 
 Put the card in the Multi-device and switch the ST on: it starts to the GEM
-desktop. Open the cartridge's drive, **c:**, and start **GAME.TOS**.
+desktop. The game is a program on the cartridge, **GAME.TOS**. The ST reaches
+the cartridge as a drive of its own, **c** in lower case (upper-case **C** is
+the first hard disk partition, a different drive), and the desktop shows it as
+the **CARTRIDGE** icon:
+
+1. Open the **CARTRIDGE** icon.
+2. In its window, double-click **GAME.TOS**.
+
+**No CARTRIDGE icon on the desktop?** A plain desktop shows it; a desktop
+saved for other drives (a hard disk, a floppy emulator) may not. Create it
+once:
+
+1. Click a drive icon once to select it, for example floppy A.
+2. Choose **Options › Install Disk Drive…** on TOS 1.x, or **Options ›
+   Install Icon…** on TOS 2.06.
+3. In the identifier, type a lower-case **c**; in the label, **CARTRIDGE**
+   (on TOS 2.06 leave the type on Drive). Choose **Install** (TOS 1.x) or
+   **OK** (TOS 2.06): the icon appears.
+4. To keep it the next time the ST starts, choose **Options › Save Desktop**
+   with a writable disk in drive A, or with the hard disk the ST starts from.
+
+The [instructions page](https://chorensha.sidecartridge.com/play.html#start-game)
+shows each step on the desktop of TOS 1.62 and TOS 2.06.
 
 If the card is not ready, the game shows why, in red, with a QR code that
 opens the page for this release; it checks the card again every second, so
