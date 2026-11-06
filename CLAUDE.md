@@ -391,3 +391,8 @@ docs, or any other artifact. This means **no**:
 
 Write the message as the human author. Do not mention AI tools used to
 produce the work.
+
+The one exception (Diego, 2026-11-06): the **Credits** sections of the
+documentation, the website's (`site/index.html`) and the README's, name the
+AI tools that co-authored the port. Nowhere else: not in commits, PRs, code,
+comments, the CHANGELOG or other docs.

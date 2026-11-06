@@ -225,6 +225,24 @@ made outside CI from a copy of the game:
    every release's converter alone at `/<tag>/`, which the cartridge's QR
    code opens. The pack never goes into a branch.
 
+## Credits
+
+Cho Ren Sha 68k is © 1995 Famibe no Yosshin. The Atari Falcon port and the
+disassembly it builds on are Sascha Springer's; the Amiga port, whose
+repository the card's files are made from and whose recordings of the music
+this port plays, is Adam Polkosnik's. This port is SidecarTridge's, built on
+[md-framebuffer-template](https://github.com/sidecartridge/md-framebuffer-template).
+
+We build on the shoulders of other projects, and thank them: MCDRV 0.69 by
+CUL, Karl Stenerud's Musashi and Aaron Giles' ymfm, which made the music's
+recordings; Paulo Simoes' measurements of the YM2149; MAME's OKI ADPCM
+decoder; Hatari and FS-UAE, which every check ran on; and, on the website,
+Orest Bida's cookieconsent, the Press Start 2P (CodeMan38) and Source Serif 4
+(Adobe) fonts, and Emscripten.
+
+This port was co-authored by Claude Code, OpenAI Codex, Gemini Notebook and
+GitHub Copilot. No AI were harmed in the development of this project.
+
 ---
 
 The rest of this file describes the framework the port is built on,
